@@ -70,6 +70,7 @@ export function createScene(host) {
     event.stopImmediatePropagation();
     activePointer = event.pointerId;
     previousHit = null;
+    painter.beginStroke();
     renderer.domElement.setPointerCapture(event.pointerId);
     paintAt(event);
   }, true);
@@ -84,6 +85,7 @@ export function createScene(host) {
     event.stopImmediatePropagation();
     activePointer = null;
     previousHit = null;
+    painter.endStroke();
     if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
   }
   renderer.domElement.addEventListener('pointerup', endStroke, true);
@@ -143,6 +145,10 @@ export function createScene(host) {
     frame: () => frame(model),
     setGridVisible: (visible) => { grid.visible = visible; },
     setLightingMode: painter.setLightingMode,
-    setTool: (tool) => { activeTool = tool; }
+    setTool: (tool) => { activeTool = tool; },
+    undo: painter.undo,
+    redo: painter.redo,
+    canUndo: painter.canUndo,
+    canRedo: painter.canRedo
   };
 }

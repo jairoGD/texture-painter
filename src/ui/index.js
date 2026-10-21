@@ -76,6 +76,7 @@ export function dropdown({ label, items }) {
       if (item.type === 'radio' || item.type === 'checkbox') {
         option.prepend(element('span', { className: 'ui-dropdown__check', text: '✓', attributes: { 'aria-hidden': 'true' } }));
       }
+      if (item.shortcut) option.append(element('span', { className: 'ui-dropdown__shortcut', text: item.shortcut, attributes: { 'aria-hidden': 'true' } }));
       option._menuItem = item;
       return option;
     })
@@ -85,6 +86,7 @@ export function dropdown({ label, items }) {
     for (const option of menu.children) {
       const item = option._menuItem;
       if (item?.getChecked) option.setAttribute('aria-checked', String(item.getChecked()));
+      if (item?.getDisabled) option.disabled = item.getDisabled();
     }
   };
   const close = () => {
@@ -103,6 +105,7 @@ export function dropdown({ label, items }) {
   });
   document.addEventListener('pointerdown', (event) => { if (!root.contains(event.target)) close(); });
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape') close(); });
+  root.refresh = refresh;
   return root;
 }
 

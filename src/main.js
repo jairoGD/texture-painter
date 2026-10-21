@@ -35,6 +35,28 @@ const fileMenu = dropdown({ label: 'File', items: [
   { label: 'Import Model', icon: '↥', onSelect: () => fileInput.click() }
 ] });
 
+function undo() {
+  if (scene.undo()) setStatus('Undid paint stroke');
+  editMenu.refresh();
+}
+
+function redo() {
+  if (scene.redo()) setStatus('Redid paint stroke');
+  editMenu.refresh();
+}
+
+const editMenu = dropdown({ label: 'Edit', items: [
+  { label: 'Undo', shortcut: 'Ctrl+Z', getDisabled: () => !scene.canUndo(), onSelect: undo },
+  { label: 'Redo', shortcut: 'Ctrl+Shift+Z', getDisabled: () => !scene.canRedo(), onSelect: redo }
+] });
+
+document.addEventListener('keydown', (event) => {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== 'z') return;
+  event.preventDefault();
+  if (event.shiftKey) redo();
+  else undo();
+});
+
 const modeLabel = element('span', { className: 'viewport-header__mode', text: '●  SHADED' });
 const displayMenu = dropdown({ label: 'Display', items: [
   { type: 'radio', label: 'Shaded', getChecked: () => lightingMode === 'shaded', onSelect: () => {
@@ -59,7 +81,7 @@ const header = element('header', { className: 'app-header' }, [
     element('span', { className: 'brand__mark', text: '◈', attributes: { 'aria-hidden': 'true' } }),
     element('span', { className: 'brand__name', text: 'TEXTURE PAINTER' })
   ]),
-  toolbar({ items: [fileMenu, displayMenu], className: 'app-header__menu' }),
+  toolbar({ items: [fileMenu, editMenu, displayMenu], className: 'app-header__menu' }),
   element('span', { className: 'app-header__tag', text: 'EDITOR  /  01' })
 ]);
 

@@ -34,6 +34,7 @@ button { cursor: pointer; }
 .ui-dropdown.is-open .ui-dropdown__menu { display: block; }
 .ui-dropdown__check { width: 13px; color: #c4ee73; opacity: 0; }
 [aria-checked="true"] > .ui-dropdown__check { opacity: 1; }
+.ui-dropdown__shortcut { margin-left: auto; padding-left: 20px; color: #8793a1; font-size: 11px; font-weight: 500; }
 .ui-dropdown__separator { height: 1px; margin: 5px 6px; border: 0; background: #3a424c; }
 .ui-toolbar { display: flex; align-items: center; gap: 7px; }
 .ui-tool-group { display: grid; gap: 8px; }

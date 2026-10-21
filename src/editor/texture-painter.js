@@ -6,6 +6,9 @@ const BRUSH_RADIUS = 18;
 export function createTexturePainter() {
   let surfaces = new Map();
   let lightingMode = 'shaded';
+  let undoStack = [];
+  let redoStack = [];
+  let activeStroke = null;
 
   function makeSurface(original) {
     const canvas = document.createElement('canvas');
@@ -52,6 +55,9 @@ export function createTexturePainter() {
       }
     }
     surfaces.clear();
+    undoStack = [];
+    redoStack = [];
+    activeStroke = null;
   }
 
   function prepare(root) {
@@ -84,15 +90,7 @@ export function createTexturePainter() {
     return { x: u * TEXTURE_SIZE, y: (1 - v) * TEXTURE_SIZE };
   }
 
-  function paint(hit, tool, previousHit) {
-    const record = surfaces.get(hit.object);
-    const surface = record?.slots[hit.face?.materialIndex ?? 0];
-    if (!surface || !hit.uv) return null;
-
-    const point = toPixel(hit.uv);
-    const sameSlot = previousHit?.object === hit.object &&
-      (previousHit.face?.materialIndex ?? 0) === (hit.face?.materialIndex ?? 0);
-    const previous = sameSlot && previousHit.uv ? toPixel(previousHit.uv) : null;
+  function drawCommand({ surface, tool, point, previous }) {
     const context = surface.context;
     context.strokeStyle = tool === 'eraser' ? '#ffffff' : '#28343f';
     context.fillStyle = context.strokeStyle;
@@ -111,13 +109,74 @@ export function createTexturePainter() {
       context.fill();
     }
     surface.texture.needsUpdate = true;
+  }
+
+  function paint(hit, tool, previousHit) {
+    const record = surfaces.get(hit.object);
+    const surface = record?.slots[hit.face?.materialIndex ?? 0];
+    if (!surface || !hit.uv) return null;
+
+    const point = toPixel(hit.uv);
+    const sameSlot = previousHit?.object === hit.object &&
+      (previousHit.face?.materialIndex ?? 0) === (hit.face?.materialIndex ?? 0);
+    const previous = sameSlot && previousHit.uv ? toPixel(previousHit.uv) : null;
+    const command = { surface, tool, point, previous };
+    if (activeStroke) activeStroke.push(command);
+    drawCommand(command);
     return hit;
+  }
+
+  function beginStroke() {
+    activeStroke = [];
+  }
+
+  function endStroke() {
+    if (activeStroke?.length) {
+      undoStack.push(activeStroke);
+      redoStack = [];
+    }
+    activeStroke = null;
+  }
+
+  function rebuild(affectedSurfaces) {
+    for (const surface of affectedSurfaces) {
+      surface.context.fillStyle = '#ffffff';
+      surface.context.fillRect(0, 0, TEXTURE_SIZE, TEXTURE_SIZE);
+      surface.texture.needsUpdate = true;
+    }
+    for (const stroke of undoStack) {
+      for (const command of stroke) {
+        if (affectedSurfaces.has(command.surface)) drawCommand(command);
+      }
+    }
+  }
+
+  function undo() {
+    if (!undoStack.length || activeStroke) return false;
+    const stroke = undoStack.pop();
+    redoStack.push(stroke);
+    rebuild(new Set(stroke.map((command) => command.surface)));
+    return true;
+  }
+
+  function redo() {
+    if (!redoStack.length || activeStroke) return false;
+    const stroke = redoStack.pop();
+    undoStack.push(stroke);
+    rebuild(new Set(stroke.map((command) => command.surface)));
+    return true;
   }
 
   return {
     prepare,
     clear,
     paint,
+    beginStroke,
+    endStroke,
+    undo,
+    redo,
+    canUndo: () => undoStack.length > 0,
+    canRedo: () => redoStack.length > 0,
     setLightingMode,
     getMeshes: () => [...surfaces.keys()]
   };
