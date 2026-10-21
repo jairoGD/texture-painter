@@ -11,6 +11,8 @@ npm run dev
 
 Open the local URL printed by Vite. `npm run build` creates a self-contained static build in `dist/`. The three.js package is installed in `node_modules` and bundled into the build; the editor does not load it from a CDN.
 
+On Windows, after `npm install` has been run once, double-click `start-editor.bat` to start the local server and open the editor automatically. Keep the command window open while using the editor; press Ctrl+C there to stop it.
+
 ## Current features
 
 - 3D viewport with orbit, pan and zoom controls, lighting and grid.
