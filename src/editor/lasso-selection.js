@@ -25,9 +25,9 @@ export function selectionFromMask(surface, canvas) {
     const edge = x < 3 || y < 3 || x >= SIZE - 3 || y >= SIZE - 3 ||
       !alpha[index - 3] || !alpha[index + 3] || !alpha[index - SIZE * 3] || !alpha[index + SIZE * 3];
     const pixel = index * 4;
-    overlay.data[pixel] = edge ? 223 : 196;
-    overlay.data[pixel + 1] = edge ? 255 : 238;
-    overlay.data[pixel + 2] = edge ? 103 : 115;
+    overlay.data[pixel] = edge ? 126 : 90;
+    overlay.data[pixel + 1] = edge ? 206 : 177;
+    overlay.data[pixel + 2] = 255;
     overlay.data[pixel + 3] = edge ? 255 : 75;
   }
   overlayContext.putImageData(overlay, 0, 0);

@@ -97,10 +97,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged } = {}) {
     context.beginPath();
     context.moveTo(lassoPath[0].x, lassoPath[0].y);
     for (const point of lassoPath.slice(1)) context.lineTo(point.x, point.y);
-    context.strokeStyle = '#172012';
+    context.strokeStyle = '#0b243c';
     context.lineWidth = 5;
     context.stroke();
-    context.strokeStyle = '#dfff67';
+    context.strokeStyle = '#79c6ff';
     context.lineWidth = 2.5;
     context.stroke();
   }
@@ -125,10 +125,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged } = {}) {
       pointerAction = painter.selectedAt(hit) ? 'moveSelection' : 'lasso';
       if (pointerAction === 'moveSelection') painter.beginMove(hit);
       else {
-        if (!lassoPath.length && painter.beginLasso(hit)) lassoSourceHit = hit;
+        if (painter.beginLasso(hit)) lassoSourceHit = hit;
         if (lassoSourceHit) {
           const rect = renderer.domElement.getBoundingClientRect();
-          lassoPath.push({ x: event.clientX - rect.left, y: event.clientY - rect.top });
+          lassoPath = [{ x: event.clientX - rect.left, y: event.clientY - rect.top }];
           renderLassoPath();
         }
         lastLassoScreen = { x: event.clientX, y: event.clientY };
@@ -172,7 +172,11 @@ export function createScene(host, { onColorPicked, onSelectionChanged } = {}) {
         traceLassoTo(event);
         finishLasso();
       }
-      else onSelectionChanged?.(lassoSourceHit ? 'Add points; double-click to close the selection' : 'Start the lasso on the model');
+      else {
+        painter.cancelLasso();
+        lassoSourceHit = null; lassoPath = []; renderLassoPath();
+        onSelectionChanged?.(hitTest(event) ? 'Hold and drag to draw a lasso' : 'Start the lasso on the model');
+      }
     } else if (pointerAction === 'moveSelection') {
       if (event.type === 'pointercancel') painter.cancelMove();
       else {
@@ -191,12 +195,6 @@ export function createScene(host, { onColorPicked, onSelectionChanged } = {}) {
   }
   renderer.domElement.addEventListener('pointerup', endStroke, true);
   renderer.domElement.addEventListener('pointercancel', endStroke, true);
-  renderer.domElement.addEventListener('dblclick', (event) => {
-    if (activeTool !== 'lasso') return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    finishLasso();
-  }, true);
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
     if (painter.cancelLasso() || painter.cancelMove()) {

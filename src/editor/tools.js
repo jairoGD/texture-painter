@@ -32,7 +32,7 @@ export const TOOL_DEFINITIONS = [
   { id: 'lasso', label: 'Lasso', iconUrl: lassoIcon,
     defaults: { maskEnabled: true },
     controls: [
-      { type: 'notice', text: 'Draw a freehand loop, or click points and double-click to close. Drag inside to move pixels.' },
+      { type: 'notice', text: 'Hold and drag on the model to draw a freehand selection. Release to close it; drag inside to move pixels.' },
       { type: 'checkbox', key: 'maskEnabled', label: 'Mask painting to selection' },
       { type: 'button', action: 'clearSelection', label: 'Clear Selection' }
     ] },
