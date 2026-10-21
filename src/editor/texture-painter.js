@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { executePaintCommand, samplePaintColor } from './paint-operations.js';
 import { containsSelection, selectionFromMask, shiftedSelection } from './lasso-selection.js';
+import { cloneTextureGraph, createTextureGraph, renderTextureGraph } from './texture-graph.js';
 
 const SIZE = 1024;
 
@@ -23,7 +24,10 @@ export function createTexturePainter() {
     const context = canvas.getContext('2d');
     context.fillStyle = '#ffffff';
     context.fillRect(0, 0, SIZE, SIZE);
-    const texture = new THREE.CanvasTexture(canvas);
+    const compositeCanvas = document.createElement('canvas');
+    compositeCanvas.width = compositeCanvas.height = SIZE;
+    const compositeContext = compositeCanvas.getContext('2d');
+    const texture = new THREE.CanvasTexture(compositeCanvas);
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
     texture.anisotropy = 4;
@@ -35,7 +39,22 @@ export function createTexturePainter() {
     const overlayTexture = new THREE.CanvasTexture(overlayCanvas);
     const overlayMaterial = new THREE.MeshBasicMaterial({ map: overlayTexture, transparent: true,
       depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, side: THREE.DoubleSide, toneMapped: false });
-    return { canvas, context, texture, shaded, unlit, overlayCanvas, overlayContext, overlayTexture, overlayMaterial };
+    const surface = { canvas, context, compositeCanvas, compositeContext, texture, shaded, unlit,
+      overlayCanvas, overlayContext, overlayTexture, overlayMaterial, graph: createTextureGraph(), compositeFrame: null };
+    surface.refreshComposite = () => {
+      if (surface.compositeFrame !== null) cancelAnimationFrame(surface.compositeFrame);
+      surface.compositeFrame = null;
+      renderTextureGraph(surface);
+    };
+    surface.requestComposite = () => {
+      if (surface.compositeFrame !== null) return;
+      surface.compositeFrame = requestAnimationFrame(() => {
+        surface.compositeFrame = null;
+        renderTextureGraph(surface);
+      });
+    };
+    surface.refreshComposite();
+    return surface;
   }
 
   function setMeshMaterial(record) {
@@ -47,6 +66,7 @@ export function createTexturePainter() {
     for (const record of surfaces.values()) {
       record.mesh.remove(record.overlay);
       for (const surface of record.slots) {
+        if (surface.compositeFrame !== null) cancelAnimationFrame(surface.compositeFrame);
         surface.texture.dispose(); surface.shaded.dispose(); surface.unlit.dispose();
         surface.overlayTexture.dispose(); surface.overlayMaterial.dispose();
       }
@@ -60,10 +80,14 @@ export function createTexturePainter() {
     root.traverse((object) => { if (object.isMesh && object.geometry?.getAttribute('uv')) meshes.push(object); });
     if (!meshes.length) throw new Error('This model has no UV coordinates to paint.');
     clear();
-    for (const mesh of meshes) {
+    for (const [meshIndex, mesh] of meshes.entries()) {
       const isArray = Array.isArray(mesh.material);
       const originals = isArray ? mesh.material : [mesh.material];
       const record = { mesh, isArray, slots: originals.map(makeSurface) };
+      record.slots.forEach((surface, slotIndex) => {
+        surface.id = `${mesh.uuid}:${slotIndex}`;
+        surface.label = `${mesh.name || `Mesh ${meshIndex + 1}`}${record.slots.length > 1 ? ` / Material ${slotIndex + 1}` : ''}`;
+      });
       const overlays = record.slots.map((surface) => surface.overlayMaterial);
       record.overlay = mesh.isSkinnedMesh ? new THREE.SkinnedMesh(mesh.geometry, isArray ? overlays : overlays[0]) :
         new THREE.Mesh(mesh.geometry, isArray ? overlays : overlays[0]);
@@ -169,7 +193,7 @@ export function createTexturePainter() {
     movePreview.dx = dx; movePreview.dy = dy;
     const { before, image } = movePreview;
     before.surface.context.putImageData(image, 0, 0);
-    before.surface.texture.needsUpdate = true;
+    before.surface.requestComposite();
     if (dx || dy) executePaintCommand({ kind: 'moveSelection', surface: before.surface, selection: before, dx, dy });
     renderOverlay(before.surface, before.overlayCanvas, dx, dy);
     return true;
@@ -192,7 +216,7 @@ export function createTexturePainter() {
     if (!movePreview) return false;
     const { before, image } = movePreview;
     before.surface.context.putImageData(image, 0, 0);
-    before.surface.texture.needsUpdate = true;
+    before.surface.requestComposite();
     selection = before; movePreview = null; renderOverlay();
     return true;
   }
@@ -225,6 +249,7 @@ export function createTexturePainter() {
 
   function sample(hit) {
     const surface = surfaceAt(hit);
+    surface?.refreshComposite();
     return surface ? samplePaintColor(surface, toPixel(hit.uv)) : null;
   }
 
@@ -257,7 +282,7 @@ export function createTexturePainter() {
   function cancelLine() {
     if (!linePreview) return;
     const { surface, before } = linePreview;
-    surface.context.putImageData(before, 0, 0); surface.texture.needsUpdate = true;
+    surface.context.putImageData(before, 0, 0); surface.requestComposite();
     linePreview = null;
   }
 
@@ -269,7 +294,7 @@ export function createTexturePainter() {
   function rebuild(affectedSurfaces) {
     for (const surface of affectedSurfaces) {
       surface.context.fillStyle = '#ffffff'; surface.context.fillRect(0, 0, SIZE, SIZE);
-      surface.texture.needsUpdate = true;
+      surface.requestComposite();
     }
     for (const stroke of undoStack) for (const command of stroke) {
       if (command.kind !== 'selection' && affectedSurfaces.has(command.surface)) executePaintCommand(command);
@@ -294,9 +319,25 @@ export function createTexturePainter() {
     return true;
   }
 
+  function graphTargets() {
+    return [...surfaces.values()].flatMap((record) => record.slots.map((surface) =>
+      ({ id: surface.id, label: surface.label, graph: cloneTextureGraph(surface.graph) })));
+  }
+
+  function setGraph(targetId, graph) {
+    const surface = [...surfaces.values()].flatMap((record) => record.slots)
+      .find((item) => item.id === targetId);
+    if (!surface) return false;
+    surface.graph = cloneTextureGraph(graph);
+    surface.refreshComposite();
+    return true;
+  }
+
   return { prepare, clear, paint, fill, sample, beginLine, updateLine, commitLine, cancelLine,
     beginLasso, endLasso, cancelLasso, selectedAt, beginMove, updateMove, endMove,
     cancelMove, clearSelection, setMaskEnabled: (enabled) => { maskEnabled = enabled; },
     beginStroke, endStroke, undo, redo, canUndo: () => undoStack.length > 0,
-    canRedo: () => redoStack.length > 0, setLightingMode, getMeshes: () => [...surfaces.keys()] };
+    canRedo: () => redoStack.length > 0, setLightingMode, getMeshes: () => [...surfaces.keys()],
+    getGraphTargets: graphTargets, setGraph,
+    targetIdAt: (hit) => surfaceAt(hit)?.id ?? null };
 }

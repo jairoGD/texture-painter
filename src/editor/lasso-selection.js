@@ -77,6 +77,6 @@ export function moveSelectionPixels({ surface, selection, dx, dy }) {
   }
   source.data.set(output);
   context.putImageData(source, 0, 0);
-  surface.texture.needsUpdate = true;
+  surface.requestComposite();
   return true;
 }

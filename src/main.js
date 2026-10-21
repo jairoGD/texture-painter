@@ -1,6 +1,7 @@
 import { createScene } from './editor/scene.js';
 import { TOOL_DEFINITIONS } from './editor/tools.js';
 import { colorPalette } from './ui/color-palette.js';
+import { createNodeEditor } from './ui/node-editor.js';
 import { dropdown, element, notice, panel, renderControl, renderPanel, toolbar } from './ui/index.js';
 import './style.css';
 
@@ -13,10 +14,15 @@ const hint = notice({ text: 'Left drag: paint · Alt + left drag or middle drag:
 const toolSettings = Object.fromEntries(TOOL_DEFINITIONS.map((tool) => [tool.id,
   { ...tool.defaults, ...(tool.usesColor ? { color: '#000000' } : {}) }]));
 let activeTool = 'brush';
-const scene = createScene(viewport, { onSelectionChanged: setStatus, onColorPicked: (color) => {
+let nodeEditor;
+const scene = createScene(viewport, {
+  onGraphTargetsChanged: (targets) => nodeEditor?.setTargets(targets),
+  onPaintTargetChanged: (id) => nodeEditor?.selectTarget(id),
+  onSelectionChanged: setStatus, onColorPicked: (color) => {
   palette.setColor(color);
   setStatus(`Sampled ${color.toUpperCase()}`);
 } });
+nodeEditor = createNodeEditor({ targets: scene.getGraphTargets(), onChange: (id, graph) => scene.setGraph(id, graph) });
 for (const tool of TOOL_DEFINITIONS) scene.setToolSettings(tool.id, toolSettings[tool.id]);
 const palette = colorPalette({ color: '#000000', onChange: (color) => {
   for (const tool of TOOL_DEFINITIONS.filter((item) => item.usesColor)) {
@@ -141,7 +147,10 @@ const viewportHeader = element('div', { className: 'viewport-header' }, [
 
 const workspace = element('div', { className: 'workspace' }, [
   sidebar,
-  element('div', { className: 'viewport-shell' }, [viewportHeader, viewport, hint])
+  element('div', { className: 'editor-area' }, [
+    element('div', { className: 'viewport-shell' }, [viewportHeader, viewport, hint]),
+    nodeEditor.element
+  ])
 ]);
 
 const footer = element('footer', { className: 'status-bar' }, [

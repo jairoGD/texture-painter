@@ -1,0 +1,45 @@
+.node-editor { display: flex; flex-direction: column; min-width: 0; height: min(320px, 45vh); border-top: 1px solid #3b424b; background: #1b2027; }
+.node-editor.is-collapsed { height: 36px; }
+.node-editor__header { display: flex; align-items: center; flex: 0 0 36px; gap: 16px; padding: 0 11px; background: #222831; }
+.node-editor__toggle { min-height: 28px; padding: 0 8px; color: #dce7f2; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+.node-editor__toggle .ui-icon { color: var(--accent); }
+.node-editor__chevron { margin-left: 7px; color: var(--accent); font-size: 15px; }
+.node-editor__hint { color: #8190a0; font-size: 11px; }
+.node-editor__body { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.node-editor.is-collapsed .node-editor__body { display: none; }
+.node-editor__toolbar { display: flex; align-items: center; flex: 0 0 39px; gap: 4px; padding: 3px 10px; border-top: 1px solid #343d47; border-bottom: 1px solid #343d47; background: #1d232b; }
+.node-editor__toolbar .ui-button { min-height: 29px; padding: 0 10px; font-size: 11px; }
+.node-editor__toolbar .ui-dropdown__menu { top: auto; bottom: calc(100% + 5px); }
+.node-editor__spacer { flex: 1; }
+.node-editor__target { max-width: min(240px, 30vw); height: 28px; padding: 0 8px; border: 1px solid #485463; border-radius: 5px; background: #29323d; color: #dce7f2; font-size: 11px; }
+.node-editor__canvas { position: relative; flex: 1; min-height: 0; overflow: hidden; background-color: #181e25; background-image: radial-gradient(#455260 1px, transparent 1px); background-size: 24px 24px; outline: none; touch-action: none; }
+.node-editor__canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.node-editor__canvas.is-panning { cursor: grabbing; }
+.node-editor__wires { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.node-editor__wire { fill: none; stroke: var(--accent); stroke-width: 3; pointer-events: none; }
+.node-editor__wire.is-selected { stroke: #dbf1ff; stroke-width: 4; }
+.node-editor__wire.is-pending { stroke-dasharray: 8 5; }
+.node-editor__wire-hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
+.node-editor__stage { position: absolute; top: 0; left: 0; width: 0; height: 0; transform-origin: 0 0; }
+.node-editor__node { position: absolute; width: 180px; padding-bottom: 9px; border: 1px solid #506074; border-radius: 8px; background: #29323d; box-shadow: 0 8px 24px #0008; color: #dce7f2; font-size: 11px; user-select: none; }
+.node-editor__node.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 10px 28px #0009; }
+.node-editor__node-title { display: flex; align-items: center; height: 29px; padding: 0 10px; border-bottom: 1px solid #455263; border-radius: 7px 7px 0 0; background: #344252; font-weight: 700; cursor: grab; }
+.node-editor__node-title:active { cursor: grabbing; }
+.node-editor__node--output .node-editor__node-title { background: #30506c; }
+.node-editor__row { position: relative; display: flex; align-items: center; height: 30px; padding: 0 13px; color: #becbd8; }
+.node-editor__row--out { justify-content: flex-end; }
+.node-editor__socket { position: absolute; top: 50%; width: 13px; height: 13px; padding: 0; transform: translateY(-50%); border: 2px solid #a8d9ff; border-radius: 50%; background: #2a6595; cursor: crosshair; }
+.node-editor__socket:hover { background: #a8d9ff; box-shadow: 0 0 0 5px #70bfff44; }
+.node-editor__socket--in { left: -7px; }
+.node-editor__socket--out { right: -7px; }
+.node-editor__control { display: flex; align-items: center; justify-content: space-between; gap: 7px; min-height: 40px; margin: 0 9px; padding: 4px 2px; color: #aebccc; }
+.node-editor__color { width: 42px; height: 26px; padding: 2px; border: 1px solid #647689; border-radius: 5px; background: #1c242d; cursor: pointer; }
+.node-editor__control--range { display: grid; grid-template-columns: 1fr auto; }
+.node-editor__control output { color: #e9f3fc; font-variant-numeric: tabular-nums; }
+.node-editor__range { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--accent); }
+@media (max-width: 700px) {
+  .node-editor { height: min(260px, 45vh); }
+  .node-editor__hint { display: none; }
+  .node-editor__toolbar { gap: 0; }
+  .node-editor__target { max-width: 110px; }
+}

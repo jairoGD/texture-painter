@@ -4,7 +4,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createTexturePainter } from './texture-painter.js';
 import { projectLassoToUv } from './screen-lasso.js';
 
-export function createScene(host, { onColorPicked, onSelectionChanged } = {}) {
+export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTargetsChanged, onPaintTargetChanged } = {}) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color('#252b34');
 
@@ -145,6 +145,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged } = {}) {
     activePointer = event.pointerId;
     previousHit = null;
     const hit = hitTest(event);
+    if (hit) onPaintTargetChanged?.(painter.targetIdAt(hit));
     if (activeTool === 'lasso') {
       pointerAction = painter.selectedAt(hit) ? 'moveSelection' : 'lasso';
       if (pointerAction === 'moveSelection') painter.beginMove(hit);
@@ -260,6 +261,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged } = {}) {
           model = next;
           scene.add(model);
           frame(model);
+          onGraphTargetsChanged?.(painter.getGraphTargets());
           resolve({ model: next, paintableMeshes });
         }, reject);
       };
@@ -303,6 +305,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged } = {}) {
     undo: painter.undo,
     redo: painter.redo,
     canUndo: painter.canUndo,
-    canRedo: painter.canRedo
+    canRedo: painter.canRedo,
+    getGraphTargets: painter.getGraphTargets,
+    setGraph: painter.setGraph
   };
 }

@@ -194,13 +194,13 @@ export function executePaintCommand(command) {
   const changed = command.kind === 'bucket' ? floodFill(command) :
     command.kind === 'blur' ? blurStroke(command) :
       command.kind === 'moveSelection' ? moveSelectionPixels(command) : drawMark(command);
-  if (changed) command.surface.texture.needsUpdate = true;
+  if (changed) command.surface.requestComposite();
   return changed;
 }
 
 export function samplePaintColor(surface, point) {
   const x = Math.max(0, Math.min(surface.canvas.width - 1, Math.floor(point.x)));
   const y = Math.max(0, Math.min(surface.canvas.height - 1, Math.floor(point.y)));
-  const pixel = surface.context.getImageData(x, y, 1, 1).data;
+  const pixel = surface.compositeContext.getImageData(x, y, 1, 1).data;
   return `#${[pixel[0], pixel[1], pixel[2]].map((value) => value.toString(16).padStart(2, '0')).join('')}`;
 }
