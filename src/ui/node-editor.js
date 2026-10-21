@@ -53,9 +53,12 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
       validPaintSource(target, layer.source.id))?.source.id ?? null;
   }
   function ensurePaintSource(target) {
-    if (validPaintSource(target, target.paintSource)) return;
-    target.paintSource = defaultPaintSource(target);
+    if (validPaintSource(target, target.paintSource)) return false;
+    const next = defaultPaintSource(target);
+    const changed = target.paintSource !== next;
+    target.paintSource = next;
     onPaintSourceChange?.(target.id, target.paintSource);
+    return changed;
   }
   function getState() {
     return { targetId: activeId, graph: graph ? cloneTextureGraph(graph) : null,
@@ -94,7 +97,7 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
     target.future = [];
     updateHistoryButtons();
     onChange?.(activeId, cloneTextureGraph(graph));
-    ensurePaintSource(target);
+    if (ensurePaintSource(target)) renderGraph();
     notifyState();
   }
 
@@ -107,7 +110,7 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
     graph = target.graph = target.history.pop();
     selectedNode = null; selectedLink = -1;
     renderGraph(); previewChange();
-    ensurePaintSource(target);
+    if (ensurePaintSource(target)) renderGraph();
     notifyState();
   }
 
@@ -118,7 +121,7 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
     graph = target.graph = target.future.pop();
     selectedNode = null; selectedLink = -1;
     renderGraph(); previewChange();
-    ensurePaintSource(target);
+    if (ensurePaintSource(target)) renderGraph();
     notifyState();
   }
 
@@ -402,9 +405,9 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
           input: (event) => { node.factor = Number(event.target.value); value.value = node.factor.toFixed(2); previewChange(); },
           change: () => { changed(factorBefore); factorBefore = cloneTextureGraph(graph); }
         } });
-      rootNode.append(element('label', { className: 'node-editor__control node-editor__control--range' },
-        [element('span', { text: 'Factor' }), value, factor]));
-      for (const socket of definition.inputs) {
+      rootNode.append(socketRow('in', 'Factor', value));
+      rootNode.append(element('div', { className: 'node-editor__control node-editor__control--range' }, [factor]));
+      for (const socket of ['A', 'B']) {
         let colorBefore = cloneTextureGraph(graph);
         const key = socket === 'A' ? 'colorA' : 'colorB';
         const color = element('input', { className: 'node-editor__color',

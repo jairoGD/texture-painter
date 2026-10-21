@@ -5,12 +5,13 @@ import upIcon from './icons/layer-up.svg';
 import downIcon from './icons/layer-down.svg';
 import addIcon from './icons/layer-add.svg';
 import importIcon from './icons/layer-import.svg';
+import imageIcon from './icons/image.svg';
 import removeIcon from './icons/layer-remove.svg';
 import eyeIcon from './icons/layer-eye.svg';
 import hiddenIcon from './icons/layer-hidden.svg';
 import './layers-panel.css';
 
-export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, onError }) {
+export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, onMergeLayer, onError }) {
   const selectedByTarget = new Map();
   const material = element('select', { className: 'layers-panel__select',
     attributes: { 'aria-label': 'Texture material' } });
@@ -23,13 +24,15 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     title: 'Move layer down', onClick: () => move(1) });
   const addButton = button({ label: 'Add paint layer', iconUrl: addIcon, variant: 'ghost', iconOnly: true,
     title: 'Add paint layer', onClick: () => addLayer() });
-  const openButton = button({ label: 'Open image as layer', iconUrl: importIcon, variant: 'ghost', iconOnly: true,
+  const mergeButton = button({ label: 'Merge layer down', iconUrl: importIcon, variant: 'ghost', iconOnly: true,
+    title: 'Merge layer down', onClick: merge });
+  const openButton = button({ label: 'Open image as layer', iconUrl: imageIcon, variant: 'ghost', iconOnly: true,
     title: 'Open image as layer', onClick: () => newImageInput.click() });
   const removeButton = button({ label: 'Remove layer', iconUrl: removeIcon, variant: 'ghost', iconOnly: true,
     title: 'Remove layer', onClick: remove });
   const root = element('aside', { className: 'layers-sidebar', attributes: { 'aria-label': 'Layers sidebar' } }, [
     element('div', { className: 'layers-panel__header' }, [element('h2', { text: 'LAYERS' }), material]),
-    element('div', { className: 'layers-panel__toolbar' }, [upButton, downButton, addButton, openButton, removeButton]),
+    element('div', { className: 'layers-panel__toolbar' }, [upButton, downButton, addButton, mergeButton, openButton, removeButton]),
     list,
     newImageInput, replaceImageInput
   ]);
@@ -69,6 +72,19 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     if (!selected) return;
     const graph = cloneTextureGraph(state.graph);
     if (moveGraphLayer(graph, selected.id, direction)) nodeEditor.replaceGraph(graph);
+  }
+
+  function merge() {
+    const state = current();
+    const selected = selectedLayer(state);
+    if (!selected) return;
+    try {
+      const merged = onMergeLayer?.(state.targetId, selected.id, state.graph);
+      if (!merged) return;
+      selectedByTarget.set(state.targetId, merged.layerId);
+      nodeEditor.replaceGraph(merged.graph);
+      nodeEditor.choosePaintSource(merged.sourceId);
+    } catch (error) { fail(error); }
   }
 
   function remove() {
@@ -224,7 +240,7 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     openButton.disabled = !hasGraph;
     if (!hasGraph) {
       list.replaceChildren(element('p', { className: 'layers-panel__empty', text: 'Import a GLB model to start painting.' }));
-      upButton.disabled = downButton.disabled = removeButton.disabled = true;
+      upButton.disabled = downButton.disabled = mergeButton.disabled = removeButton.disabled = true;
       return;
     }
     const { layers } = readLayerStack(state.graph);
@@ -240,6 +256,7 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     const index = layers.findIndex((layer) => layer.id === selected?.id);
     upButton.disabled = index <= 0;
     downButton.disabled = index < 0 || index >= layers.length - 1;
+    mergeButton.disabled = index < 0 || index >= layers.length - 1;
     removeButton.disabled = !selected;
   }
 

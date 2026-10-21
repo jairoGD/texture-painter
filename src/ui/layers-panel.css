@@ -3,7 +3,7 @@
 .layers-panel__header h2 { margin: 0; color: #8197c0; font-size: 10px; font-weight: 800; letter-spacing: .14em; }
 .layers-panel__header .layers-panel__select { max-width: 155px; min-height: 25px; font-size: 11px; }
 .layers-panel__header .layers-panel__select[hidden] { display: none; }
-.layers-panel__toolbar { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: center; gap: 2px; padding: 4px 10px 9px; border-bottom: 1px solid #333a4a; }
+.layers-panel__toolbar { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); align-items: center; gap: 2px; padding: 4px 10px 9px; border-bottom: 1px solid #333a4a; }
 .layers-panel__toolbar .ui-button { width: 100%; min-width: 0; min-height: 32px; padding: 0; border: 0; color: #8b9dbd; background: transparent; }
 .layers-panel__toolbar .ui-button:hover:not(:disabled) { color: var(--accent); background: #27374d; }
 .layers-panel__toolbar .ui-icon--mask { flex-basis: 18px; width: 18px; height: 18px; }

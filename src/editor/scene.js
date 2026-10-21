@@ -353,6 +353,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     canRedo: painter.canRedo,
     getGraphTargets: painter.getGraphTargets,
     setGraph: painter.setGraph,
+    mergeLayerDown: painter.mergeLayerDown,
     createImage: painter.createImage,
     setPaintSource: painter.setPaintSource,
     importImage: async (targetId, nodeId, file) => {

@@ -45,6 +45,7 @@ nodeEditor = createNodeEditor({ targets: scene.getGraphTargets(),
 layersPanel = createLayersPanel({ nodeEditor,
   onCreateImage: (id, nodeId) => scene.createImage(id, nodeId),
   onImportImage: (id, nodeId, file) => scene.importImage(id, nodeId, file),
+  onMergeLayer: (id, layerId, graph) => scene.mergeLayerDown(id, layerId, graph),
   onError: (message) => setStatus(message, true)
 });
 for (const tool of TOOL_DEFINITIONS) scene.setToolSettings(tool.id, toolSettings[tool.id]);

@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { executePaintCommand, samplePaintColor } from './paint-operations.js';
 import { containsSelection, selectionFromMask, shiftedSelection } from './lasso-selection.js';
-import { cloneTextureGraph, createTextureGraph, renderTextureGraph } from './texture-graph.js';
-import { addGraphLayer, readLayerStack } from './layer-graph.js';
+import { addTextureNode, blendCanvases, cloneTextureGraph, connectTextureNodes,
+  createTextureGraph, evaluateTextureNode, removeTextureNode, renderTextureGraph } from './texture-graph.js';
+import { addGraphLayer, readLayerStack, removeGraphLayer } from './layer-graph.js';
 
 const SIZE = 1024;
 
@@ -400,6 +401,44 @@ export function createTexturePainter() {
     return true;
   }
 
+  function mergeLayerDown(targetId, layerId, graph) {
+    const surface = findSurface(targetId);
+    if (!surface) return null;
+    const stack = readLayerStack(graph).layers;
+    const index = stack.findIndex((layer) => layer.id === layerId);
+    if (index < 0 || index >= stack.length - 1) return null;
+    const upper = stack[index];
+    const lower = stack[index + 1];
+    const blank = document.createElement('canvas');
+    blank.width = blank.height = SIZE;
+    const apply = (base, layer) => {
+      const image = evaluateTextureNode(surface, layer.source.id, 'Color', graph);
+      if (!image) return base;
+      const factorLink = graph.links.find((link) => link.to === layer.id && link.toSocket === 'Factor');
+      const mask = factorLink ? evaluateTextureNode(surface, factorLink.from, factorLink.fromSocket, graph) : null;
+      const factor = layer.mix.layerVisible === false ? 0 :
+        Math.max(0, Math.min(1, Number(layer.mix.factor ?? 1)));
+      return blendCanvases(base, image, layer.mix.mode || 'mix', factor, SIZE, mask);
+    };
+    const mergedImage = apply(apply(blank, lower), upper);
+    const next = cloneTextureGraph(graph);
+    removeGraphLayer(next, upper.id);
+    const lowerMix = next.nodes.find((node) => node.id === lower.id);
+    const previousSource = next.nodes.find((node) => node.id === lower.source.id);
+    const source = addTextureNode(next, 'image', { x: previousSource.x, y: previousSource.y });
+    const asset = createImage(targetId, source.id, mergedImage, lower.label);
+    source.imageKey = asset.key;
+    source.imageName = asset.name;
+    lowerMix.layerSourceId = source.id;
+    lowerMix.mode = 'mix';
+    lowerMix.factor = 1;
+    lowerMix.layerVisible = true;
+    next.links = next.links.filter((link) => !(link.to === lowerMix.id && link.toSocket === 'Factor'));
+    connectTextureNodes(next, source.id, 'Color', lowerMix.id, 'B');
+    if (!next.links.some((link) => link.from === previousSource.id)) removeTextureNode(next, previousSource.id);
+    return { graph: next, layerId: lowerMix.id, sourceId: source.id };
+  }
+
   function exportProjectTextures() {
     return [...surfaces.values()].flatMap((record) => record.slots.map((surface) => ({
       graph: cloneTextureGraph(surface.graph),
@@ -441,7 +480,7 @@ export function createTexturePainter() {
     cancelMove, clearSelection, setMaskEnabled: (enabled) => { maskEnabled = enabled; },
     beginStroke, endStroke, undo, redo, canUndo: () => undoStack.length > 0,
     canRedo: () => redoStack.length > 0, setLightingMode, getMeshes: () => [...surfaces.keys()],
-    getGraphTargets: graphTargets, setGraph, createImage, setPaintSource,
+    getGraphTargets: graphTargets, setGraph, createImage, setPaintSource, mergeLayerDown,
     exportProjectTextures, restoreProjectTextures,
     targetIdAt: (hit) => surfaceAt(hit)?.id ?? null };
 }

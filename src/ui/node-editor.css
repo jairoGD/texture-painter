@@ -30,6 +30,7 @@
 .node-editor__row { position: relative; display: flex; align-items: center; height: 30px; padding: 0 13px; color: #becbd8; }
 .node-editor__row--out { justify-content: flex-end; }
 .node-editor__row .node-editor__color { margin-left: auto; }
+.node-editor__row output { margin-left: auto; font-size: 11px; }
 .node-editor__socket { position: absolute; top: 50%; width: 13px; height: 13px; padding: 0; transform: translateY(-50%); border: 2px solid #a8d9ff; border-radius: 50%; background: #2a6595; cursor: crosshair; }
 .node-editor__socket:hover { background: #a8d9ff; box-shadow: 0 0 0 5px #70bfff44; }
 .node-editor__socket--in { left: -7px; }

@@ -2,7 +2,7 @@ import { bakeImageToUv } from './image-projection.js';
 
 export const NODE_TYPES = {
   color: { title: 'Solid Color', inputs: [], outputs: ['Color'] },
-  blend: { title: 'Mix', inputs: ['A', 'B'], outputs: ['Result'] },
+  blend: { title: 'Mix', inputs: ['A', 'B', 'Factor'], outputs: ['Result'] },
   image: { title: 'Image', inputs: [], outputs: ['Color', 'Alpha'] },
   output: { title: 'Texture Output', inputs: ['Color'], outputs: [], fixed: true }
 };
@@ -154,43 +154,65 @@ export function blendRgb(a, b, mode) {
   });
 }
 
-function blendCanvases(base, top, mode, factor, size) {
+function factorMask(mask, size) {
+  if (!mask) return null;
+  return mask.getContext('2d').getImageData(0, 0, size, size).data;
+}
+
+export function blendCanvases(base, top, mode, factor, size, mask = null) {
   const result = newCanvas(size);
   const context = result.getContext('2d');
   context.drawImage(base, 0, 0);
   if (factor <= 0) return result;
+  const maskPixels = factorMask(mask, size);
+  let source = top;
+  if (factor < 1 || maskPixels) {
+    source = newCanvas(size);
+    const sourceContext = source.getContext('2d');
+    sourceContext.drawImage(top, 0, 0);
+    const image = sourceContext.getImageData(0, 0, size, size);
+    for (let index = 0; index < size * size; index++) {
+      const offset = index * 4;
+      const maskValue = maskPixels ? (maskPixels[offset] * .2126 +
+        maskPixels[offset + 1] * .7152 + maskPixels[offset + 2] * .0722) / 255 *
+        maskPixels[offset + 3] / 255 : 1;
+      image.data[offset + 3] *= factor * maskValue;
+    }
+    sourceContext.putImageData(image, 0, 0);
+  }
   if (mode === 'mix') {
-    context.globalAlpha = factor;
-    context.drawImage(top, 0, 0);
+    context.drawImage(source, 0, 0);
     return result;
   }
   if (CANVAS_BLEND_MODES[mode]) {
-    const blended = newCanvas(size);
-    const blendContext = blended.getContext('2d');
-    blendContext.drawImage(base, 0, 0);
-    blendContext.globalCompositeOperation = CANVAS_BLEND_MODES[mode];
-    blendContext.drawImage(top, 0, 0);
-    context.globalAlpha = factor;
-    context.drawImage(blended, 0, 0);
+    context.globalCompositeOperation = CANVAS_BLEND_MODES[mode];
+    context.drawImage(source, 0, 0);
     return result;
   }
   const basePixels = context.getImageData(0, 0, size, size);
-  const topPixels = top.getContext('2d').getImageData(0, 0, size, size).data;
+  const topPixels = source.getContext('2d').getImageData(0, 0, size, size).data;
   const pixels = basePixels.data;
   for (let offset = 0; offset < pixels.length; offset += 4) {
-    const a = [pixels[offset] / 255, pixels[offset + 1] / 255, pixels[offset + 2] / 255];
-    const b = [topPixels[offset] / 255, topPixels[offset + 1] / 255, topPixels[offset + 2] / 255];
-    const blended = blendRgb(a, b, mode);
-    const amount = factor * topPixels[offset + 3] / 255;
-    for (let channel = 0; channel < 3; channel++)
-      pixels[offset + channel] = (a[channel] + (blended[channel] - a[channel]) * amount) * 255;
+    const baseAlpha = pixels[offset + 3] / 255;
+    const topAlpha = topPixels[offset + 3] / 255;
+    const outputAlpha = topAlpha + baseAlpha * (1 - topAlpha);
+    if (!outputAlpha) continue;
+    const baseColor = [pixels[offset] / 255, pixels[offset + 1] / 255, pixels[offset + 2] / 255];
+    const topColor = [topPixels[offset] / 255, topPixels[offset + 1] / 255, topPixels[offset + 2] / 255];
+    const blended = blendRgb(baseColor, topColor, mode);
+    for (let channel = 0; channel < 3; channel++) {
+      const modifiedTop = (1 - baseAlpha) * topColor[channel] + baseAlpha * blended[channel];
+      pixels[offset + channel] = (topAlpha * modifiedTop +
+        baseAlpha * (1 - topAlpha) * baseColor[channel]) / outputAlpha * 255;
+    }
+    pixels[offset + 3] = outputAlpha * 255;
   }
   context.putImageData(basePixels, 0, 0);
   return result;
 }
 
-export function renderTextureGraph(surface) {
-  const { graph, canvas, compositeCanvas, compositeContext } = surface;
+export function evaluateTextureNode(surface, nodeId, socket = 'Color', graph = surface.graph) {
+  const { canvas } = surface;
   const size = canvas.width;
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   const cache = new Map();
@@ -236,16 +258,23 @@ export function renderTextureGraph(surface) {
     else if (node.type === 'blend') {
       const base = input(node, 'A') ?? solidCanvas(size, node.colorA);
       const top = input(node, 'B') ?? solidCanvas(size, node.colorB);
+      const mask = input(node, 'Factor');
       const factor = node.layerVisible === false ? 0 : Math.max(0, Math.min(1, Number(node.factor) || 0));
-      result = blendCanvases(base, top, node.mode, factor, size);
+      result = blendCanvases(base, top, node.mode, factor, size, mask);
     } else if (node.type === 'output') result = input(node, 'Color');
     visiting.delete(id);
     cache.set(cacheKey, result);
     return result;
   };
+  return evaluate(nodeId, socket);
+}
+
+export function renderTextureGraph(surface) {
+  const { canvas, compositeCanvas, compositeContext } = surface;
+  const size = canvas.width;
   compositeContext.fillStyle = '#ffffff';
   compositeContext.fillRect(0, 0, size, size);
-  const result = evaluate('output');
+  const result = evaluateTextureNode(surface, 'output');
   if (result && result !== compositeCanvas) compositeContext.drawImage(result, 0, 0);
   surface.texture.needsUpdate = true;
 }
