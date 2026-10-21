@@ -81,7 +81,8 @@ function blurStroke({ surface, point, previous, options, mask }) {
   const height = sourceBottom - sourceTop;
   const image = context.getImageData(sourceLeft, sourceTop, width, height);
   const data = image.data;
-  const horizontal = new Float32Array(width * height * 3);
+  // Work in premultiplied RGBA so fully transparent pixels cannot contribute black.
+  const horizontal = new Float32Array(width * height * 4);
   const kernel = new Float32Array(reach * 2 + 1);
   let total = 0;
   for (let offset = -reach; offset <= reach; offset++) {
@@ -93,14 +94,16 @@ function blurStroke({ surface, point, previous, options, mask }) {
 
   // Separable convolution keeps a broad, smooth brush practical while dragging.
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-    const target = (y * width + x) * 3;
+    const target = (y * width + x) * 4;
     for (let offset = -reach; offset <= reach; offset++) {
       const sampleX = Math.max(0, Math.min(width - 1, x + offset));
       const source = (y * width + sampleX) * 4;
       const weight = kernel[offset + reach];
-      horizontal[target] += data[source] * weight;
-      horizontal[target + 1] += data[source + 1] * weight;
-      horizontal[target + 2] += data[source + 2] * weight;
+      const alpha = data[source + 3] / 255;
+      horizontal[target] += data[source] * alpha * weight;
+      horizontal[target + 1] += data[source + 1] * alpha * weight;
+      horizontal[target + 2] += data[source + 2] * alpha * weight;
+      horizontal[target + 3] += data[source + 3] * weight;
     }
   }
 
@@ -126,15 +129,29 @@ function blurStroke({ surface, point, previous, options, mask }) {
     const x = canvasX - sourceLeft;
     const y = canvasY - sourceTop;
     const pixel = (y * width + x) * 4;
+    let blurredRed = 0;
+    let blurredGreen = 0;
+    let blurredBlue = 0;
+    let blurredAlpha = 0;
+    for (let offset = -reach; offset <= reach; offset++) {
+      const sampleY = Math.max(0, Math.min(height - 1, y + offset));
+      const source = (sampleY * width + x) * 4;
+      const weight = kernel[offset + reach];
+      blurredRed += horizontal[source] * weight;
+      blurredGreen += horizontal[source + 1] * weight;
+      blurredBlue += horizontal[source + 2] * weight;
+      blurredAlpha += horizontal[source + 3] * weight;
+    }
+    const originalAlpha = data[pixel + 3];
+    const mixedAlpha = originalAlpha * (1 - mix) + blurredAlpha * mix;
+    const nextAlpha = Math.round(mixedAlpha);
     for (let channel = 0; channel < 3; channel++) {
-      let blurred = 0;
-      for (let offset = -reach; offset <= reach; offset++) {
-        const sampleY = Math.max(0, Math.min(height - 1, y + offset));
-        blurred += horizontal[(sampleY * width + x) * 3 + channel] * kernel[offset + reach];
-      }
-      const value = Math.round(data[pixel + channel] * (1 - mix) + blurred * mix);
+      const blurredColor = channel === 0 ? blurredRed : channel === 1 ? blurredGreen : blurredBlue;
+      const premultiplied = data[pixel + channel] * originalAlpha / 255 * (1 - mix) + blurredColor * mix;
+      const value = nextAlpha ? Math.round(premultiplied * 255 / mixedAlpha) : 0;
       if (value !== data[pixel + channel]) { data[pixel + channel] = value; changed = true; }
     }
+    if (nextAlpha !== originalAlpha) { data[pixel + 3] = nextAlpha; changed = true; }
   }
   if (changed) context.putImageData(image, sourceLeft, sourceTop);
   return changed;

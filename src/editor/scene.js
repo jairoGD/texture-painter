@@ -3,8 +3,10 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createTexturePainter } from './texture-painter.js';
 import { projectLassoToUv } from './screen-lasso.js';
+import { base64ToBytes, bytesToBase64 } from './project-file.js';
 
-export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTargetsChanged, onPaintTargetChanged } = {}) {
+export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTargetsChanged,
+  onPaintTargetChanged, onContentChanged } = {}) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color('#252b34');
 
@@ -41,17 +43,20 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   grid.position.y = -0.005;
   scene.add(grid);
 
-  const defaultModel = new THREE.Group();
-  const material = new THREE.MeshStandardMaterial({ color: '#aabed2', metalness: 0.18, roughness: 0.48 });
-  const knot = new THREE.Mesh(new THREE.TorusKnotGeometry(0.8, 0.27, 180, 24), material);
-  knot.position.y = 1.05;
-  defaultModel.add(knot);
-  scene.add(defaultModel);
-
-  let model = defaultModel;
+  function starterModel() {
+    const group = new THREE.Group();
+    const material = new THREE.MeshStandardMaterial({ color: '#aabed2', metalness: 0.18, roughness: 0.48 });
+    const knot = new THREE.Mesh(new THREE.TorusKnotGeometry(0.8, 0.27, 180, 24), material);
+    knot.position.y = 1.05;
+    group.add(knot);
+    return group;
+  }
+  let model = starterModel();
+  let modelSource = { kind: 'starter' };
+  scene.add(model);
   const loader = new GLTFLoader();
   const painter = createTexturePainter();
-  painter.prepare(defaultModel);
+  painter.prepare(model);
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   let activePointer = null;
@@ -219,6 +224,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     lassoStartScreen = null;
     lassoDragged = false;
     if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
+    if (activeTool !== 'eyedropper') onContentChanged?.();
   }
   renderer.domElement.addEventListener('pointerup', endStroke, true);
   renderer.domElement.addEventListener('pointercancel', endStroke, true);
@@ -259,6 +265,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
           scene.remove(model);
           lassoSourceHit = null; lassoPath = []; renderLassoPath();
           model = next;
+          modelSource = { kind: 'glb', name: file.name, data: bytesToBase64(reader.result) };
           scene.add(model);
           frame(model);
           onGraphTargetsChanged?.(painter.getGraphTargets());
@@ -268,6 +275,43 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       reader.readAsArrayBuffer(file);
     });
   }
+
+  function newProject() {
+    const next = starterModel();
+    painter.prepare(next);
+    scene.remove(model);
+    model = next;
+    modelSource = { kind: 'starter' };
+    scene.add(model);
+    frame(model);
+    onGraphTargetsChanged?.(painter.getGraphTargets());
+  }
+
+  function exportProjectData() {
+    return { model: modelSource, textures: painter.exportProjectTextures(),
+      view: { camera: camera.position.toArray(), target: controls.target.toArray(),
+        lighting: currentLightingMode, grid: grid.visible } };
+  }
+
+  async function restoreProjectData(saved) {
+    if (saved.model.kind === 'starter') newProject();
+    else {
+      const file = new File([base64ToBytes(saved.model.data)], saved.model.name || 'model.glb',
+        { type: 'model/gltf-binary' });
+      await importGlb(file);
+    }
+    await painter.restoreProjectTextures(saved.textures);
+    if (Array.isArray(saved.view?.camera) && saved.view.camera.length === 3 &&
+        saved.view.camera.every(Number.isFinite) && Array.isArray(saved.view?.target) &&
+        saved.view.target.length === 3 && saved.view.target.every(Number.isFinite)) {
+      camera.position.fromArray(saved.view.camera);
+      controls.target.fromArray(saved.view.target);
+      controls.update();
+    }
+    onGraphTargetsChanged?.(painter.getGraphTargets());
+  }
+
+  let currentLightingMode = 'shaded';
 
   function resize() {
     const width = host.clientWidth;
@@ -285,9 +329,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
 
   return {
     importGlb,
+    newProject, exportProjectData, restoreProjectData,
     frame: () => frame(model),
     setGridVisible: (visible) => { grid.visible = visible; },
-    setLightingMode: painter.setLightingMode,
+    setLightingMode: (mode) => { currentLightingMode = mode; painter.setLightingMode(mode); },
     setTool: (tool) => {
       if (tool !== 'lasso' && lassoPath.length) {
         painter.cancelLasso(); lassoSourceHit = null; lassoPath = []; renderLassoPath();

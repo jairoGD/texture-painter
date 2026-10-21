@@ -1,7 +1,6 @@
 import { bakeImageToUv } from './image-projection.js';
 
 export const NODE_TYPES = {
-  paint: { title: 'Paint Texture', inputs: [], outputs: ['Color'], fixed: true },
   color: { title: 'Solid Color', inputs: [], outputs: ['Color'] },
   blend: { title: 'Mix', inputs: ['A', 'B'], outputs: ['Result'] },
   image: { title: 'Image', inputs: [], outputs: ['Color', 'Alpha'] },
@@ -27,11 +26,8 @@ const CANVAS_BLEND_MODES = {
 export function createTextureGraph() {
   return {
     version: 1,
-    nodes: [
-      { id: 'paint', type: 'paint', x: 100, y: 90 },
-      { id: 'output', type: 'output', x: 540, y: 90 }
-    ],
-    links: [{ from: 'paint', fromSocket: 'Color', to: 'output', toSocket: 'Color' }]
+    nodes: [{ id: 'output', type: 'output', x: 540, y: 90 }],
+    links: []
   };
 }
 
@@ -185,8 +181,9 @@ function blendCanvases(base, top, mode, factor, size) {
     const a = [pixels[offset] / 255, pixels[offset + 1] / 255, pixels[offset + 2] / 255];
     const b = [topPixels[offset] / 255, topPixels[offset + 1] / 255, topPixels[offset + 2] / 255];
     const blended = blendRgb(a, b, mode);
+    const amount = factor * topPixels[offset + 3] / 255;
     for (let channel = 0; channel < 3; channel++)
-      pixels[offset + channel] = (a[channel] + (blended[channel] - a[channel]) * factor) * 255;
+      pixels[offset + channel] = (a[channel] + (blended[channel] - a[channel]) * amount) * 255;
   }
   context.putImageData(basePixels, 0, 0);
   return result;
@@ -210,8 +207,7 @@ export function renderTextureGraph(surface) {
     if (!node) return null;
     visiting.add(id);
     let result = null;
-    if (node.type === 'paint') result = canvas;
-    else if (node.type === 'color') result = solidCanvas(size, node.color);
+    if (node.type === 'color') result = solidCanvas(size, node.color);
     else if (node.type === 'image') {
       const asset = surface.imageAssets?.get(node.imageKey);
       if (asset) {
@@ -240,7 +236,7 @@ export function renderTextureGraph(surface) {
     else if (node.type === 'blend') {
       const base = input(node, 'A') ?? solidCanvas(size, node.colorA);
       const top = input(node, 'B') ?? solidCanvas(size, node.colorB);
-      const factor = Math.max(0, Math.min(1, Number(node.factor) || 0));
+      const factor = node.layerVisible === false ? 0 : Math.max(0, Math.min(1, Number(node.factor) || 0));
       result = blendCanvases(base, top, node.mode, factor, size);
     } else if (node.type === 'output') result = input(node, 'Color');
     visiting.delete(id);

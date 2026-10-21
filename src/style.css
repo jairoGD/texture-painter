@@ -6,7 +6,7 @@ html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 .brand__name { color: #f0f5fa; font-size: 13px; font-weight: 800; letter-spacing: .15em; }
 .app-header__menu { margin-left: 14px; }
 .app-header__tag { margin-left: auto; color: #73808e; font-size: 10px; font-weight: 700; letter-spacing: .16em; }
-.workspace { display: grid; grid-template-columns: 270px minmax(0, 1fr); min-height: 0; }
+.workspace { display: grid; grid-template-columns: 270px minmax(0, 1fr) 270px; min-height: 0; }
 .editor-area { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
 .sidebar { display: flex; flex-direction: column; gap: 12px; padding: 14px; border-right: 1px solid #343b45; background: #1a1f25; overflow: auto; }
 .sidebar .ui-panel { display: flex; flex-direction: column; gap: 15px; }
@@ -24,11 +24,14 @@ html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 .status-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 12px; border-top: 1px solid #343b45; background: #1a1f25; color: #71808f; font-size: 10px; font-weight: 600; letter-spacing: .09em; }
 .status__message { color: #adbac8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status__message.is-error { color: #ff9ca3; }
-@media (max-width: 700px) {
-  .workspace { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
-  .sidebar { grid-row: 2; flex-direction: row; max-height: 230px; border-right: 0; border-top: 1px solid #343b45; }
+@media (max-width: 900px) {
+  .workspace { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 230px; }
+  .sidebar { grid-row: 2; grid-column: 1; flex-direction: row; border-right: 1px solid #343b45; border-top: 1px solid #343b45; }
   .sidebar .ui-panel { flex: 1 0 230px; }
-  .editor-area { grid-row: 1; }
+  .layers-sidebar { grid-row: 2; grid-column: 2; border-top: 1px solid #343b45; }
+  .editor-area { grid-row: 1; grid-column: 1 / -1; }
+}
+@media (max-width: 700px) {
   .app-header { gap: 8px; padding: 0 10px; }
   .brand__name { font-size: 10px; }
   .app-header__menu { margin-left: 0; }

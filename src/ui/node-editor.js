@@ -1,10 +1,11 @@
 import { addTextureNode, BLEND_MODES, cloneTextureGraph, connectTextureNodes, NODE_TYPES, removeTextureNode } from '../editor/texture-graph.js';
+import { readLayerStack } from '../editor/layer-graph.js';
 import { button, dropdown, element } from './index.js';
 import './node-editor.css';
 
 const NODE_WIDTH = 180;
 export function createNodeEditor({ targets = [], onChange, onCreateImage, onImportImage,
-  onPaintSourceChange, onError } = {}) {
+  onPaintSourceChange, onError, onStateChange } = {}) {
   let targetMap = new Map();
   let activeId = null;
   let graph = null;
@@ -20,7 +21,7 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
   const chevron = element('span', { className: 'node-editor__chevron', text: '▸', attributes: { 'aria-hidden': 'true' } });
   toggle.append(chevron);
   const header = element('div', { className: 'node-editor__header' }, [toggle,
-    element('span', { className: 'node-editor__hint', text: 'Paint texture → output' })]);
+    element('span', { className: 'node-editor__hint', text: 'Image layers → output' })]);
   const targetSelect = element('select', { className: 'node-editor__target',
     attributes: { 'aria-label': 'Active texture material' } });
   const undoButton = button({ label: 'Undo', variant: 'ghost', onClick: undo });
@@ -44,6 +45,42 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
   const root = element('section', { className: 'node-editor is-collapsed' }, [header, body]);
 
   function activeTarget() { return targetMap.get(activeId); }
+  function validPaintSource(target, id) {
+    return target.graph.nodes.some((node) => node.id === id && node.type === 'image' && node.imageKey);
+  }
+  function defaultPaintSource(target) {
+    return readLayerStack(target.graph).layers.find((layer) =>
+      validPaintSource(target, layer.source.id))?.source.id ?? null;
+  }
+  function ensurePaintSource(target) {
+    if (validPaintSource(target, target.paintSource)) return;
+    target.paintSource = defaultPaintSource(target);
+    onPaintSourceChange?.(target.id, target.paintSource);
+  }
+  function getState() {
+    return { targetId: activeId, graph: graph ? cloneTextureGraph(graph) : null,
+      paintSource: activeTarget()?.paintSource ?? null,
+      targets: [...targetMap.values()].map(({ id, label }) => ({ id, label })) };
+  }
+  function notifyState() { onStateChange?.(getState()); }
+  function getProjectState() {
+    const targets = [...targetMap.values()];
+    return { activeIndex: Math.max(0, targets.findIndex((target) => target.id === activeId)),
+      paintSources: targets.map((target) => target.paintSource), expanded };
+  }
+  function restoreProjectState(saved = {}) {
+    const targets = [...targetMap.values()];
+    targets.forEach((target, index) => {
+      const source = saved.paintSources?.[index];
+      target.paintSource = validPaintSource(target, source) ? source : defaultPaintSource(target);
+      onPaintSourceChange?.(target.id, target.paintSource);
+    });
+    activeId = targets[saved.activeIndex]?.id ?? targets[0]?.id ?? null;
+    graph = activeTarget()?.graph ?? null;
+    targetSelect.value = activeId ?? '';
+    setExpanded(Boolean(saved.expanded));
+    renderGraph(); notifyState();
+  }
 
   function updateHistoryButtons() {
     undoButton.disabled = !activeTarget()?.history.length;
@@ -57,12 +94,8 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
     target.future = [];
     updateHistoryButtons();
     onChange?.(activeId, cloneTextureGraph(graph));
-    if (target.paintSource !== 'paint' && !graph.nodes.some((node) =>
-      node.id === target.paintSource && node.type === 'image' && node.imageKey)) {
-      target.paintSource = 'paint';
-      onPaintSourceChange?.(activeId, 'paint');
-      renderGraph();
-    }
+    ensurePaintSource(target);
+    notifyState();
   }
 
   function previewChange() { onChange?.(activeId, cloneTextureGraph(graph)); }
@@ -74,7 +107,8 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
     graph = target.graph = target.history.pop();
     selectedNode = null; selectedLink = -1;
     renderGraph(); previewChange();
-    if (activeTarget().paintSource !== 'paint') onPaintSourceChange?.(activeId, activeTarget().paintSource);
+    ensurePaintSource(target);
+    notifyState();
   }
 
   function redo() {
@@ -84,7 +118,8 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
     graph = target.graph = target.future.pop();
     selectedNode = null; selectedLink = -1;
     renderGraph(); previewChange();
-    if (activeTarget().paintSource !== 'paint') onPaintSourceChange?.(activeId, activeTarget().paintSource);
+    ensurePaintSource(target);
+    notifyState();
   }
 
   function selectTarget(id) {
@@ -95,21 +130,40 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
     selectedNode = null; selectedLink = -1; pendingLink = null;
     renderGraph();
     if (expanded) requestAnimationFrame(frameGraph);
+    notifyState();
   }
 
   function setTargets(next) {
     targetMap = new Map(next.map((target) => [target.id, {
       id: target.id, label: target.label, graph: cloneTextureGraph(target.graph),
-      paintSource: 'paint', history: [], future: []
+      paintSource: null, history: [], future: []
     }]));
     targetSelect.replaceChildren(...[...targetMap.values()].map((target) =>
       element('option', { text: target.label, attributes: { value: target.id } })));
     activeId = targetMap.keys().next().value ?? null;
     graph = activeTarget()?.graph ?? null;
+    for (const target of targetMap.values()) ensurePaintSource(target);
     selectedNode = null; selectedLink = -1; pendingLink = null;
     renderGraph();
     if (expanded) requestAnimationFrame(frameGraph);
+    notifyState();
   }
+
+  function replaceGraph(nextGraph) {
+    if (!activeTarget() || !nextGraph) return;
+    const before = cloneTextureGraph(graph);
+    graph = activeTarget().graph = cloneTextureGraph(nextGraph);
+    renderGraph(); changed(before);
+    if (expanded) requestAnimationFrame(frameGraph);
+  }
+
+  function previewGraph(mutator) {
+    if (!graph) return;
+    mutator(graph);
+    renderGraph(); previewChange();
+  }
+
+  function finishGraphChange(before) { changed(before); }
 
   function addNode(type) {
     if (!graph) return;
@@ -278,6 +332,7 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
     if (!onPaintSourceChange?.(activeId, nodeId)) return;
     activeTarget().paintSource = nodeId;
     renderGraph();
+    notifyState();
   }
 
   function assignImage(node, asset) {
@@ -362,11 +417,6 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
         rootNode.append(socketRow('in', socket, color));
       }
     }
-    if (node.type === 'paint') {
-      const active = activeTarget()?.paintSource === 'paint';
-      rootNode.append(button({ label: active ? 'Painting here' : 'Paint here', variant: 'ghost',
-        disabled: active, onClick: () => choosePaintSource('paint') }));
-    }
     if (node.type === 'image') {
       rootNode.append(element('div', { className: 'node-editor__image-name',
         text: node.imageName || 'No image selected' }));
@@ -432,10 +482,6 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
   }
 
   function renderGraph() {
-    const target = activeTarget();
-    if (target && target.paintSource !== 'paint' && !graph?.nodes.some((node) =>
-      node.id === target.paintSource && node.type === 'image' && node.imageKey))
-      target.paintSource = 'paint';
     stage.replaceChildren(...(graph?.nodes ?? []).map(renderNode));
     updateSelection();
     updateHistoryButtons();
@@ -498,5 +544,6 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
     }
   });
   setTargets(targets);
-  return { element: root, setTargets, selectTarget, setExpanded };
+  return { element: root, setTargets, selectTarget, setExpanded, getState, getProjectState, restoreProjectState,
+    replaceGraph, previewGraph, finishGraphChange, choosePaintSource };
 }

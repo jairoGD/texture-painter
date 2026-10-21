@@ -1,0 +1,18 @@
+.project-home[hidden] { display: none; }
+.project-home { position: fixed; inset: 0; z-index: 100; overflow: auto; display: grid; place-items: center; padding: 24px; background: #111922; }
+.project-home__card { width: min(560px, 100%); padding: 30px; border: 1px solid #3b4c5e; border-radius: 14px; background: #1d2530; box-shadow: 0 24px 70px #0007; }
+.project-home__top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
+.project-home__top h1 { margin: 0; color: #eff6ff; font-size: 19px; font-weight: 800; letter-spacing: .08em; }
+.project-home__close[hidden] { display: none; }
+.project-home__choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.project-home__choices .ui-button { min-height: 62px; font-size: 15px; }
+.project-home__recent-head { margin: 29px 0 10px; }
+.project-home__recent-head h2 { margin: 0; color: #becad7; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; }
+.project-home__recent-list { display: grid; gap: 6px; max-height: 260px; overflow: auto; }
+.project-home__recent-row { display: flex; align-items: center; gap: 5px; }
+.project-home__recent { justify-content: space-between; width: 100%; border: 1px solid #364657; background: #202b36; }
+.project-home__recent-date { margin-left: auto; color: #899bad; font-size: 11px; font-weight: 400; }
+.project-home__empty { margin: 0; padding: 15px; border: 1px dashed #425367; border-radius: 7px; color: #8195a8; font-size: 12px; }
+.project-home__message { margin: 12px 0 0; color: #ffaaaa; font-size: 12px; }
+.project-home__message:empty { display: none; }
+@media (max-width: 520px) { .project-home { padding: 12px; } .project-home__card { padding: 20px; } .project-home__choices { grid-template-columns: 1fr; } }

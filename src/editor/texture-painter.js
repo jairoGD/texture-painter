@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { executePaintCommand, samplePaintColor } from './paint-operations.js';
 import { containsSelection, selectionFromMask, shiftedSelection } from './lasso-selection.js';
 import { cloneTextureGraph, createTextureGraph, renderTextureGraph } from './texture-graph.js';
+import { addGraphLayer, readLayerStack } from './layer-graph.js';
 
 const SIZE = 1024;
 
@@ -42,7 +43,7 @@ export function createTexturePainter() {
     const surface = { canvas, context, compositeCanvas, compositeContext, texture, shaded, unlit,
       overlayCanvas, overlayContext, overlayTexture, overlayMaterial, graph: createTextureGraph(),
       imageAssets: new Map(), imageCache: new Map(), compositeFrame: null };
-    surface.activePaint = surface;
+    surface.activePaint = null;
     surface.resetPaint = () => {
       context.fillStyle = '#ffffff';
       context.fillRect(0, 0, SIZE, SIZE);
@@ -107,7 +108,16 @@ export function createTexturePainter() {
       record.overlay.renderOrder = 2;
       record.overlay.raycast = () => {};
       mesh.add(record.overlay);
-      surfaces.set(mesh, record); setMeshMaterial(record);
+      surfaces.set(mesh, record);
+      for (const surface of record.slots) {
+        const layer = addGraphLayer(surface.graph, 'image');
+        const asset = createImage(surface.id, layer.source.id, surface.canvas, 'Layer 1');
+        layer.source.imageKey = asset.key;
+        layer.source.imageName = asset.name;
+        surface.activePaint = surface.imageAssets.get(asset.key).paintSurface;
+        surface.refreshComposite();
+      }
+      setMeshMaterial(record);
     }
     return meshes.length;
   }
@@ -337,9 +347,9 @@ export function createTexturePainter() {
       .find((item) => item.id === targetId);
   }
 
-  function createImage(targetId, nodeId, source = null, name = 'Untitled image') {
+  function createImage(targetId, nodeId, source = null, name = 'Untitled image', savedKey = null) {
     const parent = findSurface(targetId);
-    if (!parent || !parent.graph.nodes.some((node) => node.id === nodeId && node.type === 'image')) return null;
+    if (!parent) return null;
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = SIZE;
     const context = canvas.getContext('2d');
@@ -347,7 +357,7 @@ export function createTexturePainter() {
     const initial = document.createElement('canvas');
     initial.width = initial.height = SIZE;
     initial.getContext('2d').drawImage(canvas, 0, 0);
-    const key = `${nodeId}:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`;
+    const key = savedKey ?? `${nodeId}:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`;
     const asset = { key, name, canvas, revision: 0 };
     const paintSurface = { id: parent.id, label: parent.label, canvas, context,
       compositeContext: parent.compositeContext, overlayContext: parent.overlayContext,
@@ -368,8 +378,8 @@ export function createTexturePainter() {
     const parent = findSurface(targetId);
     if (!parent) return false;
     const node = parent.graph.nodes.find((item) => item.id === nodeId && item.type === 'image');
-    const next = node ? parent.imageAssets.get(node.imageKey)?.paintSurface : parent;
-    if (!next) return false;
+    const next = nodeId === null ? null : node && parent.imageAssets.get(node.imageKey)?.paintSurface;
+    if (nodeId !== null && !next) return false;
     if (selection) { selection = null; renderOverlay(null); }
     parent.activePaint = next;
     return true;
@@ -380,13 +390,50 @@ export function createTexturePainter() {
     if (!surface) return false;
     surface.graph = cloneTextureGraph(graph);
     surface.imageCache.clear();
-    if (surface.activePaint !== surface && !surface.graph.nodes.some((node) =>
+    if (surface.activePaint && !surface.graph.nodes.some((node) =>
       node.type === 'image' && surface.imageAssets.get(node.imageKey)?.paintSurface === surface.activePaint)) {
       if (selection?.surface === surface.activePaint) { selection = null; renderOverlay(null); }
-      surface.activePaint = surface;
+      const next = readLayerStack(surface.graph).layers[0]?.source;
+      surface.activePaint = next ? surface.imageAssets.get(next.imageKey)?.paintSurface ?? null : null;
     }
     surface.refreshComposite();
     return true;
+  }
+
+  function exportProjectTextures() {
+    return [...surfaces.values()].flatMap((record) => record.slots.map((surface) => ({
+      graph: cloneTextureGraph(surface.graph),
+      images: [...new Set(surface.graph.nodes.filter((node) => node.type === 'image')
+        .map((node) => node.imageKey).filter(Boolean))].map((key) => {
+        const asset = surface.imageAssets.get(key);
+        if (!asset) throw new Error('A graph image is missing from the project.');
+        return { key, name: asset.name, data: asset.canvas.toDataURL('image/png') };
+      })
+    })));
+  }
+
+  async function restoreProjectTextures(textures) {
+    const slots = [...surfaces.values()].flatMap((record) => record.slots);
+    if (textures.length !== slots.length) throw new Error('Project textures do not match the model.');
+    const loadImage = async (data) => {
+      if (typeof data !== 'string' || !data.startsWith('data:image/'))
+        throw new Error('The project contains an invalid image.');
+      const image = new Image();
+      image.src = data;
+      await image.decode();
+      return image;
+    };
+    for (const [index, saved] of textures.entries()) {
+      const surface = slots[index];
+      surface.imageAssets.clear();
+      surface.imageCache.clear();
+      surface.activePaint = null;
+      for (const asset of saved.images ?? []) {
+        const image = await loadImage(asset.data);
+        createImage(surface.id, asset.key.split(':')[0], image, asset.name, asset.key);
+      }
+      setGraph(surface.id, saved.graph);
+    }
   }
 
   return { prepare, clear, paint, fill, sample, beginLine, updateLine, commitLine, cancelLine,
@@ -395,5 +442,6 @@ export function createTexturePainter() {
     beginStroke, endStroke, undo, redo, canUndo: () => undoStack.length > 0,
     canRedo: () => redoStack.length > 0, setLightingMode, getMeshes: () => [...surfaces.keys()],
     getGraphTargets: graphTargets, setGraph, createImage, setPaintSource,
+    exportProjectTextures, restoreProjectTextures,
     targetIdAt: (hit) => surfaceAt(hit)?.id ?? null };
 }

@@ -43,6 +43,14 @@ export function colorPalette({ color = '#000000', secondaryColor = '#ffffff', on
     updateColors();
     onChange?.(foreground);
   }
+  function getState() { return { foreground, background, savedColors: [...savedColors] }; }
+  function loadState(state = {}) {
+    background = /^#[0-9a-f]{6}$/i.test(state.background) ? state.background.toLowerCase() : '#ffffff';
+    savedColors.splice(0, savedColors.length, ...Array.from({ length: 12 }, (_, index) =>
+      /^#[0-9a-f]{6}$/i.test(state.savedColors?.[index]) ? state.savedColors[index].toLowerCase() : null));
+    renderSaved();
+    setColor(state.foreground || '#000000');
+  }
 
   function renderSaved() {
     saved.replaceChildren(...savedColors.map((slotColor, index) => {
@@ -96,5 +104,5 @@ export function colorPalette({ color = '#000000', secondaryColor = '#ffffff', on
   const root = panel({ title: 'Color', className: 'color-palette', children: [top, presets, saved] });
   renderSaved();
   updateColors();
-  return { element: root, setColor, getColor: () => foreground };
+  return { element: root, setColor, getColor: () => foreground, getState, loadState };
 }
