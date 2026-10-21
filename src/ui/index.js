@@ -66,27 +66,59 @@ export function dropdown({ label, items }) {
   trigger.setAttribute('aria-expanded', 'false');
   const menu = element('div', { className: 'ui-dropdown__menu', attributes: { role: 'menu' } },
     items.map((item) => {
+      if (item.type === 'separator') return element('hr', { className: 'ui-dropdown__separator', attributes: { role: 'separator' } });
       const option = button({ label: item.label, icon: item.icon, variant: 'menu-item', onClick: () => {
-        close();
         item.onSelect();
+        refresh();
+        if (!item.keepOpen) close();
       } });
-      option.setAttribute('role', 'menuitem');
+      option.setAttribute('role', item.type === 'radio' ? 'menuitemradio' : item.type === 'checkbox' ? 'menuitemcheckbox' : 'menuitem');
+      if (item.type === 'radio' || item.type === 'checkbox') {
+        option.prepend(element('span', { className: 'ui-dropdown__check', text: '✓', attributes: { 'aria-hidden': 'true' } }));
+      }
+      option._menuItem = item;
       return option;
     })
   );
   const root = element('div', { className: 'ui-dropdown' }, [trigger, menu]);
+  const refresh = () => {
+    for (const option of menu.children) {
+      const item = option._menuItem;
+      if (item?.getChecked) option.setAttribute('aria-checked', String(item.getChecked()));
+    }
+  };
   const close = () => {
     root.classList.remove('is-open');
     trigger.setAttribute('aria-expanded', 'false');
   };
   trigger.addEventListener('click', () => {
     const wasOpen = root.classList.contains('is-open');
-    document.querySelectorAll('.ui-dropdown.is-open').forEach((node) => node.classList.remove('is-open'));
+    document.querySelectorAll('.ui-dropdown.is-open').forEach((node) => {
+      node.classList.remove('is-open');
+      node.querySelector('[aria-haspopup="menu"]')?.setAttribute('aria-expanded', 'false');
+    });
+    refresh();
     root.classList.toggle('is-open', !wasOpen);
     trigger.setAttribute('aria-expanded', String(!wasOpen));
   });
   document.addEventListener('pointerdown', (event) => { if (!root.contains(event.target)) close(); });
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape') close(); });
+  return root;
+}
+
+export function toolGroup({ items, active, onChange }) {
+  const buttons = new Map();
+  const root = element('div', { className: 'ui-tool-group', attributes: { role: 'group', 'aria-label': 'Tools' } });
+  const select = (value) => {
+    for (const [key, node] of buttons) node.setAttribute('aria-pressed', String(key === value));
+    onChange?.(value);
+  };
+  for (const item of items) {
+    const node = button({ label: item.label, icon: item.icon, variant: 'tool', onClick: () => select(item.value) });
+    node.setAttribute('aria-pressed', String(item.value === active));
+    buttons.set(item.value, node);
+    root.append(node);
+  }
   return root;
 }
 
@@ -102,6 +134,7 @@ const controlTypes = new Map([
   ['button', button],
   ['slider', slider],
   ['checkbox', checkbox],
+  ['toolGroup', toolGroup],
   ['notice', notice]
 ]);
 

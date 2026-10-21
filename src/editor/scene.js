@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { createTexturePainter } from './texture-painter.js';
 
 export function createScene(host) {
   const scene = new THREE.Scene();
@@ -17,7 +18,7 @@ export function createScene(host) {
   host.append(renderer.domElement);
 
   const controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
+  controls.enableDamping = false;
   controls.target.set(0, 0.65, 0);
   controls.update();
 
@@ -42,6 +43,51 @@ export function createScene(host) {
 
   let model = defaultModel;
   const loader = new GLTFLoader();
+  const painter = createTexturePainter();
+  painter.prepare(defaultModel);
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
+  let activePointer = null;
+  let previousHit = null;
+  let activeTool = 'brush';
+
+  function hitTest(event) {
+    const rect = renderer.domElement.getBoundingClientRect();
+    pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    return raycaster.intersectObjects(painter.getMeshes(), false).find((hit) => hit.uv);
+  }
+
+  function paintAt(event) {
+    const hit = hitTest(event);
+    previousHit = hit ? painter.paint(hit, activeTool, previousHit) : null;
+  }
+
+  renderer.domElement.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || event.altKey) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    activePointer = event.pointerId;
+    previousHit = null;
+    renderer.domElement.setPointerCapture(event.pointerId);
+    paintAt(event);
+  }, true);
+  renderer.domElement.addEventListener('pointermove', (event) => {
+    if (event.pointerId !== activePointer) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    paintAt(event);
+  }, true);
+  function endStroke(event) {
+    if (event.pointerId !== activePointer) return;
+    event.stopImmediatePropagation();
+    activePointer = null;
+    previousHit = null;
+    if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
+  }
+  renderer.domElement.addEventListener('pointerup', endStroke, true);
+  renderer.domElement.addEventListener('pointercancel', endStroke, true);
 
   function frame(object) {
     const bounds = new THREE.Box3().setFromObject(object);
@@ -66,11 +112,14 @@ export function createScene(host) {
         loader.parse(reader.result, '', (gltf) => {
           const next = gltf.scene;
           if (!next.children.length) return reject(new Error('The GLB contains no visible scene.'));
+          let paintableMeshes;
+          try { paintableMeshes = painter.prepare(next); }
+          catch (error) { return reject(error); }
           scene.remove(model);
           model = next;
           scene.add(model);
           frame(model);
-          resolve(next);
+          resolve({ model: next, paintableMeshes });
         }, reject);
       };
       reader.readAsArrayBuffer(file);
@@ -93,6 +142,7 @@ export function createScene(host) {
     importGlb,
     frame: () => frame(model),
     setGridVisible: (visible) => { grid.visible = visible; },
-    setExposure: (value) => { renderer.toneMappingExposure = value; }
+    setLightingMode: painter.setLightingMode,
+    setTool: (tool) => { activeTool = tool; }
   };
 }

@@ -25,12 +25,18 @@ button { cursor: pointer; }
 .ui-button--menu { background: transparent; border-color: transparent; font-size: 13px; font-weight: 500; }
 .ui-button--menu:hover, .ui-dropdown.is-open .ui-button--menu { background: #293039; }
 .ui-button--menu-item { width: 100%; justify-content: flex-start; border: 0; border-radius: 5px; background: transparent; }
+.ui-button--tool { width: 100%; justify-content: flex-start; min-height: 41px; background: #292f38; }
+.ui-button--tool[aria-pressed="true"] { border-color: #b9e875; background: #34402f; color: #d7f5aa; }
 .ui-icon { font-size: 15px; line-height: 1; }
 
 .ui-dropdown { position: relative; }
 .ui-dropdown__menu { display: none; position: absolute; z-index: 20; top: calc(100% + 7px); left: 0; min-width: 180px; padding: 5px; border: 1px solid #3a424c; border-radius: 9px; background: #252b33; box-shadow: 0 16px 35px #0008; }
 .ui-dropdown.is-open .ui-dropdown__menu { display: block; }
+.ui-dropdown__check { width: 13px; color: #c4ee73; opacity: 0; }
+[aria-checked="true"] > .ui-dropdown__check { opacity: 1; }
+.ui-dropdown__separator { height: 1px; margin: 5px 6px; border: 0; background: #3a424c; }
 .ui-toolbar { display: flex; align-items: center; gap: 7px; }
+.ui-tool-group { display: grid; gap: 8px; }
 .ui-panel { border: 1px solid #353c46; border-radius: 11px; background: #20252c; padding: 16px; }
 .ui-panel__heading { margin-bottom: 16px; }
 .ui-panel__heading h2 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: #b5bfcb; }
