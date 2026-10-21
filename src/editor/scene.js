@@ -175,7 +175,9 @@ export function createScene(host, { onColorPicked, onSelectionChanged } = {}) {
       else {
         painter.cancelLasso();
         lassoSourceHit = null; lassoPath = []; renderLassoPath();
-        onSelectionChanged?.(hitTest(event) ? 'Hold and drag to draw a lasso' : 'Start the lasso on the model');
+        const cleared = painter.clearSelection();
+        onSelectionChanged?.(cleared ? 'Selection cleared' :
+          hitTest(event) ? 'Hold and drag to draw a lasso' : 'Start the lasso on the model');
       }
     } else if (pointerAction === 'moveSelection') {
       if (event.type === 'pointercancel') painter.cancelMove();
