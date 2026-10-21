@@ -1,8 +1,24 @@
 export const NODE_TYPES = {
   paint: { title: 'Paint Texture', inputs: [], outputs: ['Color'], fixed: true },
   color: { title: 'Solid Color', inputs: [], outputs: ['Color'] },
-  blend: { title: 'Mix', inputs: ['Base', 'Top'], outputs: ['Color'] },
+  blend: { title: 'Mix', inputs: ['A', 'B'], outputs: ['Result'] },
   output: { title: 'Texture Output', inputs: ['Color'], outputs: [], fixed: true }
+};
+
+export const BLEND_MODES = [
+  ['mix', 'Mix'], ['darken', 'Darken'], ['multiply', 'Multiply'], ['colorBurn', 'Color Burn'],
+  ['lighten', 'Lighten'], ['screen', 'Screen'], ['colorDodge', 'Color Dodge'], ['add', 'Add'],
+  ['overlay', 'Overlay'], ['softLight', 'Soft Light'], ['linearLight', 'Linear Light'],
+  ['difference', 'Difference'], ['exclusion', 'Exclusion'], ['subtract', 'Subtract'],
+  ['divide', 'Divide'], ['hue', 'Hue'], ['saturation', 'Saturation'], ['color', 'Color'],
+  ['value', 'Value']
+];
+
+const CANVAS_BLEND_MODES = {
+  darken: 'darken', multiply: 'multiply', colorBurn: 'color-burn',
+  lighten: 'lighten', screen: 'screen', colorDodge: 'color-dodge', add: 'lighter',
+  overlay: 'overlay', softLight: 'soft-light', difference: 'difference',
+  exclusion: 'exclusion', hue: 'hue', saturation: 'saturation', color: 'color'
 };
 
 export function createTextureGraph() {
@@ -27,7 +43,9 @@ export function addTextureNode(graph, type, position) {
     type, x: Math.round(position.x), y: Math.round(position.y)
   };
   if (type === 'color') node.color = '#2f80ed';
-  if (type === 'blend') node.opacity = 50;
+  if (type === 'blend') Object.assign(node, {
+    mode: 'mix', factor: 0.5, colorA: '#ffffff', colorB: '#2f80ed'
+  });
   graph.nodes.push(node);
   return node;
 }
@@ -68,6 +86,105 @@ function newCanvas(size) {
   return canvas;
 }
 
+function solidCanvas(size, color) {
+  const canvas = newCanvas(size);
+  const context = canvas.getContext('2d');
+  context.fillStyle = /^#[0-9a-f]{6}$/i.test(color) ? color : '#ffffff';
+  context.fillRect(0, 0, size, size);
+  return canvas;
+}
+
+function rgbToHsv([r, g, b]) {
+  const maximum = Math.max(r, g, b);
+  const minimum = Math.min(r, g, b);
+  const delta = maximum - minimum;
+  let hue = 0;
+  if (delta) {
+    if (maximum === r) hue = ((g - b) / delta) % 6;
+    else if (maximum === g) hue = (b - r) / delta + 2;
+    else hue = (r - g) / delta + 4;
+    hue = (hue / 6 + 1) % 1;
+  }
+  return [hue, maximum ? delta / maximum : 0, maximum];
+}
+
+function hsvToRgb([h, s, v]) {
+  const sector = h * 6;
+  const chroma = v * s;
+  const second = chroma * (1 - Math.abs(sector % 2 - 1));
+  const offset = v - chroma;
+  const colors = sector < 1 ? [chroma, second, 0] : sector < 2 ? [second, chroma, 0] :
+    sector < 3 ? [0, chroma, second] : sector < 4 ? [0, second, chroma] :
+      sector < 5 ? [second, 0, chroma] : [chroma, 0, second];
+  return colors.map((channel) => channel + offset);
+}
+
+export function blendRgb(a, b, mode) {
+  if (['hue', 'saturation', 'color', 'value'].includes(mode)) {
+    const base = rgbToHsv(a);
+    const top = rgbToHsv(b);
+    if (mode === 'hue' || mode === 'color') base[0] = top[0];
+    if (mode === 'saturation' || mode === 'color') base[1] = top[1];
+    if (mode === 'value') base[2] = top[2];
+    return hsvToRgb(base);
+  }
+  return a.map((base, index) => {
+    const top = b[index];
+    switch (mode) {
+      case 'darken': return Math.min(base, top);
+      case 'multiply': return base * top;
+      case 'colorBurn': return top === 0 ? 0 : 1 - Math.min(1, (1 - base) / top);
+      case 'lighten': return Math.max(base, top);
+      case 'screen': return 1 - (1 - base) * (1 - top);
+      case 'colorDodge': return top === 1 ? 1 : Math.min(1, base / (1 - top));
+      case 'add': return Math.min(1, base + top);
+      case 'overlay': return base < 0.5 ? 2 * base * top : 1 - 2 * (1 - base) * (1 - top);
+      case 'softLight': return top < 0.5 ? base - (1 - 2 * top) * base * (1 - base) :
+        base + (2 * top - 1) * ((base <= 0.25 ? ((16 * base - 12) * base + 4) * base : Math.sqrt(base)) - base);
+      case 'linearLight': return Math.max(0, Math.min(1, base + 2 * top - 1));
+      case 'difference': return Math.abs(base - top);
+      case 'exclusion': return base + top - 2 * base * top;
+      case 'subtract': return Math.max(0, base - top);
+      case 'divide': return top === 0 ? 1 : Math.min(1, base / top);
+      default: return top;
+    }
+  });
+}
+
+function blendCanvases(base, top, mode, factor, size) {
+  const result = newCanvas(size);
+  const context = result.getContext('2d');
+  context.drawImage(base, 0, 0);
+  if (factor <= 0) return result;
+  if (mode === 'mix') {
+    context.globalAlpha = factor;
+    context.drawImage(top, 0, 0);
+    return result;
+  }
+  if (CANVAS_BLEND_MODES[mode]) {
+    const blended = newCanvas(size);
+    const blendContext = blended.getContext('2d');
+    blendContext.drawImage(base, 0, 0);
+    blendContext.globalCompositeOperation = CANVAS_BLEND_MODES[mode];
+    blendContext.drawImage(top, 0, 0);
+    context.globalAlpha = factor;
+    context.drawImage(blended, 0, 0);
+    return result;
+  }
+  const basePixels = context.getImageData(0, 0, size, size);
+  const topPixels = top.getContext('2d').getImageData(0, 0, size, size).data;
+  const pixels = basePixels.data;
+  for (let offset = 0; offset < pixels.length; offset += 4) {
+    const a = [pixels[offset] / 255, pixels[offset + 1] / 255, pixels[offset + 2] / 255];
+    const b = [topPixels[offset] / 255, topPixels[offset + 1] / 255, topPixels[offset + 2] / 255];
+    const blended = blendRgb(a, b, mode);
+    for (let channel = 0; channel < 3; channel++)
+      pixels[offset + channel] = (a[channel] + (blended[channel] - a[channel]) * factor) * 255;
+  }
+  context.putImageData(basePixels, 0, 0);
+  return result;
+}
+
 export function renderTextureGraph(surface) {
   const { graph, canvas, compositeCanvas, compositeContext } = surface;
   const size = canvas.width;
@@ -86,21 +203,12 @@ export function renderTextureGraph(surface) {
     visiting.add(id);
     let result = null;
     if (node.type === 'paint') result = canvas;
-    else if (node.type === 'color') {
-      result = newCanvas(size);
-      const context = result.getContext('2d');
-      context.fillStyle = /^#[0-9a-f]{6}$/i.test(node.color) ? node.color : '#ffffff';
-      context.fillRect(0, 0, size, size);
-    } else if (node.type === 'blend') {
-      result = newCanvas(size);
-      const context = result.getContext('2d');
-      const base = input(node, 'Base');
-      const top = input(node, 'Top');
-      if (base) context.drawImage(base, 0, 0);
-      if (top) {
-        context.globalAlpha = Math.max(0, Math.min(100, Number(node.opacity) || 0)) / 100;
-        context.drawImage(top, 0, 0);
-      }
+    else if (node.type === 'color') result = solidCanvas(size, node.color);
+    else if (node.type === 'blend') {
+      const base = input(node, 'A') ?? solidCanvas(size, node.colorA);
+      const top = input(node, 'B') ?? solidCanvas(size, node.colorB);
+      const factor = Math.max(0, Math.min(1, Number(node.factor) || 0));
+      result = blendCanvases(base, top, node.mode, factor, size);
     } else if (node.type === 'output') result = input(node, 'Color');
     visiting.delete(id);
     cache.set(id, result);

@@ -1,26 +1,8 @@
-import { addTextureNode, cloneTextureGraph, connectTextureNodes, NODE_TYPES, removeTextureNode } from '../editor/texture-graph.js';
+import { addTextureNode, BLEND_MODES, cloneTextureGraph, connectTextureNodes, NODE_TYPES, removeTextureNode } from '../editor/texture-graph.js';
 import { button, dropdown, element } from './index.js';
 import './node-editor.css';
 
 const NODE_WIDTH = 180;
-const HEADER_HEIGHT = 29;
-const ROW_HEIGHT = 30;
-const BODY_PADDING = 9;
-
-function nodeHeight(node) {
-  const definition = NODE_TYPES[node.type];
-  return HEADER_HEIGHT + BODY_PADDING * 2 +
-    (definition.inputs.length + definition.outputs.length) * ROW_HEIGHT +
-    (node.type === 'color' ? 40 : node.type === 'blend' ? 52 : 0);
-}
-
-function socketY(node, socket, side) {
-  const definition = NODE_TYPES[node.type];
-  const index = side === 'in' ? definition.inputs.indexOf(socket) :
-    definition.inputs.length + definition.outputs.indexOf(socket);
-  return node.y + HEADER_HEIGHT + BODY_PADDING + (index + .5) * ROW_HEIGHT;
-}
-
 export function createNodeEditor({ targets = [], onChange } = {}) {
   let targetMap = new Map();
   let activeId = null;
@@ -126,6 +108,7 @@ export function createNodeEditor({ targets = [], onChange } = {}) {
     if (!node) return;
     selectedNode = node.id; selectedLink = -1;
     renderGraph(); changed(before);
+    requestAnimationFrame(frameGraph);
   }
 
   function deleteSelection() {
@@ -142,7 +125,6 @@ export function createNodeEditor({ targets = [], onChange } = {}) {
     const rect = canvas.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   }
-  function worldToScreen(x, y) { return { x: x * view.scale + view.x, y: y * view.scale + view.y }; }
   function applyView() {
     stage.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
     canvas.style.backgroundPosition = `${view.x}px ${view.y}px`;
@@ -155,7 +137,7 @@ export function createNodeEditor({ targets = [], onChange } = {}) {
     const minX = Math.min(...graph.nodes.map((node) => node.x));
     const minY = Math.min(...graph.nodes.map((node) => node.y));
     const maxX = Math.max(...graph.nodes.map((node) => node.x + NODE_WIDTH));
-    const maxY = Math.max(...graph.nodes.map((node) => node.y + nodeHeight(node)));
+    const maxY = Math.max(...graph.nodes.map((node, index) => node.y + (stage.children[index]?.offsetHeight ?? 80)));
     const width = maxX - minX;
     const height = maxY - minY;
     view.scale = Math.min(1.25, Math.max(.35, Math.min(
@@ -171,7 +153,14 @@ export function createNodeEditor({ targets = [], onChange } = {}) {
   }
 
   function socketPoint(node, socket, side) {
-    return worldToScreen(node.x + (side === 'out' ? NODE_WIDTH : 0), socketY(node, socket, side));
+    const nodeElement = [...stage.children].find((item) => item.dataset.nodeId === node.id);
+    const pin = [...(nodeElement?.querySelectorAll('.node-editor__socket') ?? [])]
+      .find((item) => item.dataset.socket === socket && item.dataset.socketSide === side);
+    if (!pin) return null;
+    const bounds = pin.getBoundingClientRect();
+    const origin = canvas.getBoundingClientRect();
+    return { x: bounds.left + bounds.width / 2 - origin.left,
+      y: bounds.top + bounds.height / 2 - origin.top };
   }
 
   function renderLinks() {
@@ -182,7 +171,10 @@ export function createNodeEditor({ targets = [], onChange } = {}) {
       const source = nodes.get(link.from);
       const target = nodes.get(link.to);
       if (!source || !target) return;
-      const path = curve(socketPoint(source, link.fromSocket, 'out'), socketPoint(target, link.toSocket, 'in'));
+      const from = socketPoint(source, link.fromSocket, 'out');
+      const to = socketPoint(target, link.toSocket, 'in');
+      if (!from || !to) return;
+      const path = curve(from, to);
       const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
       const visible = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       visible.setAttribute('d', path);
@@ -204,7 +196,9 @@ export function createNodeEditor({ targets = [], onChange } = {}) {
       const source = nodes.get(pendingLink.from);
       if (!source) return;
       const preview = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      preview.setAttribute('d', curve(socketPoint(source, pendingLink.fromSocket, 'out'), pendingLink.point));
+      const from = socketPoint(source, pendingLink.fromSocket, 'out');
+      if (!from) return;
+      preview.setAttribute('d', curve(from, pendingLink.point));
       preview.setAttribute('class', 'node-editor__wire is-pending');
       wires.append(preview);
     }
@@ -282,16 +276,19 @@ export function createNodeEditor({ targets = [], onChange } = {}) {
       if (event.target.closest('[data-socket-side], input')) return;
       selectedNode = node.id; selectedLink = -1; updateSelection();
     });
-    for (const [side, sockets] of [['in', definition.inputs], ['out', definition.outputs]]) {
-      for (const socket of sockets) {
-        const row = element('div', { className: `node-editor__row node-editor__row--${side}` });
-        const pin = element('button', { className: `node-editor__socket node-editor__socket--${side}`,
-          attributes: { type: 'button', 'data-node-id': node.id, 'data-socket': socket,
-            'data-socket-side': side, 'aria-label': `${definition.title} ${socket} ${side === 'in' ? 'input' : 'output'}` } });
-        if (side === 'out') pin.addEventListener('pointerdown', (event) => startLink(event, node, socket));
-        row.append(pin, element('span', { text: socket }));
-        rootNode.append(row);
-      }
+    const socketRow = (side, socket, extra = null) => {
+      const row = element('div', { className: `node-editor__row node-editor__row--${side}` });
+      const pin = element('button', { className: `node-editor__socket node-editor__socket--${side}`,
+        attributes: { type: 'button', 'data-node-id': node.id, 'data-socket': socket,
+          'data-socket-side': side, 'aria-label': `${definition.title} ${socket} ${side === 'in' ? 'input' : 'output'}` } });
+      if (side === 'out') pin.addEventListener('pointerdown', (event) => startLink(event, node, socket));
+      row.append(pin, element('span', { text: socket }));
+      if (extra) row.append(extra);
+      return row;
+    };
+    if (node.type !== 'blend') {
+      for (const socket of definition.inputs) rootNode.append(socketRow('in', socket));
+      for (const socket of definition.outputs) rootNode.append(socketRow('out', socket));
     }
     if (node.type === 'color') {
       let before = cloneTextureGraph(graph);
@@ -305,16 +302,39 @@ export function createNodeEditor({ targets = [], onChange } = {}) {
         [element('span', { text: 'Color' }), field]));
     }
     if (node.type === 'blend') {
-      let before = cloneTextureGraph(graph);
-      const value = element('output', { text: `${node.opacity}%` });
-      const field = element('input', { className: 'node-editor__range',
-        attributes: { type: 'range', min: 0, max: 100, value: node.opacity, 'aria-label': 'Mix opacity' },
+      rootNode.append(socketRow('out', 'Result'));
+      const mode = element('select', { className: 'node-editor__mode', attributes: { 'aria-label': 'Blending mode' } },
+        BLEND_MODES.map(([value, label]) => element('option', { text: label, attributes: { value } })));
+      mode.value = node.mode;
+      mode.addEventListener('change', () => {
+        const before = cloneTextureGraph(graph);
+        node.mode = mode.value;
+        changed(before);
+      });
+      rootNode.append(element('label', { className: 'node-editor__control' },
+        [element('span', { text: 'Mode' }), mode]));
+      let factorBefore = cloneTextureGraph(graph);
+      const value = element('output', { text: Number(node.factor).toFixed(2) });
+      const factor = element('input', { className: 'node-editor__range',
+        attributes: { type: 'range', min: 0, max: 1, step: 0.01, value: node.factor, 'aria-label': 'Mix factor' },
         on: {
-          input: (event) => { node.opacity = Number(event.target.value); value.value = `${node.opacity}%`; previewChange(); },
-          change: () => { changed(before); before = cloneTextureGraph(graph); }
+          input: (event) => { node.factor = Number(event.target.value); value.value = node.factor.toFixed(2); previewChange(); },
+          change: () => { changed(factorBefore); factorBefore = cloneTextureGraph(graph); }
         } });
       rootNode.append(element('label', { className: 'node-editor__control node-editor__control--range' },
-        [element('span', { text: 'Opacity' }), value, field]));
+        [element('span', { text: 'Factor' }), value, factor]));
+      for (const socket of definition.inputs) {
+        let colorBefore = cloneTextureGraph(graph);
+        const key = socket === 'A' ? 'colorA' : 'colorB';
+        const color = element('input', { className: 'node-editor__color',
+          attributes: { type: 'color', value: node[key], 'aria-label': `Mix ${socket} fallback color` },
+          on: {
+            input: (event) => { node[key] = event.target.value; previewChange(); },
+            change: () => { changed(colorBefore); colorBefore = cloneTextureGraph(graph); }
+          } });
+        color.disabled = graph.links.some((link) => link.to === node.id && link.toSocket === socket);
+        rootNode.append(socketRow('in', socket, color));
+      }
     }
     return rootNode;
   }
