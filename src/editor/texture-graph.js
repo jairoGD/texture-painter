@@ -1,7 +1,10 @@
+import { bakeImageToUv } from './image-projection.js';
+
 export const NODE_TYPES = {
   paint: { title: 'Paint Texture', inputs: [], outputs: ['Color'], fixed: true },
   color: { title: 'Solid Color', inputs: [], outputs: ['Color'] },
   blend: { title: 'Mix', inputs: ['A', 'B'], outputs: ['Result'] },
+  image: { title: 'Image', inputs: [], outputs: ['Color', 'Alpha'] },
   output: { title: 'Texture Output', inputs: ['Color'], outputs: [], fixed: true }
 };
 
@@ -45,6 +48,10 @@ export function addTextureNode(graph, type, position) {
   if (type === 'color') node.color = '#2f80ed';
   if (type === 'blend') Object.assign(node, {
     mode: 'mix', factor: 0.5, colorA: '#ffffff', colorB: '#2f80ed'
+  });
+  if (type === 'image') Object.assign(node, {
+    imageKey: null, imageName: '', interpolation: 'linear', projection: 'flat',
+    extension: 'repeat', scale: 1, offsetU: 0, offsetV: 0
   });
   graph.nodes.push(node);
   return node;
@@ -193,10 +200,11 @@ export function renderTextureGraph(surface) {
   const visiting = new Set();
   const input = (node, socket) => {
     const link = graph.links.find((item) => item.to === node.id && item.toSocket === socket);
-    return link ? evaluate(link.from) : null;
+    return link ? evaluate(link.from, link.fromSocket) : null;
   };
-  const evaluate = (id) => {
-    if (cache.has(id)) return cache.get(id);
+  const evaluate = (id, socket = 'Color') => {
+    const cacheKey = `${id}:${socket}`;
+    if (cache.has(cacheKey)) return cache.get(cacheKey);
     if (visiting.has(id)) return null;
     const node = nodes.get(id);
     if (!node) return null;
@@ -204,6 +212,31 @@ export function renderTextureGraph(surface) {
     let result = null;
     if (node.type === 'paint') result = canvas;
     else if (node.type === 'color') result = solidCanvas(size, node.color);
+    else if (node.type === 'image') {
+      const asset = surface.imageAssets?.get(node.imageKey);
+      if (asset) {
+        const settings = [node.interpolation, node.projection, node.extension, node.scale,
+          node.offsetU, node.offsetV].join(':');
+        const imageKey = `${node.id}:${node.imageKey}:${asset.revision}:${settings}`;
+        let image = surface.imageCache.get(imageKey);
+        if (!image) {
+          image = bakeImageToUv(surface, node, asset.canvas, size);
+          if (surface.imageCache.size >= 8) surface.imageCache.delete(surface.imageCache.keys().next().value);
+          surface.imageCache.set(imageKey, image);
+        }
+        if (socket === 'Alpha') {
+          result = newCanvas(size);
+          const context = result.getContext('2d');
+          const pixels = image.getContext('2d').getImageData(0, 0, size, size);
+          for (let offset = 0; offset < pixels.data.length; offset += 4) {
+            const alpha = pixels.data[offset + 3];
+            pixels.data[offset] = pixels.data[offset + 1] = pixels.data[offset + 2] = alpha;
+            pixels.data[offset + 3] = 255;
+          }
+          context.putImageData(pixels, 0, 0);
+        } else result = image;
+      }
+    }
     else if (node.type === 'blend') {
       const base = input(node, 'A') ?? solidCanvas(size, node.colorA);
       const top = input(node, 'B') ?? solidCanvas(size, node.colorB);
@@ -211,7 +244,7 @@ export function renderTextureGraph(surface) {
       result = blendCanvases(base, top, node.mode, factor, size);
     } else if (node.type === 'output') result = input(node, 'Color');
     visiting.delete(id);
-    cache.set(id, result);
+    cache.set(cacheKey, result);
     return result;
   };
   compositeContext.fillStyle = '#ffffff';

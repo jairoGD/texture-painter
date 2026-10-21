@@ -3,7 +3,8 @@ import { button, dropdown, element } from './index.js';
 import './node-editor.css';
 
 const NODE_WIDTH = 180;
-export function createNodeEditor({ targets = [], onChange } = {}) {
+export function createNodeEditor({ targets = [], onChange, onCreateImage, onImportImage,
+  onPaintSourceChange, onError } = {}) {
   let targetMap = new Map();
   let activeId = null;
   let graph = null;
@@ -27,7 +28,8 @@ export function createNodeEditor({ targets = [], onChange } = {}) {
   const frameButton = button({ label: 'Frame', variant: 'ghost', onClick: frameGraph });
   const addMenu = dropdown({ label: '+ Add Node', items: [
     { label: 'Solid Color', onSelect: () => addNode('color') },
-    { label: 'Mix', onSelect: () => addNode('blend') }
+    { label: 'Mix', onSelect: () => addNode('blend') },
+    { label: 'Image', onSelect: () => addNode('image') }
   ] });
   const toolbar = element('div', { className: 'node-editor__toolbar' }, [
     addMenu, frameButton, undoButton, redoButton,
@@ -55,6 +57,12 @@ export function createNodeEditor({ targets = [], onChange } = {}) {
     target.future = [];
     updateHistoryButtons();
     onChange?.(activeId, cloneTextureGraph(graph));
+    if (target.paintSource !== 'paint' && !graph.nodes.some((node) =>
+      node.id === target.paintSource && node.type === 'image' && node.imageKey)) {
+      target.paintSource = 'paint';
+      onPaintSourceChange?.(activeId, 'paint');
+      renderGraph();
+    }
   }
 
   function previewChange() { onChange?.(activeId, cloneTextureGraph(graph)); }
@@ -66,6 +74,7 @@ export function createNodeEditor({ targets = [], onChange } = {}) {
     graph = target.graph = target.history.pop();
     selectedNode = null; selectedLink = -1;
     renderGraph(); previewChange();
+    if (activeTarget().paintSource !== 'paint') onPaintSourceChange?.(activeId, activeTarget().paintSource);
   }
 
   function redo() {
@@ -75,6 +84,7 @@ export function createNodeEditor({ targets = [], onChange } = {}) {
     graph = target.graph = target.future.pop();
     selectedNode = null; selectedLink = -1;
     renderGraph(); previewChange();
+    if (activeTarget().paintSource !== 'paint') onPaintSourceChange?.(activeId, activeTarget().paintSource);
   }
 
   function selectTarget(id) {
@@ -89,7 +99,8 @@ export function createNodeEditor({ targets = [], onChange } = {}) {
 
   function setTargets(next) {
     targetMap = new Map(next.map((target) => [target.id, {
-      id: target.id, label: target.label, graph: cloneTextureGraph(target.graph), history: [], future: []
+      id: target.id, label: target.label, graph: cloneTextureGraph(target.graph),
+      paintSource: 'paint', history: [], future: []
     }]));
     targetSelect.replaceChildren(...[...targetMap.values()].map((target) =>
       element('option', { text: target.label, attributes: { value: target.id } })));
@@ -263,6 +274,21 @@ export function createNodeEditor({ targets = [], onChange } = {}) {
     renderLinks();
   }
 
+  function choosePaintSource(nodeId) {
+    if (!onPaintSourceChange?.(activeId, nodeId)) return;
+    activeTarget().paintSource = nodeId;
+    renderGraph();
+  }
+
+  function assignImage(node, asset) {
+    if (!asset) return;
+    const before = cloneTextureGraph(graph);
+    node.imageKey = asset.key;
+    node.imageName = asset.name;
+    changed(before);
+    choosePaintSource(node.id);
+  }
+
   function renderNode(node) {
     const definition = NODE_TYPES[node.type];
     const rootNode = element('div', { className: `node-editor__node node-editor__node--${node.type}`,
@@ -336,10 +362,80 @@ export function createNodeEditor({ targets = [], onChange } = {}) {
         rootNode.append(socketRow('in', socket, color));
       }
     }
+    if (node.type === 'paint') {
+      const active = activeTarget()?.paintSource === 'paint';
+      rootNode.append(button({ label: active ? 'Painting here' : 'Paint here', variant: 'ghost',
+        disabled: active, onClick: () => choosePaintSource('paint') }));
+    }
+    if (node.type === 'image') {
+      rootNode.append(element('div', { className: 'node-editor__image-name',
+        text: node.imageName || 'No image selected' }));
+      const fileInput = element('input', { attributes: {
+        type: 'file', accept: 'image/png,image/jpeg,image/webp,image/bmp', hidden: ''
+      } });
+      const error = element('div', { className: 'node-editor__error' });
+      const newButton = button({ label: 'New', variant: 'ghost', onClick: () => {
+        assignImage(node, onCreateImage?.(activeId, node.id));
+      } });
+      const openButton = button({ label: 'Open', variant: 'ghost', onClick: () => fileInput.click() });
+      fileInput.addEventListener('change', async () => {
+        const file = fileInput.files?.[0];
+        if (!file) return;
+        try {
+          const asset = await onImportImage?.(activeId, node.id, file);
+          assignImage(node, asset);
+        } catch (cause) {
+          error.textContent = cause.message || 'Could not open image';
+          onError?.(error.textContent);
+        } finally { fileInput.value = ''; }
+      });
+      rootNode.append(element('div', { className: 'node-editor__image-actions' },
+        [newButton, openButton, fileInput]), error);
+      const options = [
+        ['interpolation', 'Interpolation', [['linear', 'Linear'], ['closest', 'Closest']]],
+        ['projection', 'Projection', [['flat', 'Flat (UV)'], ['box', 'Box'], ['sphere', 'Sphere'], ['tube', 'Tube']]],
+        ['extension', 'Extension', [['repeat', 'Repeat'], ['extend', 'Extend'], ['clip', 'Clip'], ['mirror', 'Mirror']]]
+      ];
+      for (const [key, label, choices] of options) {
+        const field = element('select', { className: 'node-editor__mode',
+          attributes: { 'aria-label': `Image ${label.toLowerCase()}` } },
+          choices.map(([value, text]) => element('option', { text, attributes: { value } })));
+        field.value = node[key];
+        field.addEventListener('change', () => {
+          const before = cloneTextureGraph(graph);
+          node[key] = field.value;
+          changed(before);
+        });
+        rootNode.append(element('label', { className: 'node-editor__control' },
+          [element('span', { text: label }), field]));
+      }
+      for (const [key, label, min, max] of [
+        ['scale', 'Scale', 0.01, 16], ['offsetU', 'Offset U', -8, 8], ['offsetV', 'Offset V', -8, 8]
+      ]) {
+        const field = element('input', { className: 'node-editor__number',
+          attributes: { type: 'number', min, max, step: 0.1, value: node[key],
+            'aria-label': `Image ${label.toLowerCase()}` } });
+        field.addEventListener('change', () => {
+          const before = cloneTextureGraph(graph);
+          node[key] = Math.max(min, Math.min(max, Number(field.value) || (key === 'scale' ? 1 : 0)));
+          field.value = node[key];
+          changed(before);
+        });
+        rootNode.append(element('label', { className: 'node-editor__control' },
+          [element('span', { text: label }), field]));
+      }
+      const active = activeTarget()?.paintSource === node.id;
+      rootNode.append(button({ label: active ? 'Painting here' : 'Paint here', variant: 'ghost',
+        disabled: !node.imageKey || active, onClick: () => choosePaintSource(node.id) }));
+    }
     return rootNode;
   }
 
   function renderGraph() {
+    const target = activeTarget();
+    if (target && target.paintSource !== 'paint' && !graph?.nodes.some((node) =>
+      node.id === target.paintSource && node.type === 'image' && node.imageKey))
+      target.paintSource = 'paint';
     stage.replaceChildren(...(graph?.nodes ?? []).map(renderNode));
     updateSelection();
     updateHistoryButtons();

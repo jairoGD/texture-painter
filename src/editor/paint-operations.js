@@ -54,6 +54,7 @@ function drawMark({ surface, kind, point, previous, options, mask }) {
     if (!visible) { context.restore(); return false; }
   }
   context.globalAlpha = settings.opacity / 100;
+  if (kind === 'eraser' && surface.imageLayer) context.globalCompositeOperation = 'destination-out';
   context.drawImage(layer, left, top);
   context.restore();
   return true;
@@ -150,9 +151,10 @@ function floodFill({ surface, point, options, mask }) {
   const seed = y * width + x;
   if (mask && !mask.alpha[seed]) return false;
   const offset = seed * 4;
-  const target = [data[offset], data[offset + 1], data[offset + 2]];
+  const target = [data[offset], data[offset + 1], data[offset + 2], data[offset + 3]];
   const replacement = rgb(options.color);
-  if (target.every((component, index) => component === replacement[index])) return false;
+  if (target.slice(0, 3).every((component, index) => component === replacement[index]) &&
+      (!surface.imageLayer || target[3] === 255)) return false;
 
   const threshold = options.tolerance * 2.55;
   const opacity = options.opacity / 100;
@@ -169,12 +171,14 @@ function floodFill({ surface, point, options, mask }) {
     const pixel = index * 4;
     if (Math.abs(data[pixel] - target[0]) > threshold ||
         Math.abs(data[pixel + 1] - target[1]) > threshold ||
-        Math.abs(data[pixel + 2] - target[2]) > threshold) continue;
+        Math.abs(data[pixel + 2] - target[2]) > threshold ||
+        (surface.imageLayer && Math.abs(data[pixel + 3] - target[3]) > threshold)) continue;
 
+    const mix = opacity * (mask ? mask.alpha[index] / 255 : 1);
     for (let channel = 0; channel < 3; channel++) {
-      const mix = opacity * (mask ? mask.alpha[index] / 255 : 1);
       data[pixel + channel] = Math.round(data[pixel + channel] * (1 - mix) + replacement[channel] * mix);
     }
+    if (surface.imageLayer) data[pixel + 3] = Math.round(data[pixel + 3] * (1 - mix) + 255 * mix);
     const px = index % width;
     const py = (index - px) / width;
     const neighbours = [px > 0 ? index - 1 : -1, px < width - 1 ? index + 1 : -1,

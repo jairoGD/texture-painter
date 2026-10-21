@@ -22,7 +22,13 @@ const scene = createScene(viewport, {
   palette.setColor(color);
   setStatus(`Sampled ${color.toUpperCase()}`);
 } });
-nodeEditor = createNodeEditor({ targets: scene.getGraphTargets(), onChange: (id, graph) => scene.setGraph(id, graph) });
+nodeEditor = createNodeEditor({ targets: scene.getGraphTargets(),
+  onChange: (id, graph) => scene.setGraph(id, graph),
+  onCreateImage: (id, nodeId) => scene.createImage(id, nodeId),
+  onImportImage: (id, nodeId, file) => scene.importImage(id, nodeId, file),
+  onPaintSourceChange: (id, nodeId) => scene.setPaintSource(id, nodeId),
+  onError: (message) => setStatus(message, true)
+});
 for (const tool of TOOL_DEFINITIONS) scene.setToolSettings(tool.id, toolSettings[tool.id]);
 const palette = colorPalette({ color: '#000000', onChange: (color) => {
   for (const tool of TOOL_DEFINITIONS.filter((item) => item.usesColor)) {

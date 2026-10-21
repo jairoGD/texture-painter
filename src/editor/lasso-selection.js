@@ -60,9 +60,9 @@ export function moveSelectionPixels({ surface, selection, dx, dy }) {
     const mask = alpha[y * width + x] / 255;
     if (!mask) continue;
     const pixel = (y * width + x) * 4;
-    for (let channel = 0; channel < 3; channel++) {
-      output[pixel + channel] = original[pixel + channel] * (1 - mask) + 255 * mask;
-    }
+    for (let channel = 0; channel < 4; channel++)
+      output[pixel + channel] = original[pixel + channel] * (1 - mask) +
+        (surface.imageLayer ? 0 : 255) * mask;
   }
   for (let y = bounds.top; y < bounds.bottom; y++) for (let x = bounds.left; x < bounds.right; x++) {
     const mask = alpha[y * width + x] / 255;
@@ -71,7 +71,7 @@ export function moveSelectionPixels({ surface, selection, dx, dy }) {
     if (!mask || destX < 0 || destX >= width || destY < 0 || destY >= height) continue;
     const sourcePixel = (y * width + x) * 4;
     const targetPixel = (destY * width + destX) * 4;
-    for (let channel = 0; channel < 3; channel++) {
+    for (let channel = 0; channel < 4; channel++) {
       output[targetPixel + channel] = output[targetPixel + channel] * (1 - mask) + original[sourcePixel + channel] * mask;
     }
   }

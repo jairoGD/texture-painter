@@ -307,6 +307,14 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     canUndo: painter.canUndo,
     canRedo: painter.canRedo,
     getGraphTargets: painter.getGraphTargets,
-    setGraph: painter.setGraph
+    setGraph: painter.setGraph,
+    createImage: painter.createImage,
+    setPaintSource: painter.setPaintSource,
+    importImage: async (targetId, nodeId, file) => {
+      if (!file?.type.startsWith('image/')) throw new Error('Select an image file.');
+      const bitmap = await createImageBitmap(file);
+      try { return painter.createImage(targetId, nodeId, bitmap, file.name); }
+      finally { bitmap.close(); }
+    }
   };
 }

@@ -40,7 +40,14 @@ export function createTexturePainter() {
     const overlayMaterial = new THREE.MeshBasicMaterial({ map: overlayTexture, transparent: true,
       depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, side: THREE.DoubleSide, toneMapped: false });
     const surface = { canvas, context, compositeCanvas, compositeContext, texture, shaded, unlit,
-      overlayCanvas, overlayContext, overlayTexture, overlayMaterial, graph: createTextureGraph(), compositeFrame: null };
+      overlayCanvas, overlayContext, overlayTexture, overlayMaterial, graph: createTextureGraph(),
+      imageAssets: new Map(), imageCache: new Map(), compositeFrame: null };
+    surface.activePaint = surface;
+    surface.resetPaint = () => {
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, SIZE, SIZE);
+      surface.requestComposite();
+    };
     surface.refreshComposite = () => {
       if (surface.compositeFrame !== null) cancelAnimationFrame(surface.compositeFrame);
       surface.compositeFrame = null;
@@ -87,6 +94,8 @@ export function createTexturePainter() {
       record.slots.forEach((surface, slotIndex) => {
         surface.id = `${mesh.uuid}:${slotIndex}`;
         surface.label = `${mesh.name || `Mesh ${meshIndex + 1}`}${record.slots.length > 1 ? ` / Material ${slotIndex + 1}` : ''}`;
+        surface.geometry = mesh.geometry;
+        surface.slotIndex = slotIndex;
       });
       const overlays = record.slots.map((surface) => surface.overlayMaterial);
       record.overlay = mesh.isSkinnedMesh ? new THREE.SkinnedMesh(mesh.geometry, isArray ? overlays : overlays[0]) :
@@ -115,7 +124,9 @@ export function createTexturePainter() {
     return { x: u * SIZE, y: (1 - v) * SIZE };
   }
 
-  function surfaceAt(hit) { return hit?.uv ? surfaces.get(hit.object)?.slots[hit.face?.materialIndex ?? 0] : null; }
+  function surfaceAt(hit) {
+    return hit?.uv ? surfaces.get(hit.object)?.slots[hit.face?.materialIndex ?? 0]?.activePaint ?? null : null;
+  }
   function renderOverlay(surface = selection?.surface, mask = selection?.overlayCanvas, dx = 0, dy = 0) {
     if (overlaySurface && overlaySurface !== surface) {
       overlaySurface.overlayContext.clearRect(0, 0, SIZE, SIZE);
@@ -292,10 +303,7 @@ export function createTexturePainter() {
   }
 
   function rebuild(affectedSurfaces) {
-    for (const surface of affectedSurfaces) {
-      surface.context.fillStyle = '#ffffff'; surface.context.fillRect(0, 0, SIZE, SIZE);
-      surface.requestComposite();
-    }
+    for (const surface of affectedSurfaces) surface.resetPaint();
     for (const stroke of undoStack) for (const command of stroke) {
       if (command.kind !== 'selection' && affectedSurfaces.has(command.surface)) executePaintCommand(command);
     }
@@ -324,11 +332,59 @@ export function createTexturePainter() {
       ({ id: surface.id, label: surface.label, graph: cloneTextureGraph(surface.graph) })));
   }
 
-  function setGraph(targetId, graph) {
-    const surface = [...surfaces.values()].flatMap((record) => record.slots)
+  function findSurface(targetId) {
+    return [...surfaces.values()].flatMap((record) => record.slots)
       .find((item) => item.id === targetId);
+  }
+
+  function createImage(targetId, nodeId, source = null, name = 'Untitled image') {
+    const parent = findSurface(targetId);
+    if (!parent || !parent.graph.nodes.some((node) => node.id === nodeId && node.type === 'image')) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = SIZE;
+    const context = canvas.getContext('2d');
+    if (source) context.drawImage(source, 0, 0, SIZE, SIZE);
+    const initial = document.createElement('canvas');
+    initial.width = initial.height = SIZE;
+    initial.getContext('2d').drawImage(canvas, 0, 0);
+    const key = `${nodeId}:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`;
+    const asset = { key, name, canvas, revision: 0 };
+    const paintSurface = { id: parent.id, label: parent.label, canvas, context,
+      compositeContext: parent.compositeContext, overlayContext: parent.overlayContext,
+      overlayTexture: parent.overlayTexture, imageLayer: true,
+      refreshComposite: parent.refreshComposite,
+      requestComposite: () => { asset.revision++; parent.imageCache.clear(); parent.requestComposite(); },
+      resetPaint: () => {
+        context.clearRect(0, 0, SIZE, SIZE);
+        context.drawImage(initial, 0, 0);
+        paintSurface.requestComposite();
+      } };
+    asset.paintSurface = paintSurface;
+    parent.imageAssets.set(key, asset);
+    return { key, name };
+  }
+
+  function setPaintSource(targetId, nodeId) {
+    const parent = findSurface(targetId);
+    if (!parent) return false;
+    const node = parent.graph.nodes.find((item) => item.id === nodeId && item.type === 'image');
+    const next = node ? parent.imageAssets.get(node.imageKey)?.paintSurface : parent;
+    if (!next) return false;
+    if (selection) { selection = null; renderOverlay(null); }
+    parent.activePaint = next;
+    return true;
+  }
+
+  function setGraph(targetId, graph) {
+    const surface = findSurface(targetId);
     if (!surface) return false;
     surface.graph = cloneTextureGraph(graph);
+    surface.imageCache.clear();
+    if (surface.activePaint !== surface && !surface.graph.nodes.some((node) =>
+      node.type === 'image' && surface.imageAssets.get(node.imageKey)?.paintSurface === surface.activePaint)) {
+      if (selection?.surface === surface.activePaint) { selection = null; renderOverlay(null); }
+      surface.activePaint = surface;
+    }
     surface.refreshComposite();
     return true;
   }
@@ -338,6 +394,6 @@ export function createTexturePainter() {
     cancelMove, clearSelection, setMaskEnabled: (enabled) => { maskEnabled = enabled; },
     beginStroke, endStroke, undo, redo, canUndo: () => undoStack.length > 0,
     canRedo: () => redoStack.length > 0, setLightingMode, getMeshes: () => [...surfaces.keys()],
-    getGraphTargets: graphTargets, setGraph,
+    getGraphTargets: graphTargets, setGraph, createImage, setPaintSource,
     targetIdAt: (hit) => surfaceAt(hit)?.id ?? null };
 }
