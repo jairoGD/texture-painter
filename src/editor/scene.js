@@ -88,7 +88,7 @@ export function createScene(host, { onColorPicked } = {}) {
     event.preventDefault();
     event.stopImmediatePropagation();
     if (activeTool === 'line') painter.updateLine(hitTest(event));
-    else if (activeTool === 'brush' || activeTool === 'eraser') paintAt(event);
+    else if (activeTool === 'brush' || activeTool === 'eraser' || activeTool === 'blur') paintAt(event);
   }, true);
   function endStroke(event) {
     if (event.pointerId !== activePointer) return;

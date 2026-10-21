@@ -44,6 +44,84 @@ function drawMark({ surface, kind, point, previous, options }) {
   context.restore();
 }
 
+function blurStroke({ surface, point, previous, options }) {
+  const { canvas, context } = surface;
+  const from = previous ?? point;
+  const radius = Math.max(1, options.size / 2);
+  const sigma = Math.max(0.5, options.spread / 3);
+  const reach = Math.ceil(sigma * 3);
+  const left = Math.max(0, Math.floor(Math.min(from.x, point.x) - radius));
+  const top = Math.max(0, Math.floor(Math.min(from.y, point.y) - radius));
+  const right = Math.min(canvas.width, Math.ceil(Math.max(from.x, point.x) + radius));
+  const bottom = Math.min(canvas.height, Math.ceil(Math.max(from.y, point.y) + radius));
+  if (right <= left || bottom <= top) return false;
+
+  // Read extra source pixels so the blur can pull colors into the brush from outside its edge.
+  const sourceLeft = Math.max(0, left - reach);
+  const sourceTop = Math.max(0, top - reach);
+  const sourceRight = Math.min(canvas.width, right + reach);
+  const sourceBottom = Math.min(canvas.height, bottom + reach);
+  const width = sourceRight - sourceLeft;
+  const height = sourceBottom - sourceTop;
+  const image = context.getImageData(sourceLeft, sourceTop, width, height);
+  const data = image.data;
+  const horizontal = new Float32Array(width * height * 3);
+  const kernel = new Float32Array(reach * 2 + 1);
+  let total = 0;
+  for (let offset = -reach; offset <= reach; offset++) {
+    const weight = Math.exp(-(offset * offset) / (2 * sigma * sigma));
+    kernel[offset + reach] = weight;
+    total += weight;
+  }
+  for (let index = 0; index < kernel.length; index++) kernel[index] /= total;
+
+  // Separable convolution keeps a broad, smooth brush practical while dragging.
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const target = (y * width + x) * 3;
+    for (let offset = -reach; offset <= reach; offset++) {
+      const sampleX = Math.max(0, Math.min(width - 1, x + offset));
+      const source = (y * width + sampleX) * 4;
+      const weight = kernel[offset + reach];
+      horizontal[target] += data[source] * weight;
+      horizontal[target + 1] += data[source + 1] * weight;
+      horizontal[target + 2] += data[source + 2] * weight;
+    }
+  }
+
+  const vx = point.x - from.x;
+  const vy = point.y - from.y;
+  const segmentLengthSquared = vx * vx + vy * vy;
+  const innerRadius = radius * options.hardness / 100;
+  const strength = options.strength / 100;
+  let changed = false;
+  for (let canvasY = top; canvasY < bottom; canvasY++) for (let canvasX = left; canvasX < right; canvasX++) {
+    const px = canvasX + 0.5;
+    const py = canvasY + 0.5;
+    const projection = segmentLengthSquared ? Math.max(0, Math.min(1,
+      ((px - from.x) * vx + (py - from.y) * vy) / segmentLengthSquared)) : 0;
+    const distance = Math.hypot(px - from.x - projection * vx, py - from.y - projection * vy);
+    if (distance >= radius) continue;
+    const edge = options.hardness >= 100 || distance <= innerRadius ? 1 :
+      1 - Math.max(0, Math.min(1, (distance - innerRadius) / (radius - innerRadius)));
+    const falloff = edge * edge * (3 - 2 * edge);
+    const mix = strength * falloff;
+    const x = canvasX - sourceLeft;
+    const y = canvasY - sourceTop;
+    const pixel = (y * width + x) * 4;
+    for (let channel = 0; channel < 3; channel++) {
+      let blurred = 0;
+      for (let offset = -reach; offset <= reach; offset++) {
+        const sampleY = Math.max(0, Math.min(height - 1, y + offset));
+        blurred += horizontal[(sampleY * width + x) * 3 + channel] * kernel[offset + reach];
+      }
+      const value = Math.round(data[pixel + channel] * (1 - mix) + blurred * mix);
+      if (value !== data[pixel + channel]) { data[pixel + channel] = value; changed = true; }
+    }
+  }
+  if (changed) context.putImageData(image, sourceLeft, sourceTop);
+  return changed;
+}
+
 function floodFill({ surface, point, options }) {
   const { context, canvas } = surface;
   const width = canvas.width;
@@ -93,7 +171,8 @@ function floodFill({ surface, point, options }) {
 }
 
 export function executePaintCommand(command) {
-  const changed = command.kind === 'bucket' ? floodFill(command) : (drawMark(command), true);
+  const changed = command.kind === 'bucket' ? floodFill(command) :
+    command.kind === 'blur' ? blurStroke(command) : (drawMark(command), true);
   if (changed) command.surface.texture.needsUpdate = true;
   return changed;
 }
