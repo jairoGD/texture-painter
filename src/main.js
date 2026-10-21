@@ -7,7 +7,7 @@ const app = document.querySelector('#app');
 const fileInput = element('input', { attributes: { type: 'file', accept: '.glb,model/gltf-binary', hidden: '' } });
 const viewport = element('main', { className: 'viewport', attributes: { 'aria-label': '3D viewport' } });
 const status = element('span', { className: 'status__message', text: 'Ready' });
-const hint = notice({ text: 'Left drag: paint · Alt + left drag: orbit · Right drag: pan · Wheel: zoom' });
+const hint = notice({ text: 'Left drag: paint · Alt + left drag or middle drag: orbit · Space + left drag: pan · Wheel: zoom' });
 
 const toolSettings = Object.fromEntries(TOOL_DEFINITIONS.map((tool) => [tool.id, { ...tool.defaults }]));
 let activeTool = 'brush';

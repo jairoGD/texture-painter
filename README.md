@@ -15,10 +15,10 @@ On Windows, after `npm install` has been run once, double-click `start-editor.ba
 
 ## Current features
 
-- 3D viewport with immediate orbit motion: Alt + left drag to orbit, right drag to pan, mouse wheel to zoom.
+- 3D viewport with immediate orbit motion: Alt + left drag or middle-button drag to orbit, Space + left drag to pan, mouse wheel to zoom.
 - File → Import Model opens a local `.glb` file. Each imported mesh with UV coordinates receives a new white 1024×1024 canvas texture.
 - Display → Shaded / Unlit changes the model's lighting mode; Display → Show grid toggles the grid.
-- Brush and Eraser paint directly on the model; Bucket fills a connected color region in the UV texture; Line draws a straight stroke with a live preview; Eyedropper samples a painted color. Choose a tool on the left and adjust its color, size, hardness, opacity, or bucket tolerance in Properties. The eraser paints white.
+- Brush and Eraser paint directly on the model; Bucket fills a connected color region in the UV texture; Line draws a straight stroke with a live preview; Eyedropper samples a painted color. Choose a tool from the icon grid on the left; hovering for half a second shows its name. Adjust its color, size, hardness, opacity, or bucket tolerance in Properties. The eraser paints white.
 - Blur mixes neighboring texture pixels with a local Gaussian brush. Size and Hardness shape its footprint, Strength controls how much the blurred result replaces the current color, and Spread controls how far nearby color travels. Drag over a painted edge to soften and extend it; each drag is one undoable stroke.
 - Lasso selects the visible part of a model's UV texture: hold the mouse button and draw a freehand contour on the model; releasing closes it. A single click outside the selection, including the scene background, clears it. Drag inside the highlighted area to cut and move its pixels on the same material. The selection stays active as a paint mask for Brush, Eraser, Bucket, Line, and Blur; turn off **Mask painting to selection** or use **Clear Selection** in Lasso Properties. Escape cancels a selection in progress. Selection creation, movement, and clearing participate in Undo/Redo.
 - Edit → Undo / Redo works per paint stroke. The shortcuts are Ctrl+Z and Ctrl+Shift+Z (Command equivalents on macOS). Importing another model starts a fresh paint history.

@@ -12,7 +12,7 @@ export function element(tag, { className, text, attributes = {}, on = {} } = {},
   return node;
 }
 
-export function button({ label, icon, iconUrl, variant = 'default', title, onClick, disabled = false }) {
+export function button({ label, icon, iconUrl, variant = 'default', title, tooltip, iconOnly = false, onClick, disabled = false }) {
   const content = [];
   if (iconUrl) {
     const mask = element('span', { className: 'ui-icon ui-icon--mask', attributes: { 'aria-hidden': 'true' } });
@@ -20,10 +20,10 @@ export function button({ label, icon, iconUrl, variant = 'default', title, onCli
     content.push(mask);
   }
   if (icon) content.push(element('span', { className: 'ui-icon', text: icon, attributes: { 'aria-hidden': 'true' } }));
-  content.push(element('span', { text: label }));
+  if (!iconOnly) content.push(element('span', { text: label }));
   const node = element('button', {
     className: `ui-button ui-button--${variant}`,
-    attributes: { type: 'button', title, 'aria-label': label },
+    attributes: { type: 'button', title, 'data-tooltip': tooltip, 'aria-label': label },
     on: { click: onClick ?? (() => {}) }
   }, content);
   node.disabled = disabled;
@@ -135,7 +135,8 @@ export function toolGroup({ items, active, onChange }) {
     onChange?.(value);
   };
   for (const item of items) {
-    const node = button({ label: item.label, icon: item.icon, iconUrl: item.iconUrl, variant: 'tool', onClick: () => select(item.value) });
+    const node = button({ label: item.label, icon: item.icon, iconUrl: item.iconUrl,
+      variant: 'tool', iconOnly: true, tooltip: item.label, onClick: () => select(item.value) });
     node.setAttribute('aria-pressed', String(item.value === active));
     buttons.set(item.value, node);
     root.append(node);

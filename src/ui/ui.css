@@ -30,7 +30,17 @@ button { cursor: pointer; }
 .ui-button--menu { background: transparent; border-color: transparent; font-size: 13px; font-weight: 500; }
 .ui-button--menu:hover, .ui-dropdown.is-open .ui-button--menu { background: #293039; }
 .ui-button--menu-item { width: 100%; justify-content: flex-start; border: 0; border-radius: 5px; background: transparent; }
-.ui-button--tool { width: 100%; justify-content: flex-start; min-height: 41px; background: #292f38; }
+.ui-button--tool { position: relative; width: 100%; aspect-ratio: 1; min-height: 0; padding: 0; background: #292f38; }
+.ui-button--tool:hover, .ui-button--tool:focus-visible { z-index: 1; }
+.ui-button--tool::after {
+  content: attr(data-tooltip); position: absolute; left: 50%; bottom: calc(100% + 7px);
+  transform: translateX(-50%); padding: 5px 8px; border: 1px solid #536173;
+  border-radius: 5px; background: #121a23; color: #e9edf3;
+  font-size: 11px; font-weight: 600; line-height: 1.2; pointer-events: none;
+  opacity: 0; visibility: hidden; transition: opacity .12s ease, visibility 0s linear .12s;
+}
+.ui-button--tool:hover::after { opacity: 1; visibility: visible; transition: opacity .12s ease .5s, visibility 0s linear .5s; }
+.ui-button--tool:focus-visible::after { opacity: 1; visibility: visible; transition-delay: 0s; }
 .ui-button--tool[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-surface); color: var(--accent-soft); }
 .ui-icon { font-size: 15px; line-height: 1; }
 .ui-icon--mask { display: inline-block; flex: 0 0 19px; width: 19px; height: 19px; background: currentColor; -webkit-mask: var(--ui-icon-url) center / contain no-repeat; mask: var(--ui-icon-url) center / contain no-repeat; }
@@ -43,7 +53,8 @@ button { cursor: pointer; }
 .ui-dropdown__shortcut { margin-left: auto; padding-left: 20px; color: #8793a1; font-size: 11px; font-weight: 500; }
 .ui-dropdown__separator { height: 1px; margin: 5px 6px; border: 0; background: #3a424c; }
 .ui-toolbar { display: flex; align-items: center; gap: 7px; }
-.ui-tool-group { display: grid; gap: 8px; }
+.ui-tool-group { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.ui-tool-group .ui-icon--mask { flex-basis: 22px; width: 22px; height: 22px; }
 .ui-panel { border: 1px solid #353c46; border-radius: 11px; background: #20252c; padding: 16px; }
 .ui-panel__heading { margin-bottom: 16px; }
 .ui-panel__heading h2 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: #b5bfcb; }

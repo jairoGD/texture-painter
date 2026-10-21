@@ -24,6 +24,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged } = {}) {
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = false;
+  controls.mouseButtons.MIDDLE = THREE.MOUSE.ROTATE;
+  controls.mouseButtons.RIGHT = null;
   controls.target.set(0, 0.65, 0);
   controls.update();
 
@@ -61,7 +63,20 @@ export function createScene(host, { onColorPicked, onSelectionChanged } = {}) {
   let lassoDragged = false;
   let lassoSourceHit = null;
   let lassoPath = [];
+  let spacePressed = false;
   const toolSettings = {};
+
+  document.addEventListener('keydown', (event) => {
+    if (event.code !== 'Space' || event.target.closest?.('input, textarea, select, [contenteditable]')) return;
+    spacePressed = true;
+    event.preventDefault();
+  });
+  document.addEventListener('keyup', (event) => {
+    if (event.code !== 'Space') return;
+    spacePressed = false;
+    event.preventDefault();
+  });
+  window.addEventListener('blur', () => { spacePressed = false; });
 
   function hitTest(event) {
     const rect = renderer.domElement.getBoundingClientRect();
@@ -115,7 +130,16 @@ export function createScene(host, { onColorPicked, onSelectionChanged } = {}) {
   }
 
   renderer.domElement.addEventListener('pointerdown', (event) => {
-    if (event.button !== 0 || event.altKey) return;
+    if (event.button === 0 && (event.altKey || spacePressed)) {
+      controls.mouseButtons.LEFT = event.altKey ? THREE.MOUSE.ROTATE : THREE.MOUSE.PAN;
+      event.preventDefault();
+      return;
+    }
+    if (event.button === 1) {
+      event.preventDefault();
+      return;
+    }
+    if (event.button !== 0) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     activePointer = event.pointerId;
