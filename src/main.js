@@ -1,5 +1,6 @@
 import { createScene } from './editor/scene.js';
 import { TOOL_DEFINITIONS } from './editor/tools.js';
+import { colorPalette } from './ui/color-palette.js';
 import { dropdown, element, notice, panel, renderControl, renderPanel, toolbar } from './ui/index.js';
 import './style.css';
 
@@ -9,18 +10,20 @@ const viewport = element('main', { className: 'viewport', attributes: { 'aria-la
 const status = element('span', { className: 'status__message', text: 'Ready' });
 const hint = notice({ text: 'Left drag: paint · Alt + left drag or middle drag: orbit · Space + left drag: pan · Wheel: zoom' });
 
-const toolSettings = Object.fromEntries(TOOL_DEFINITIONS.map((tool) => [tool.id, { ...tool.defaults }]));
+const toolSettings = Object.fromEntries(TOOL_DEFINITIONS.map((tool) => [tool.id,
+  { ...tool.defaults, ...(tool.usesColor ? { color: '#000000' } : {}) }]));
 let activeTool = 'brush';
 const scene = createScene(viewport, { onSelectionChanged: setStatus, onColorPicked: (color) => {
-  for (const tool of TOOL_DEFINITIONS) {
-    if (!('color' in toolSettings[tool.id])) continue;
-    toolSettings[tool.id].color = color;
-    scene.setToolSettings(tool.id, toolSettings[tool.id]);
-  }
-  renderProperties();
+  palette.setColor(color);
   setStatus(`Sampled ${color.toUpperCase()}`);
 } });
 for (const tool of TOOL_DEFINITIONS) scene.setToolSettings(tool.id, toolSettings[tool.id]);
+const palette = colorPalette({ color: '#000000', onChange: (color) => {
+  for (const tool of TOOL_DEFINITIONS.filter((item) => item.usesColor)) {
+    toolSettings[tool.id].color = color;
+    scene.setToolSettings(tool.id, toolSettings[tool.id]);
+  }
+} });
 let lightingMode = 'shaded';
 let gridVisible = true;
 function setStatus(message, error = false) {
@@ -123,6 +126,7 @@ function selectTool(tool) {
 }
 renderProperties();
 const sidebar = element('aside', { className: 'sidebar' }, [
+  palette.element,
   renderPanel({ title: 'Tools', subtitle: 'Paint directly on the model', controls: [
     { type: 'toolGroup', active: 'brush', onChange: selectTool,
       items: TOOL_DEFINITIONS.map(({ id, label, iconUrl }) => ({ value: id, label, iconUrl })) }
