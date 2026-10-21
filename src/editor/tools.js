@@ -4,6 +4,7 @@ import bucketIcon from '../ui/icons/bucket.svg';
 import lineIcon from '../ui/icons/line.svg';
 import eyedropperIcon from '../ui/icons/eyedropper.svg';
 import blurIcon from '../ui/icons/blur.svg';
+import lassoIcon from '../ui/icons/lasso.svg';
 
 const size = { type: 'slider', key: 'size', label: 'Size', min: 2, max: 128, step: 1, unit: ' px' };
 const hardness = { type: 'slider', key: 'hardness', label: 'Hardness', min: 0, max: 100, step: 1, unit: '%' };
@@ -28,6 +29,13 @@ export const TOOL_DEFINITIONS = [
     controls: [size, hardness,
       { type: 'slider', key: 'strength', label: 'Strength', min: 1, max: 100, step: 1, unit: '%' },
       { type: 'slider', key: 'spread', label: 'Spread', min: 1, max: 32, step: 1, unit: ' px' }] },
+  { id: 'lasso', label: 'Lasso', iconUrl: lassoIcon,
+    defaults: { maskEnabled: true },
+    controls: [
+      { type: 'notice', text: 'Draw a freehand loop, or click points and double-click to close. Drag inside to move pixels.' },
+      { type: 'checkbox', key: 'maskEnabled', label: 'Mask painting to selection' },
+      { type: 'button', action: 'clearSelection', label: 'Clear Selection' }
+    ] },
   { id: 'eyedropper', label: 'Eyedropper', iconUrl: eyedropperIcon,
     defaults: { color: '#28343f' },
     controls: [color] }

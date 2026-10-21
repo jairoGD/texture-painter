@@ -11,7 +11,7 @@ const hint = notice({ text: 'Left drag: paint · Alt + left drag: orbit · Right
 
 const toolSettings = Object.fromEntries(TOOL_DEFINITIONS.map((tool) => [tool.id, { ...tool.defaults }]));
 let activeTool = 'brush';
-const scene = createScene(viewport, { onColorPicked: (color) => {
+const scene = createScene(viewport, { onSelectionChanged: setStatus, onColorPicked: (color) => {
   for (const tool of TOOL_DEFINITIONS) {
     if (!('color' in toolSettings[tool.id])) continue;
     toolSettings[tool.id].color = color;
@@ -48,12 +48,12 @@ const fileMenu = dropdown({ label: 'File', items: [
 ] });
 
 function undo() {
-  if (scene.undo()) setStatus('Undid paint stroke');
+  if (scene.undo()) setStatus('Undid action');
   editMenu.refresh();
 }
 
 function redo() {
-  if (scene.redo()) setStatus('Redid paint stroke');
+  if (scene.redo()) setStatus('Redid action');
   editMenu.refresh();
 }
 
@@ -105,6 +105,11 @@ function renderProperties() {
   propertiesBody.replaceChildren(...tool.controls.map((control) => renderControl({
     ...control,
     value: toolSettings[activeTool][control.key],
+    checked: control.key ? toolSettings[activeTool][control.key] : undefined,
+    onClick: control.action === 'clearSelection' ? () => {
+      if (scene.clearSelection()) setStatus('Selection cleared');
+      editMenu.refresh();
+    } : undefined,
     onChange: (value) => {
       toolSettings[activeTool][control.key] = value;
       scene.setToolSettings(activeTool, toolSettings[activeTool]);

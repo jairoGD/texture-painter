@@ -1,4 +1,5 @@
 const WHITE = '#ffffff';
+import { moveSelectionPixels } from './lasso-selection.js';
 
 function rgb(hex) {
   return [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16));
@@ -20,7 +21,7 @@ function dab(context, x, y, { color, size, hardness }) {
   context.fill();
 }
 
-function drawMark({ surface, kind, point, previous, options }) {
+function drawMark({ surface, kind, point, previous, options, mask }) {
   const context = surface.context;
   const settings = { ...options, color: kind === 'eraser' ? WHITE : options.color };
   const from = previous ?? point;
@@ -30,6 +31,9 @@ function drawMark({ surface, kind, point, previous, options }) {
   const radius = Math.max(1, settings.size / 2);
   const left = Math.floor(Math.min(from.x, point.x) - radius - 1);
   const top = Math.floor(Math.min(from.y, point.y) - radius - 1);
+  if (mask && (left >= mask.bounds.right || top >= mask.bounds.bottom ||
+      Math.ceil(Math.max(from.x, point.x) + radius + 1) <= mask.bounds.left ||
+      Math.ceil(Math.max(from.y, point.y) + radius + 1) <= mask.bounds.top)) return false;
   const layer = document.createElement('canvas');
   layer.width = Math.ceil(Math.max(from.x, point.x) + radius + 1) - left;
   layer.height = Math.ceil(Math.max(from.y, point.y) + radius + 1) - top;
@@ -39,12 +43,23 @@ function drawMark({ surface, kind, point, previous, options }) {
     const t = step / steps;
     dab(layerContext, from.x + (point.x - from.x) * t - left, from.y + (point.y - from.y) * t - top, settings);
   }
+  if (mask) {
+    layerContext.globalCompositeOperation = 'destination-in';
+    layerContext.drawImage(mask.canvas, -left, -top);
+    const pixels = layerContext.getImageData(0, 0, layer.width, layer.height).data;
+    let visible = false;
+    for (let index = 3; index < pixels.length; index += 4) {
+      if (pixels[index]) { visible = true; break; }
+    }
+    if (!visible) { context.restore(); return false; }
+  }
   context.globalAlpha = settings.opacity / 100;
   context.drawImage(layer, left, top);
   context.restore();
+  return true;
 }
 
-function blurStroke({ surface, point, previous, options }) {
+function blurStroke({ surface, point, previous, options, mask }) {
   const { canvas, context } = surface;
   const from = previous ?? point;
   const radius = Math.max(1, options.size / 2);
@@ -104,7 +119,9 @@ function blurStroke({ surface, point, previous, options }) {
     const edge = options.hardness >= 100 || distance <= innerRadius ? 1 :
       1 - Math.max(0, Math.min(1, (distance - innerRadius) / (radius - innerRadius)));
     const falloff = edge * edge * (3 - 2 * edge);
-    const mix = strength * falloff;
+    const selectionAlpha = mask ? mask.alpha[canvasY * canvas.width + canvasX] / 255 : 1;
+    const mix = strength * falloff * selectionAlpha;
+    if (!mix) continue;
     const x = canvasX - sourceLeft;
     const y = canvasY - sourceTop;
     const pixel = (y * width + x) * 4;
@@ -122,7 +139,7 @@ function blurStroke({ surface, point, previous, options }) {
   return changed;
 }
 
-function floodFill({ surface, point, options }) {
+function floodFill({ surface, point, options, mask }) {
   const { context, canvas } = surface;
   const width = canvas.width;
   const height = canvas.height;
@@ -131,6 +148,7 @@ function floodFill({ surface, point, options }) {
   const image = context.getImageData(0, 0, width, height);
   const data = image.data;
   const seed = y * width + x;
+  if (mask && !mask.alpha[seed]) return false;
   const offset = seed * 4;
   const target = [data[offset], data[offset + 1], data[offset + 2]];
   const replacement = rgb(options.color);
@@ -147,13 +165,15 @@ function floodFill({ surface, point, options }) {
 
   while (head < tail) {
     const index = queue[head++];
+    if (mask && !mask.alpha[index]) continue;
     const pixel = index * 4;
     if (Math.abs(data[pixel] - target[0]) > threshold ||
         Math.abs(data[pixel + 1] - target[1]) > threshold ||
         Math.abs(data[pixel + 2] - target[2]) > threshold) continue;
 
     for (let channel = 0; channel < 3; channel++) {
-      data[pixel + channel] = Math.round(data[pixel + channel] * (1 - opacity) + replacement[channel] * opacity);
+      const mix = opacity * (mask ? mask.alpha[index] / 255 : 1);
+      data[pixel + channel] = Math.round(data[pixel + channel] * (1 - mix) + replacement[channel] * mix);
     }
     const px = index % width;
     const py = (index - px) / width;
@@ -172,7 +192,8 @@ function floodFill({ surface, point, options }) {
 
 export function executePaintCommand(command) {
   const changed = command.kind === 'bucket' ? floodFill(command) :
-    command.kind === 'blur' ? blurStroke(command) : (drawMark(command), true);
+    command.kind === 'blur' ? blurStroke(command) :
+      command.kind === 'moveSelection' ? moveSelectionPixels(command) : drawMark(command);
   if (changed) command.surface.texture.needsUpdate = true;
   return changed;
 }
