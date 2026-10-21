@@ -12,7 +12,7 @@ export function colorPalette({ color = '#000000', secondaryColor = '#ffffff', on
   let foreground = color.toLowerCase();
   let background = secondaryColor.toLowerCase();
   const savedColors = Array(12).fill(null);
-  const foregroundPicker = element('input', { className: 'color-palette__native-picker',
+  const foregroundPicker = element('input', { className: 'color-palette__hidden-picker',
     attributes: { type: 'color', value: foreground, 'aria-label': 'Choose foreground color' } });
   const backgroundPicker = element('input', { className: 'color-palette__hidden-picker',
     attributes: { type: 'color', value: background, 'aria-label': 'Choose background color' } });
@@ -22,7 +22,6 @@ export function colorPalette({ color = '#000000', secondaryColor = '#ffffff', on
   const backgroundSwatch = element('button', { className: 'color-palette__background',
     attributes: { type: 'button', 'aria-label': 'Choose background color', title: 'Choose secondary color' },
     on: { click: () => backgroundPicker.click() } });
-  const hexLabel = element('output', { className: 'color-palette__hex' });
   const presets = element('div', { className: 'color-palette__presets',
     attributes: { role: 'group', 'aria-label': 'Basic color palette' } });
   const saved = element('div', { className: 'color-palette__saved',
@@ -33,7 +32,6 @@ export function colorPalette({ color = '#000000', secondaryColor = '#ffffff', on
     backgroundSwatch.style.backgroundColor = background;
     foregroundPicker.value = foreground;
     backgroundPicker.value = background;
-    hexLabel.value = foreground.toUpperCase();
     for (const swatch of presets.children) {
       swatch.setAttribute('aria-pressed', String(swatch.dataset.color === foreground));
     }
@@ -93,9 +91,8 @@ export function colorPalette({ color = '#000000', secondaryColor = '#ffffff', on
     } } });
   const preview = element('div', { className: 'color-palette__preview' },
     [backgroundSwatch, foregroundSwatch, swap]);
-  const current = element('div', { className: 'color-palette__current' },
-    [foregroundPicker, hexLabel, backgroundPicker]);
-  const top = element('div', { className: 'color-palette__top' }, [preview, current]);
+  const top = element('div', { className: 'color-palette__top' },
+    [preview, foregroundPicker, backgroundPicker]);
   const root = panel({ title: 'Color', className: 'color-palette', children: [top, presets, saved] });
   renderSaved();
   updateColors();

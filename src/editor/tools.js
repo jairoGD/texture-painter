@@ -23,7 +23,7 @@ export const TOOL_DEFINITIONS = [
     usesColor: true, defaults: { size: 2, hardness: 100, opacity: 100 },
     controls: [size, hardness, opacity] },
   { id: 'blur', label: 'Blur', iconUrl: blurIcon,
-    defaults: { size: 72, hardness: 35, strength: 80, spread: 20 },
+    defaults: { size: 72, hardness: 35, strength: 20, spread: 20 },
     controls: [size, hardness,
       { type: 'slider', key: 'strength', label: 'Strength', min: 1, max: 100, step: 1, unit: '%' },
       { type: 'slider', key: 'spread', label: 'Spread', min: 1, max: 32, step: 1, unit: ' px' }] },

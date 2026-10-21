@@ -1,6 +1,6 @@
 .color-palette { flex-shrink: 0; }
 .sidebar .color-palette { gap: 11px; }
-.color-palette__top { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 42px; }
+.color-palette__top { position: relative; display: flex; align-items: center; justify-content: flex-end; min-height: 42px; }
 .color-palette__preview { position: relative; width: 47px; height: 40px; flex: 0 0 47px; }
 .color-palette__foreground, .color-palette__background {
   position: absolute; width: 29px; height: 28px; padding: 0; border-radius: 6px;
@@ -14,15 +14,7 @@
   background: #31394f; color: #c7d7ee; font-size: 12px; line-height: 13px;
 }
 .color-palette__swap:hover { background: var(--accent-surface); color: var(--accent-soft); }
-.color-palette__current { position: relative; display: flex; align-items: center; justify-content: flex-end; gap: 7px; min-width: 0; }
-.color-palette__native-picker {
-  width: 25px; height: 25px; flex: 0 0 25px; padding: 2px; border: 2px solid #5a6678;
-  border-radius: 6px; background: #12161d; cursor: pointer;
-}
-.color-palette__native-picker::-webkit-color-swatch-wrapper { padding: 0; }
-.color-palette__native-picker::-webkit-color-swatch { border: 0; border-radius: 2px; }
 .color-palette__hidden-picker { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-.color-palette__hex { color: var(--accent-soft); font: 600 10px ui-monospace, Consolas, monospace; }
 .color-palette__presets { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 3px; }
 .color-palette__preset, .color-palette__slot {
   display: block; width: 100%; min-width: 0; aspect-ratio: 1; padding: 0; border-radius: 4px;
