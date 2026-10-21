@@ -1,5 +1,6 @@
 import { createScene } from './editor/scene.js';
-import { dropdown, element, notice, renderPanel, toolbar } from './ui/index.js';
+import { TOOL_DEFINITIONS } from './editor/tools.js';
+import { dropdown, element, notice, panel, renderControl, renderPanel, toolbar } from './ui/index.js';
 import './style.css';
 
 const app = document.querySelector('#app');
@@ -8,7 +9,18 @@ const viewport = element('main', { className: 'viewport', attributes: { 'aria-la
 const status = element('span', { className: 'status__message', text: 'Ready' });
 const hint = notice({ text: 'Left drag: paint · Alt + left drag: orbit · Right drag: pan · Wheel: zoom' });
 
-const scene = createScene(viewport);
+const toolSettings = Object.fromEntries(TOOL_DEFINITIONS.map((tool) => [tool.id, { ...tool.defaults }]));
+let activeTool = 'brush';
+const scene = createScene(viewport, { onColorPicked: (color) => {
+  for (const tool of TOOL_DEFINITIONS) {
+    if (!('color' in toolSettings[tool.id])) continue;
+    toolSettings[tool.id].color = color;
+    scene.setToolSettings(tool.id, toolSettings[tool.id]);
+  }
+  renderProperties();
+  setStatus(`Sampled ${color.toUpperCase()}`);
+} });
+for (const tool of TOOL_DEFINITIONS) scene.setToolSettings(tool.id, toolSettings[tool.id]);
 let lightingMode = 'shaded';
 let gridVisible = true;
 function setStatus(message, error = false) {
@@ -85,13 +97,32 @@ const header = element('header', { className: 'app-header' }, [
   element('span', { className: 'app-header__tag', text: 'EDITOR  /  01' })
 ]);
 
+const propertiesBody = element('div', { className: 'tool-properties' });
+const propertiesPanel = panel({ title: 'Properties', subtitle: 'Brush', children: [propertiesBody] });
+function renderProperties() {
+  const tool = TOOL_DEFINITIONS.find((item) => item.id === activeTool);
+  propertiesPanel.querySelector('.ui-panel__heading p').textContent = tool.label;
+  propertiesBody.replaceChildren(...tool.controls.map((control) => renderControl({
+    ...control,
+    value: toolSettings[activeTool][control.key],
+    onChange: (value) => {
+      toolSettings[activeTool][control.key] = value;
+      scene.setToolSettings(activeTool, toolSettings[activeTool]);
+    }
+  })));
+}
+function selectTool(tool) {
+  activeTool = tool;
+  scene.setTool(tool);
+  renderProperties();
+}
+renderProperties();
 const sidebar = element('aside', { className: 'sidebar' }, [
   renderPanel({ title: 'Tools', subtitle: 'Paint directly on the model', controls: [
-    { type: 'toolGroup', active: 'brush', onChange: scene.setTool, items: [
-      { value: 'brush', label: 'Brush', icon: '●' },
-      { value: 'eraser', label: 'Eraser', icon: '◌' }
-    ] }
-  ] })
+    { type: 'toolGroup', active: 'brush', onChange: selectTool,
+      items: TOOL_DEFINITIONS.map(({ id, label, iconUrl }) => ({ value: id, label, iconUrl })) }
+  ] }),
+  propertiesPanel
 ]);
 
 const viewportHeader = element('div', { className: 'viewport-header' }, [

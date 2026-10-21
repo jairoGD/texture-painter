@@ -12,8 +12,13 @@ export function element(tag, { className, text, attributes = {}, on = {} } = {},
   return node;
 }
 
-export function button({ label, icon, variant = 'default', title, onClick, disabled = false }) {
+export function button({ label, icon, iconUrl, variant = 'default', title, onClick, disabled = false }) {
   const content = [];
+  if (iconUrl) {
+    const mask = element('span', { className: 'ui-icon ui-icon--mask', attributes: { 'aria-hidden': 'true' } });
+    mask.style.setProperty('--ui-icon-url', `url("${iconUrl}")`);
+    content.push(mask);
+  }
   if (icon) content.push(element('span', { className: 'ui-icon', text: icon, attributes: { 'aria-hidden': 'true' } }));
   content.push(element('span', { text: label }));
   const node = element('button', {
@@ -48,6 +53,19 @@ export function checkbox({ label, checked = false, onChange }) {
   });
   input.checked = checked;
   return element('label', { className: 'ui-checkbox' }, [input, element('span', { text: label })]);
+}
+
+export function colorPicker({ label, value = '#000000', onChange }) {
+  const output = element('output', { className: 'ui-color-picker__value', text: value.toUpperCase() });
+  const input = element('input', {
+    className: 'ui-color-picker__input',
+    attributes: { type: 'color', value, 'aria-label': label },
+    on: { input: (event) => { output.value = event.target.value.toUpperCase(); onChange?.(event.target.value); } }
+  });
+  return element('label', { className: 'ui-color-picker' }, [
+    element('span', { text: label }),
+    element('span', { className: 'ui-color-picker__row' }, [input, output])
+  ]);
 }
 
 export function panel({ title, subtitle, children = [], className = '' }) {
@@ -117,7 +135,7 @@ export function toolGroup({ items, active, onChange }) {
     onChange?.(value);
   };
   for (const item of items) {
-    const node = button({ label: item.label, icon: item.icon, variant: 'tool', onClick: () => select(item.value) });
+    const node = button({ label: item.label, icon: item.icon, iconUrl: item.iconUrl, variant: 'tool', onClick: () => select(item.value) });
     node.setAttribute('aria-pressed', String(item.value === active));
     buttons.set(item.value, node);
     root.append(node);
@@ -136,6 +154,7 @@ export function notice({ text, tone = 'info' }) {
 const controlTypes = new Map([
   ['button', button],
   ['slider', slider],
+  ['colorPicker', colorPicker],
   ['checkbox', checkbox],
   ['toolGroup', toolGroup],
   ['notice', notice]

@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createTexturePainter } from './texture-painter.js';
 
-export function createScene(host) {
+export function createScene(host, { onColorPicked } = {}) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color('#252b34');
 
@@ -50,6 +50,7 @@ export function createScene(host) {
   let activePointer = null;
   let previousHit = null;
   let activeTool = 'brush';
+  const toolSettings = {};
 
   function hitTest(event) {
     const rect = renderer.domElement.getBoundingClientRect();
@@ -61,7 +62,7 @@ export function createScene(host) {
 
   function paintAt(event) {
     const hit = hitTest(event);
-    previousHit = hit ? painter.paint(hit, activeTool, previousHit) : null;
+    previousHit = hit ? painter.paint(hit, activeTool, previousHit, toolSettings[activeTool]) : null;
   }
 
   renderer.domElement.addEventListener('pointerdown', (event) => {
@@ -70,22 +71,34 @@ export function createScene(host) {
     event.stopImmediatePropagation();
     activePointer = event.pointerId;
     previousHit = null;
-    painter.beginStroke();
+    const hit = hitTest(event);
+    if (activeTool === 'line') painter.beginLine(hit, toolSettings.line);
+    else if (activeTool === 'eyedropper') {
+      const color = painter.sample(hit);
+      if (color) onColorPicked?.(color);
+    } else {
+      painter.beginStroke();
+      if (activeTool === 'bucket') painter.fill(hit, toolSettings.bucket);
+      else paintAt(event);
+    }
     renderer.domElement.setPointerCapture(event.pointerId);
-    paintAt(event);
   }, true);
   renderer.domElement.addEventListener('pointermove', (event) => {
     if (event.pointerId !== activePointer) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    paintAt(event);
+    if (activeTool === 'line') painter.updateLine(hitTest(event));
+    else if (activeTool === 'brush' || activeTool === 'eraser') paintAt(event);
   }, true);
   function endStroke(event) {
     if (event.pointerId !== activePointer) return;
     event.stopImmediatePropagation();
     activePointer = null;
     previousHit = null;
-    painter.endStroke();
+    if (activeTool === 'line') {
+      if (event.type === 'pointercancel') painter.cancelLine();
+      else { painter.updateLine(hitTest(event)); painter.commitLine(); }
+    } else if (activeTool !== 'eyedropper') painter.endStroke();
     if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
   }
   renderer.domElement.addEventListener('pointerup', endStroke, true);
@@ -146,6 +159,7 @@ export function createScene(host) {
     setGridVisible: (visible) => { grid.visible = visible; },
     setLightingMode: painter.setLightingMode,
     setTool: (tool) => { activeTool = tool; },
+    setToolSettings: (tool, settings) => { toolSettings[tool] = { ...settings }; },
     undo: painter.undo,
     redo: painter.redo,
     canUndo: painter.canUndo,

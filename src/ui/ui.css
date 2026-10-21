@@ -28,6 +28,7 @@ button { cursor: pointer; }
 .ui-button--tool { width: 100%; justify-content: flex-start; min-height: 41px; background: #292f38; }
 .ui-button--tool[aria-pressed="true"] { border-color: #b9e875; background: #34402f; color: #d7f5aa; }
 .ui-icon { font-size: 15px; line-height: 1; }
+.ui-icon--mask { display: inline-block; flex: 0 0 19px; width: 19px; height: 19px; background: currentColor; -webkit-mask: var(--ui-icon-url) center / contain no-repeat; mask: var(--ui-icon-url) center / contain no-repeat; }
 
 .ui-dropdown { position: relative; }
 .ui-dropdown__menu { display: none; position: absolute; z-index: 20; top: calc(100% + 7px); left: 0; min-width: 180px; padding: 5px; border: 1px solid #3a424c; border-radius: 9px; background: #252b33; box-shadow: 0 16px 35px #0008; }
@@ -46,6 +47,11 @@ button { cursor: pointer; }
 .ui-slider__heading { display: flex; justify-content: space-between; gap: 10px; }
 .ui-slider__value { color: #eaf1fa; font-variant-numeric: tabular-nums; }
 .ui-slider__input { width: 100%; margin: 0; accent-color: #c4ee73; }
+.ui-color-picker { display: grid; gap: 8px; color: #c6ced8; font-size: 12px; }
+.ui-color-picker__row { display: flex; align-items: center; gap: 10px; }
+.ui-color-picker__input { width: 46px; height: 32px; padding: 2px; border: 1px solid #536173; border-radius: 6px; background: #252b33; cursor: pointer; }
+.ui-color-picker__value { color: #eaf1fa; font-variant-numeric: tabular-nums; }
+.ui-color-picker__input:focus-visible { outline: 2px solid #70b9ff; outline-offset: 2px; }
 .ui-checkbox { display: flex; align-items: center; gap: 9px; color: #c6ced8; font-size: 12px; cursor: pointer; }
 .ui-checkbox input { margin: 0; accent-color: #c4ee73; }
 .ui-notice { border-radius: 8px; padding: 10px 12px; background: #28323b; color: #d7e3ee; font-size: 12px; line-height: 1.45; }
