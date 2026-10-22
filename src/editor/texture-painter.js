@@ -12,9 +12,18 @@ import { copySelectedPixels, cutSelectedPixels, pasteSelectedPixels } from './se
 
 const SIZE = 1024;
 
+function configureTextureSampling(texture, antialiasEnabled) {
+  texture.magFilter = antialiasEnabled ? THREE.LinearFilter : THREE.NearestFilter;
+  texture.minFilter = antialiasEnabled ? THREE.LinearMipmapLinearFilter : THREE.NearestFilter;
+  texture.generateMipmaps = antialiasEnabled;
+  texture.anisotropy = antialiasEnabled ? 4 : 1;
+  texture.needsUpdate = true;
+}
+
 export function createTexturePainter() {
   const surfaces = new Map();
   let lightingMode = 'shaded';
+  let antialiasEnabled = true;
   let undoStack = [];
   let redoStack = [];
   let activeStroke = null;
@@ -25,6 +34,7 @@ export function createTexturePainter() {
   let movePreview = null;
   let overlaySurface = null;
   let maskEnabled = true;
+  let isolateBlur = true;
 
   function makeSurface(original) {
     const canvas = document.createElement('canvas');
@@ -38,7 +48,7 @@ export function createTexturePainter() {
     const texture = new THREE.CanvasTexture(compositeCanvas);
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-    texture.anisotropy = 4;
+    configureTextureSampling(texture, antialiasEnabled);
     const shaded = new THREE.MeshStandardMaterial({ map: texture, color: '#ffffff', roughness: 0.8, metalness: 0, side: original?.side ?? THREE.FrontSide });
     const unlit = new THREE.MeshBasicMaterial({ map: texture, color: '#ffffff', side: original?.side ?? THREE.FrontSide, toneMapped: false });
     const overlayCanvas = document.createElement('canvas');
@@ -139,6 +149,13 @@ export function createTexturePainter() {
     if (!['shaded', 'unlit'].includes(mode)) throw new Error(`Unknown lighting mode: ${mode}`);
     lightingMode = mode;
     for (const record of surfaces.values()) setMeshMaterial(record);
+  }
+
+  function setAntialiasEnabled(enabled) {
+    antialiasEnabled = Boolean(enabled);
+    for (const record of surfaces.values()) for (const surface of record.slots) {
+      configureTextureSampling(surface.texture, antialiasEnabled);
+    }
   }
 
   function toPixel(uv) {
@@ -403,7 +420,7 @@ export function createTexturePainter() {
       canConnectUvHits(previousHit, hit, previous, point, SIZE * 0.2) :
       canConnectSurfaceHits(previousHit, hit, previous, point, SIZE * 0.2));
     apply({ kind, surface, point, previous: continuous ? previous : null,
-      options: { ...options }, mask: maskEnabled ? selection : null });
+      options: { ...options }, mask: maskEnabled ? selection : null, isolateBlur });
     return hit;
   }
 
@@ -663,8 +680,10 @@ export function createTexturePainter() {
     canCopySelection: () => !!selection && !lassoDraft && !movePreview,
     canPasteSelection: () => !!clipboard, getLayerImage,
     setMaskEnabled: (enabled) => { maskEnabled = enabled; },
+    setBlurSelectionIsolation: (enabled) => { isolateBlur = enabled; },
     beginStroke, endStroke, undo, redo, canUndo: () => undoStack.length > 0,
-    canRedo: () => redoStack.length > 0, setLightingMode, getMeshes: () => [...surfaces.keys()],
+    canRedo: () => redoStack.length > 0, setLightingMode, setAntialiasEnabled,
+    getMeshes: () => [...surfaces.keys()],
     getGraphTargets: graphTargets, setGraph, createImage, setPaintSource, mergeLayerDown,
     exportProjectTextures, restoreProjectTextures,
     targetIdAt: (hit) => surfaceAt(hit)?.id ?? null };

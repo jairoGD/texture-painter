@@ -62,6 +62,7 @@ const palette = colorPalette({ color: '#000000', onChange: (color) => {
 } });
 let lightingMode = 'shaded';
 let gridVisible = true;
+let antialiasEnabled = true;
 function setStatus(message, error = false) {
   status.textContent = message;
   status.classList.toggle('is-error', error);
@@ -159,6 +160,13 @@ document.addEventListener('keydown', (event) => {
 
 const modeLabel = element('span', { className: 'viewport-header__mode', text: '●  SHADED' });
 const displayMenu = dropdown({ label: 'Display', items: [
+  { type: 'checkbox', label: 'Show grid', getChecked: () => gridVisible, keepOpen: true, onSelect: () => {
+    gridVisible = !gridVisible;
+    scene.setGridVisible(gridVisible);
+    markDirty();
+  } }
+] });
+const renderingMenu = dropdown({ label: 'Rendering', items: [
   { type: 'radio', label: 'Shaded', getChecked: () => lightingMode === 'shaded', onSelect: () => {
     lightingMode = 'shaded';
     scene.setLightingMode(lightingMode);
@@ -172,11 +180,12 @@ const displayMenu = dropdown({ label: 'Display', items: [
     modeLabel.textContent = '●  UNLIT';
   } },
   { type: 'separator' },
-  { type: 'checkbox', label: 'Show grid', getChecked: () => gridVisible, keepOpen: true, onSelect: () => {
-    gridVisible = !gridVisible;
-    scene.setGridVisible(gridVisible);
-    markDirty();
-  } }
+  { type: 'checkbox', label: 'Antialiasing', getChecked: () => antialiasEnabled,
+    keepOpen: true, onSelect: () => {
+      antialiasEnabled = !antialiasEnabled;
+      scene.setAntialiasEnabled(antialiasEnabled);
+      markDirty();
+    } }
 ] });
 
 const projectTag = element('span', { className: 'app-header__tag', text: 'NO PROJECT' });
@@ -205,7 +214,7 @@ const header = element('header', { className: 'app-header' }, [
     element('span', { className: 'brand__mark', text: '◈', attributes: { 'aria-hidden': 'true' } }),
     element('span', { className: 'brand__name', text: 'TEXTURE PAINTER' })
   ]),
-  toolbar({ items: [fileMenu, editMenu, displayMenu], className: 'app-header__menu' }),
+  toolbar({ items: [fileMenu, editMenu, displayMenu, renderingMenu], className: 'app-header__menu' }),
   element('div', { className: 'app-header__right' }, [samplingButton, mirrorButton, projectTag])
 ]);
 
@@ -305,14 +314,17 @@ function restoreEditorSettings(saved = {}, view = {}) {
   renderProperties();
   lightingMode = ['shaded', 'unlit'].includes(view.lighting) ? view.lighting : 'shaded';
   gridVisible = view.grid !== false;
+  antialiasEnabled = view.antialias !== false;
   scene.setLightingMode(lightingMode);
   scene.setGridVisible(gridVisible);
+  scene.setAntialiasEnabled(antialiasEnabled);
   scene.setMirrorEnabled(view.mirror === true);
   mirrorButton.setPressed(scene.getMirrorEnabled());
   scene.setSamplingMode(view.sampling === 'uv' ? 'uv' : 'surface');
   updateSamplingButton(scene.getSamplingMode());
   modeLabel.textContent = lightingMode === 'unlit' ? '●  UNLIT' : '●  SHADED';
   displayMenu.refresh();
+  renderingMenu.refresh();
   nodeEditor.restoreProjectState(saved.nodes);
 }
 

@@ -1,4 +1,5 @@
 import { strokeTouchesSelection } from './selection-coverage.js';
+import { rasterizePixelStroke } from './pixel-brush.js';
 
 const WHITE = '#ffffff';
 
@@ -53,15 +54,26 @@ function drawMark({ surface, kind, point, previous, options, mask }) {
   const layerWidth = Math.ceil(Math.max(from.x, point.x) + radius + 1) - left;
   const layerHeight = Math.ceil(Math.max(from.y, point.y) + radius + 1) - top;
   const layerContext = markBuffer(layerWidth, layerHeight);
-  for (let step = previous ? 0 : steps; step <= steps; step++) {
-    const t = step / steps;
-    dab(layerContext, from.x + (point.x - from.x) * t - left, from.y + (point.y - from.y) * t - top, settings);
-  }
-  if (mask) {
-    layerContext.globalCompositeOperation = 'destination-in';
-    layerContext.drawImage(mask.canvas, -left, -top);
+  if (settings.antialias === false) {
+    const image = layerContext.createImageData(layerWidth, layerHeight);
+    image.data.set(rasterizePixelStroke({ width: layerWidth, height: layerHeight,
+      left, top, from, to: point, steps, hasPrevious: !!previous,
+      size: settings.size, hardness: settings.hardness, color: settings.color,
+      mask, surfaceWidth: surface.canvas.width, surfaceHeight: surface.canvas.height }));
+    layerContext.putImageData(image, 0, 0);
+  } else {
+    for (let step = previous ? 0 : steps; step <= steps; step++) {
+      const t = step / steps;
+      dab(layerContext, from.x + (point.x - from.x) * t - left,
+        from.y + (point.y - from.y) * t - top, settings);
+    }
+    if (mask) {
+      layerContext.globalCompositeOperation = 'destination-in';
+      layerContext.drawImage(mask.canvas, -left, -top);
+    }
   }
   context.save();
+  if (settings.antialias === false) context.imageSmoothingEnabled = false;
   context.globalAlpha = settings.opacity / 100;
   if (kind === 'eraser' && surface.imageLayer) context.globalCompositeOperation = 'destination-out';
   context.drawImage(markCanvas, 0, 0, layerWidth, layerHeight,
@@ -70,7 +82,7 @@ function drawMark({ surface, kind, point, previous, options, mask }) {
   return true;
 }
 
-function blurStroke({ surface, point, previous, options, mask }) {
+function blurStroke({ surface, point, previous, options, mask, isolateBlur = true }) {
   const { canvas, context } = surface;
   const from = previous ?? point;
   const radius = Math.max(1, options.size / 2);
@@ -93,6 +105,8 @@ function blurStroke({ surface, point, previous, options, mask }) {
   const data = image.data;
   // Work in premultiplied RGBA so fully transparent pixels cannot contribute black.
   const horizontal = new Float32Array(width * height * 4);
+  const isolateSamples = !!mask && isolateBlur;
+  const horizontalWeights = isolateSamples ? new Float32Array(width * height) : null;
   const kernel = new Float32Array(reach * 2 + 1);
   let total = 0;
   for (let offset = -reach; offset <= reach; offset++) {
@@ -108,12 +122,15 @@ function blurStroke({ surface, point, previous, options, mask }) {
     for (let offset = -reach; offset <= reach; offset++) {
       const sampleX = Math.max(0, Math.min(width - 1, x + offset));
       const source = (y * width + sampleX) * 4;
-      const weight = kernel[offset + reach];
+      const selectionWeight = isolateSamples ?
+        mask.alpha[(sourceTop + y) * canvas.width + sourceLeft + sampleX] / 255 : 1;
+      const weight = kernel[offset + reach] * selectionWeight;
       const alpha = data[source + 3] / 255;
       horizontal[target] += data[source] * alpha * weight;
       horizontal[target + 1] += data[source + 1] * alpha * weight;
       horizontal[target + 2] += data[source + 2] * alpha * weight;
       horizontal[target + 3] += data[source + 3] * weight;
+      if (isolateSamples) horizontalWeights[y * width + x] += weight;
     }
   }
 
@@ -143,6 +160,7 @@ function blurStroke({ surface, point, previous, options, mask }) {
     let blurredGreen = 0;
     let blurredBlue = 0;
     let blurredAlpha = 0;
+    let sampleWeight = 0;
     for (let offset = -reach; offset <= reach; offset++) {
       const sampleY = Math.max(0, Math.min(height - 1, y + offset));
       const source = (sampleY * width + x) * 4;
@@ -151,6 +169,14 @@ function blurStroke({ surface, point, previous, options, mask }) {
       blurredGreen += horizontal[source + 1] * weight;
       blurredBlue += horizontal[source + 2] * weight;
       blurredAlpha += horizontal[source + 3] * weight;
+      if (isolateSamples) sampleWeight += horizontalWeights[sampleY * width + x] * weight;
+    }
+    if (isolateSamples) {
+      if (!sampleWeight) continue;
+      blurredRed /= sampleWeight;
+      blurredGreen /= sampleWeight;
+      blurredBlue /= sampleWeight;
+      blurredAlpha /= sampleWeight;
     }
     const originalAlpha = data[pixel + 3];
     const mixedAlpha = originalAlpha * (1 - mix) + blurredAlpha * mix;

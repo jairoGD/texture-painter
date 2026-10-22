@@ -15,11 +15,15 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 2000);
   camera.position.set(3.4, 2.4, 4.4);
 
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.25;
+  function createRenderer(antialias) {
+    const next = new THREE.WebGLRenderer({ antialias });
+    next.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    next.outputColorSpace = THREE.SRGBColorSpace;
+    next.toneMapping = THREE.ACESFilmicToneMapping;
+    next.toneMappingExposure = 1.25;
+    return next;
+  }
+  let renderer = createRenderer(true);
   host.append(renderer.domElement);
   const lassoCanvas = document.createElement('canvas');
   lassoCanvas.className = 'lasso-overlay';
@@ -62,6 +66,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   let paintMeshes = painter.getMeshes();
   let mirrorEnabled = false;
   let samplingMode = 'surface';
+  let antialiasEnabled = true;
   let gestureSamplingMode = 'surface';
   let resolveMirrorHit = createModelMirror(model, paintMeshes);
   const raycaster = new THREE.Raycaster();
@@ -221,7 +226,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     onSelectionChanged?.(created ? 'Selection created' : 'Selection needs a larger visible area');
   }
 
-  renderer.domElement.addEventListener('pointerdown', (event) => {
+  function onPointerDown(event) {
     if (event.button === 0 && (event.altKey || spacePressed)) {
       controls.mouseButtons.LEFT = event.altKey ? THREE.MOUSE.ROTATE : THREE.MOUSE.PAN;
       event.preventDefault();
@@ -289,8 +294,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       else paintAt(event, hit);
     }
     renderer.domElement.setPointerCapture(event.pointerId);
-  }, true);
-  renderer.domElement.addEventListener('pointermove', (event) => {
+  }
+  function onPointerMove(event) {
     if (event.pointerId !== activePointer) return;
     event.preventDefault();
     event.stopImmediatePropagation();
@@ -302,7 +307,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     else if (pointerAction === 'moveSelection') queueDraw(event);
     else if (activeTool === 'line' || activeTool === 'brush' ||
         activeTool === 'eraser' || activeTool === 'blur') queueDraw(event);
-  }, true);
+  }
   function endStroke(event) {
     if (event.pointerId !== activePointer) return;
     event.stopImmediatePropagation();
@@ -356,8 +361,13 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
     if (activeTool !== 'eyedropper') onContentChanged?.();
   }
-  renderer.domElement.addEventListener('pointerup', endStroke, true);
-  renderer.domElement.addEventListener('pointercancel', endStroke, true);
+  function bindRendererCanvas(canvas) {
+    canvas.addEventListener('pointerdown', onPointerDown, true);
+    canvas.addEventListener('pointermove', onPointerMove, true);
+    canvas.addEventListener('pointerup', endStroke, true);
+    canvas.addEventListener('pointercancel', endStroke, true);
+  }
+  bindRendererCanvas(renderer.domElement);
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
     if (painter.cancelLasso() || painter.cancelMove()) {
@@ -425,7 +435,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     return { model: modelSource, textures: painter.exportProjectTextures(),
       view: { camera: camera.position.toArray(), target: controls.target.toArray(),
         lighting: currentLightingMode, grid: grid.visible, mirror: mirrorEnabled,
-        sampling: samplingMode } };
+        sampling: samplingMode, antialias: antialiasEnabled } };
   }
 
   async function restoreProjectData(saved) {
@@ -462,13 +472,34 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   }
   new ResizeObserver(resize).observe(host);
   resize();
-  renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+  const renderFrame = () => { controls.update(); renderer.render(scene, camera); };
+  renderer.setAnimationLoop(renderFrame);
+
+  function setAntialiasEnabled(enabled) {
+    enabled = Boolean(enabled);
+    if (enabled === antialiasEnabled) return;
+    const oldRenderer = renderer;
+    const nextRenderer = createRenderer(enabled);
+    host.insertBefore(nextRenderer.domElement, oldRenderer.domElement);
+    renderer = nextRenderer;
+    controls.connect(nextRenderer.domElement);
+    bindRendererCanvas(nextRenderer.domElement);
+    oldRenderer.setAnimationLoop(null);
+    oldRenderer.domElement.remove();
+    oldRenderer.dispose();
+    oldRenderer.forceContextLoss();
+    antialiasEnabled = enabled;
+    painter.setAntialiasEnabled(enabled);
+    resize();
+    renderer.setAnimationLoop(renderFrame);
+  }
 
   return {
     importGlb,
     newProject, exportProjectData, restoreProjectData,
     frame: () => frame(model),
     setGridVisible: (visible) => { grid.visible = visible; },
+    setAntialiasEnabled,
     setMirrorEnabled: (enabled) => { mirrorEnabled = Boolean(enabled); },
     getMirrorEnabled: () => mirrorEnabled,
     setSamplingMode: (mode) => { samplingMode = mode === 'uv' ? 'uv' : 'surface'; },
@@ -482,7 +513,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     },
     setToolSettings: (tool, settings) => {
       toolSettings[tool] = { ...settings };
-      if (tool === 'lasso') painter.setMaskEnabled(settings.maskEnabled);
+      if (tool === 'lasso') {
+        painter.setMaskEnabled(settings.maskEnabled);
+        painter.setBlurSelectionIsolation(settings.isolateBlur);
+      }
     },
     clearSelection: () => {
       lassoSourceHit = null; lassoPath = []; renderLassoPath();

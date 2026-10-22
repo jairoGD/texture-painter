@@ -55,3 +55,43 @@ test('blur still blends colors across opaque pixels', () => {
   assert.ok(red > 0 && red < 255 && blue > 0 && blue < 255);
   assert.equal(alpha, 255);
 });
+
+test('lasso isolation prevents blur from sampling outside colors and transparency', () => {
+  const width = 9;
+  const height = 9;
+  const alpha = new Uint8Array(width * height);
+  const isolated = paintSurface(width, height);
+  const unrestricted = paintSurface(width, height);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const offset = (y * width + x) * 4;
+    const color = x < 5 ? [255, 0, 0, 255] : [0, 0, 255, 0];
+    isolated.pixels.set(color, offset);
+    unrestricted.pixels.set(color, offset);
+    if (x < 5) alpha[y * width + x] = 255;
+  }
+  const command = { kind: 'blur', point: { x: 4.5, y: 4.5 }, previous: null,
+    options: { size: 7, spread: 3, hardness: 100, strength: 100 }, mask: { alpha } };
+  executePaintCommand({ ...command, surface: isolated.surface, isolateBlur: true });
+  executePaintCommand({ ...command, surface: unrestricted.surface, isolateBlur: false });
+  assert.deepEqual(isolated.pixel(4, 4), [255, 0, 0, 255]);
+  assert.ok(unrestricted.pixel(4, 4)[3] < 255,
+    'disabling isolation allows the transparent outside to soften the edge');
+  assert.deepEqual(isolated.pixel(5, 4), [0, 0, 255, 0],
+    'the blur still does not write outside the selection');
+});
+
+test('lasso isolation keeps the color at an opaque selection boundary', () => {
+  const width = 9;
+  const { surface, pixels, pixel } = paintSurface(width, 9);
+  const alpha = new Uint8Array(width * 9);
+  for (let y = 0; y < 9; y++) for (let x = 0; x < width; x++) {
+    pixels.set(x < 5 ? [255, 0, 0, 255] : [0, 0, 255, 255],
+      (y * width + x) * 4);
+    if (x < 5) alpha[y * width + x] = 255;
+  }
+  executePaintCommand({ kind: 'blur', surface, point: { x: 4.5, y: 4.5 }, previous: null,
+    options: { size: 7, spread: 3, hardness: 100, strength: 100 },
+    mask: { alpha }, isolateBlur: true });
+  assert.deepEqual(pixel(4, 4), [255, 0, 0, 255]);
+  assert.deepEqual(pixel(5, 4), [0, 0, 255, 255]);
+});
