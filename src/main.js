@@ -22,7 +22,6 @@ const fileInput = element('input', { attributes: { type: 'file', accept: '.glb,m
 const projectInput = element('input', { attributes: { type: 'file', accept: '.tp3d,application/json', hidden: '' } });
 const viewport = element('main', { className: 'viewport', attributes: { 'aria-label': '3D viewport' } });
 const status = element('span', { className: 'status__message', text: 'Ready' });
-const hint = notice({ text: 'Left drag: paint · Alt + left drag or middle drag: orbit · Space + left drag: pan · Wheel: zoom' });
 
 const toolSettings = Object.fromEntries(TOOL_DEFINITIONS.map((tool) => [tool.id,
   { ...tool.defaults, ...(tool.usesColor ? { color: '#000000' } : {}) }]));
@@ -80,6 +79,7 @@ const palette = colorPalette({ color: '#000000', onChange: (color) => {
 } });
 let lightingMode = 'shaded';
 let gridVisible = true;
+let wireframeVisible = false;
 let antialiasEnabled = true;
 function setStatus(message, error = false) {
   status.textContent = message;
@@ -100,7 +100,6 @@ async function importModelFile(file, handle = null) {
       } catch { /* The model can still be located manually when reopening. */ }
     }
     markDirty();
-    hint.remove();
     setStatus(`${file.name} imported · ${paintableMeshes} paintable mesh${paintableMeshes === 1 ? '' : 'es'}` +
       (linkStored ? '' : ' · locate the GLB when reopening'), !linkStored);
   } catch (error) {
@@ -255,6 +254,12 @@ const displayMenu = dropdown({ label: 'Display', items: [
     scene.setGridVisible(gridVisible);
     markDirty();
   } },
+  { type: 'checkbox', label: 'Wireframe', getChecked: () => wireframeVisible,
+    keepOpen: true, onSelect: () => {
+      wireframeVisible = !wireframeVisible;
+      scene.setWireframeVisible(wireframeVisible);
+      markDirty();
+    } },
   { type: 'checkbox', label: '2D Texture', getChecked: () => texturePreview.isVisible(),
     keepOpen: true, onSelect: () => texturePreview.setVisible(!texturePreview.isVisible()) }
 ] });
@@ -356,7 +361,7 @@ const viewportHeader = element('div', { className: 'viewport-header' }, [
 const workspace = element('div', { className: 'workspace' }, [
   sidebar,
   element('div', { className: 'editor-area' }, [
-    element('div', { className: 'viewport-shell' }, [viewportHeader, viewport, hint]),
+    element('div', { className: 'viewport-shell' }, [viewportHeader, viewport]),
     nodeEditor.element
   ]),
   layersPanel.element
@@ -422,9 +427,11 @@ function restoreEditorSettings(saved = {}, view = {}) {
   renderProperties();
   lightingMode = ['shaded', 'unlit'].includes(view.lighting) ? view.lighting : 'shaded';
   gridVisible = view.grid !== false;
+  wireframeVisible = view.wireframe === true;
   antialiasEnabled = view.antialias !== false;
   scene.setLightingMode(lightingMode);
   scene.setGridVisible(gridVisible);
+  scene.setWireframeVisible(wireframeVisible);
   scene.setAntialiasEnabled(antialiasEnabled);
   scene.setMirrorEnabled(view.mirror === true);
   mirrorButton.setPressed(scene.getMirrorEnabled());
@@ -473,7 +480,6 @@ async function newProject({ name, resolution, model: selectedModel }) {
     currentModelHandle = selectedModel.handle;
     projectTag.textContent = name;
     dirty = false;
-    hint.remove();
     projectHome.hide();
     fileMenu.refresh();
     let modelLinkStored = false;

@@ -15,6 +15,7 @@ import { resizeSelectionAlpha } from './selection-morphology.js';
 import { selectionOnPaintSurface } from './selection-layer.js';
 import { FILTER_CATEGORIES } from './filter-definitions.js';
 import { renderFilterRegion } from './filter-effects.js';
+import { combineWandMasks, wandSelectionMask } from './wand-selection.js';
 
 function configureTextureSampling(texture, antialiasEnabled) {
   texture.magFilter = antialiasEnabled ? THREE.LinearFilter : THREE.NearestFilter;
@@ -28,6 +29,7 @@ export function createTexturePainter(renderer) {
   const surfaces = new Map();
   let lightingMode = 'shaded';
   let antialiasEnabled = true;
+  let wireframeEnabled = false;
   let undoStack = [];
   let redoStack = [];
   let activeStroke = null;
@@ -140,6 +142,9 @@ export function createTexturePainter(renderer) {
   function clear() {
     for (const record of surfaces.values()) {
       record.mesh.remove(record.overlay);
+      record.mesh.remove(record.wire);
+      if (record.wireGeometry) record.wireGeometry.dispose();
+      record.wireMaterial.dispose();
       for (const surface of record.slots) {
         if (surface.compositeFrame !== null) cancelAnimationFrame(surface.compositeFrame);
         surface.texture.dispose(); surface.shaded.dispose(); surface.unlit.dispose();
@@ -183,6 +188,30 @@ export function createTexturePainter(renderer) {
       record.overlay.renderOrder = 2;
       record.overlay.raycast = () => {};
       mesh.add(record.overlay);
+      const animated = mesh.isSkinnedMesh || !!mesh.morphTargetInfluences?.length;
+      record.wireGeometry = animated ? null : new THREE.EdgesGeometry(mesh.geometry, 1);
+      const wireOptions = { color: '#18202a',
+        transparent: true, opacity: 0.8, depthTest: true, depthWrite: false,
+        toneMapped: false };
+      record.wireMaterial = animated ?
+        new THREE.MeshBasicMaterial({ ...wireOptions, wireframe: true }) :
+        new THREE.LineBasicMaterial(wireOptions);
+      record.wire = animated ?
+        (mesh.isSkinnedMesh ? new THREE.SkinnedMesh(mesh.geometry, record.wireMaterial) :
+          new THREE.Mesh(mesh.geometry, record.wireMaterial)) :
+        new THREE.LineSegments(record.wireGeometry, record.wireMaterial);
+      if (mesh.isSkinnedMesh) {
+        record.wire.bind(mesh.skeleton, mesh.bindMatrix);
+        record.wire.bindMode = mesh.bindMode;
+      }
+      if (mesh.morphTargetInfluences?.length) {
+        record.wire.morphTargetInfluences = mesh.morphTargetInfluences;
+        record.wire.morphTargetDictionary = mesh.morphTargetDictionary;
+      }
+      record.wire.visible = wireframeEnabled;
+      record.wire.renderOrder = 1;
+      record.wire.raycast = () => {};
+      mesh.add(record.wire);
       surfaces.set(mesh, record);
       for (const surface of record.slots) {
         const layer = addGraphLayer(surface.graph, 'image');
@@ -215,6 +244,11 @@ export function createTexturePainter(renderer) {
     if (!['shaded', 'unlit'].includes(mode)) throw new Error(`Unknown lighting mode: ${mode}`);
     lightingMode = mode;
     for (const record of surfaces.values()) setMeshMaterial(record);
+  }
+
+  function setWireframeEnabled(enabled) {
+    wireframeEnabled = Boolean(enabled);
+    for (const record of surfaces.values()) record.wire.visible = wireframeEnabled;
   }
 
   function setAntialiasEnabled(enabled) {
@@ -330,6 +364,38 @@ export function createTexturePainter(renderer) {
     if (!selection) return false;
     recordSelection(null);
     return true;
+  }
+
+  function selectWand(hit, options = {}, mode = 'replace', mirroredHit = null) {
+    const surface = surfaceAt(hit);
+    if (!surface || lassoDraft || movePreview || activeStroke || linePreview || filterSession) return false;
+    commitFloatingSelection();
+    const parent = findSurface(surface.id);
+    if (options.allLayers) parent.refreshComposite();
+    const context = options.allLayers ? parent.compositeContext : surface.context;
+    const image = context.getImageData(0, 0, SIZE, SIZE);
+    const makeMask = (sourceHit) => {
+      const point = toPixel(sourceHit.uv);
+      return wandSelectionMask(image,
+        Math.max(0, Math.min(SIZE - 1, Math.floor(point.x))),
+        Math.max(0, Math.min(SIZE - 1, Math.floor(point.y))),
+        options.threshold ?? 30, options.similar === true);
+    };
+    const primary = makeMask(hit);
+    const mirrored = mirroredHit && surfaceAt(mirroredHit) === surface ? makeMask(mirroredHit) : null;
+    const old = selection?.surface === surface ? selection : null;
+    let next;
+    if (mode === 'replace' && mirrored) {
+      const parts = [selectionFromAlpha(surface, primary), selectionFromAlpha(surface, mirrored)]
+        .filter(Boolean);
+      next = parts.length > 1 ? combineSelectionParts(surface, parts) : parts[0] ?? null;
+    } else {
+      const added = mirrored ? combineWandMasks(primary, mirrored, 'add') : primary;
+      const alpha = combineWandMasks(old?.alpha, added, mode);
+      next = selectionFromAlpha(surface, alpha);
+    }
+    recordSelection(next);
+    return !!next;
   }
 
   function selectionFromPixels(surface, alpha, indices) {
@@ -1012,7 +1078,7 @@ export function createTexturePainter(renderer) {
 
   return { prepare, clear, paint, fill, sample, beginLine, updateLine, commitLine, cancelLine,
     beginLasso, endLasso, cancelLasso, selectedAt, beginMove, updateMove, endMove,
-    cancelMove, clearSelection, invertSelection, resizeSelection,
+    cancelMove, clearSelection, selectWand, invertSelection, resizeSelection,
     copySelection, cutSelection, pasteSelection,
     canInvertSelection: () => !!selection && !lassoDraft && !movePreview,
     canResizeSelection: () => !!selection?.indices.length && !lassoDraft && !movePreview,
@@ -1022,7 +1088,8 @@ export function createTexturePainter(renderer) {
     setMaskEnabled: (enabled) => { maskEnabled = enabled; },
     setBlurSelectionIsolation: (enabled) => { isolateBlur = enabled; },
     beginStroke, endStroke, undo, redo, canUndo: () => undoStack.length > 0 && !filterSession,
-    canRedo: () => redoStack.length > 0 && !filterSession, setLightingMode, setAntialiasEnabled,
+    canRedo: () => redoStack.length > 0 && !filterSession, setLightingMode,
+    setWireframeEnabled, setAntialiasEnabled,
     getMeshes: () => [...surfaces.keys()],
     getGraphTargets: graphTargets, setGraph, createImage, setPaintSource, mergeLayerDown,
     exportProjectTextures, restoreProjectTextures,

@@ -90,6 +90,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   let lassoDragged = false;
   let lassoSourceHit = null;
   let lassoPath = [];
+  let pendingAltWand = null;
   let spacePressed = false;
   const toolSettings = {};
 
@@ -231,6 +232,9 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
 
   function onPointerDown(event) {
     if (event.button === 0 && (event.altKey || spacePressed)) {
+      if (activeTool === 'wand' && event.altKey && !spacePressed)
+        pendingAltWand = { pointerId: event.pointerId,
+          x: event.clientX, y: event.clientY };
       controls.mouseButtons.LEFT = event.altKey ? THREE.MOUSE.ROTATE : THREE.MOUSE.PAN;
       event.preventDefault();
       return;
@@ -252,8 +256,11 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     lineStartHit = null;
     lineStartMirrorHit = null;
     const hit = hitTest(event);
-    if (activeTool === 'lasso') {
-      pointerAction = painter.selectedAt(hit) ? 'moveSelection' : 'lasso';
+    if (activeTool === 'lasso' || activeTool === 'wand') {
+      const wandMode = event.shiftKey ? 'add' :
+        (event.ctrlKey || event.metaKey) ? 'subtract' : 'replace';
+      pointerAction = (activeTool === 'lasso' || wandMode === 'replace') &&
+        painter.selectedAt(hit) ? 'moveSelection' : activeTool;
       if (pointerAction === 'moveSelection') {
         const projection = gestureSamplingMode === 'surface' ?
           captureVisibleUv(renderer, camera, hit, paintMeshes) : null;
@@ -265,7 +272,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         if (!painter.beginMove(hit, projection, viewportPoint(event), gestureSamplingMode,
           mirrored)) pointerAction = null;
       }
-      else {
+      else if (activeTool === 'lasso') {
         if (painter.beginLasso(hit)) lassoSourceHit = hit;
         if (lassoSourceHit) {
           const rect = renderer.domElement.getBoundingClientRect();
@@ -275,6 +282,11 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         lastLassoScreen = { x: event.clientX, y: event.clientY };
         lassoStartScreen = lastLassoScreen;
         lassoDragged = false;
+      } else {
+        const created = hit ? painter.selectWand(hit, toolSettings.wand, wandMode,
+          mirrorHitAt(hit)) : false;
+        if (!hit) painter.clearSelection();
+        onSelectionChanged?.(created ? 'Selection created' : 'Selection cleared');
       }
     } else if (activeTool === 'line') {
       const mirrored = mirrorHitAt(hit);
@@ -311,6 +323,20 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         activeTool === 'eraser' || activeTool === 'blur') queueDraw(event);
   }
   function endStroke(event) {
+    if (pendingAltWand?.pointerId === event.pointerId) {
+      const click = event.type === 'pointerup' &&
+        Math.hypot(event.clientX - pendingAltWand.x,
+          event.clientY - pendingAltWand.y) <= 4;
+      pendingAltWand = null;
+      if (click) {
+        const hit = hitTest(event);
+        const selected = hit ? painter.selectWand(hit, toolSettings.wand, 'subtract',
+          mirrorHitAt(hit)) : false;
+        if (!hit) painter.clearSelection();
+        onSelectionChanged?.(selected ? 'Selection updated' : 'Selection cleared');
+      }
+      return;
+    }
     if (event.pointerId !== activePointer) return;
     event.stopImmediatePropagation();
     if (drawFrame !== null) cancelAnimationFrame(drawFrame);
@@ -352,7 +378,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     } else if (activeTool === 'line') {
       if (event.type === 'pointercancel') painter.cancelLine();
       else { previewLineAt(event); painter.commitLine(); }
-    } else if (activeTool !== 'eyedropper') painter.endStroke();
+    } else if (activeTool !== 'eyedropper' && activeTool !== 'wand') painter.endStroke();
+    const movedSelection = pointerAction === 'moveSelection';
     pointerAction = null;
     lineStartScreen = null;
     lineStartHit = null;
@@ -361,7 +388,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     lassoStartScreen = null;
     lassoDragged = false;
     if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
-    if (activeTool !== 'eyedropper') onContentChanged?.();
+    if (movedSelection || (activeTool !== 'eyedropper' && activeTool !== 'wand'))
+      onContentChanged?.();
   }
   function bindRendererCanvas(canvas) {
     canvas.addEventListener('pointerdown', onPointerDown, true);
@@ -442,7 +470,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       textures: painter.exportProjectTextures(),
       view: { camera: camera.position.toArray(), target: controls.target.toArray(),
         lighting: currentLightingMode, grid: grid.visible, mirror: mirrorEnabled,
-        sampling: samplingMode, antialias: antialiasEnabled } };
+        sampling: samplingMode, antialias: antialiasEnabled,
+        wireframe: wireframeVisible } };
   }
 
   async function restoreProjectData(saved, file = null) {
@@ -466,6 +495,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   }
 
   let currentLightingMode = 'shaded';
+  let wireframeVisible = false;
 
   function resize() {
     const width = host.clientWidth;
@@ -506,6 +536,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     newProject, exportProjectData, restoreProjectData,
     frame: () => frame(model),
     setGridVisible: (visible) => { grid.visible = visible; },
+    setWireframeVisible: (visible) => {
+      wireframeVisible = Boolean(visible);
+      painter.setWireframeEnabled(wireframeVisible);
+    },
     setAntialiasEnabled,
     setMirrorEnabled: (enabled) => { mirrorEnabled = Boolean(enabled); },
     getMirrorEnabled: () => mirrorEnabled,
@@ -517,10 +551,14 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         painter.cancelLasso(); lassoSourceHit = null; lassoPath = []; renderLassoPath();
       }
       activeTool = tool;
+      if ((tool === 'lasso' || tool === 'wand') && toolSettings[tool]) {
+        painter.setMaskEnabled(toolSettings[tool].maskEnabled);
+        painter.setBlurSelectionIsolation(toolSettings[tool].isolateBlur);
+      }
     },
     setToolSettings: (tool, settings) => {
       toolSettings[tool] = { ...settings };
-      if (tool === 'lasso') {
+      if (tool === activeTool && (tool === 'lasso' || tool === 'wand')) {
         painter.setMaskEnabled(settings.maskEnabled);
         painter.setBlurSelectionIsolation(settings.isolateBlur);
       }
