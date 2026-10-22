@@ -30,6 +30,7 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
   const addMenu = dropdown({ label: '+ Add Node', items: [
     { label: 'Solid Color', onSelect: () => addNode('color') },
     { label: 'Mix', onSelect: () => addNode('blend') },
+    { label: 'Invert', onSelect: () => addNode('invert') },
     { label: 'Image', onSelect: () => addNode('image') }
   ] });
   const toolbar = element('div', { className: 'node-editor__toolbar' }, [
@@ -63,7 +64,7 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
   function getState() {
     return { targetId: activeId, graph: graph ? cloneTextureGraph(graph) : null,
       paintSource: activeTarget()?.paintSource ?? null,
-      targets: [...targetMap.values()].map(({ id, label }) => ({ id, label })) };
+      targets: [...targetMap.values()].map(({ id, label, color }) => ({ id, label, color })) };
   }
   function notifyState() { onStateChange?.(getState()); }
   function getProjectState() {
@@ -143,7 +144,7 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
 
   function setTargets(next) {
     targetMap = new Map(next.map((target) => [target.id, {
-      id: target.id, label: target.label, graph: cloneTextureGraph(target.graph),
+      id: target.id, label: target.label, color: target.color, graph: cloneTextureGraph(target.graph),
       paintSource: null, history: [], future: []
     }]));
     targetSelect.replaceChildren(...[...targetMap.values()].map((target) =>
@@ -358,10 +359,11 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
       attributes: { 'data-node-id': node.id } });
     rootNode.style.left = `${node.x}px`;
     rootNode.style.top = `${node.y}px`;
-    const owner = graph.nodes.find((item) => item.id === node.layerMaskOwner);
+    const owner = graph.nodes.find((item) => item.id === (node.layerMaskOwner || node.layerInvertOwner));
     if (node.layerIsMask) rootNode.classList.add('is-mask-layer');
     const title = element('div', { className: 'node-editor__node-title',
       text: node.type === 'layerMask' ? `Apply Mask · ${owner?.layerName || 'Layer'}` :
+        node.layerInvertOwner ? `Invert · ${owner?.layerName || 'Layer'}` :
         node.layerIsMask ? `Mask Layer · ${node.layerName || 'Layer'}` : definition.title });
     title.addEventListener('pointerdown', (event) => startNodeDrag(event, node, rootNode));
     rootNode.append(title);

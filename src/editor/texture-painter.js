@@ -4,13 +4,12 @@ import { combineSelectionParts, containsSelection, moveSelectionInView, selectio
   selectionFromMask, visibleSelectionSamples } from './lasso-selection.js';
 import { addTextureNode, blendCanvases, cloneTextureGraph, connectTextureNodes,
   createTextureGraph, evaluateTextureNode, removeTextureNode, renderTextureGraph } from './texture-graph.js';
-import { addGraphLayer, readLayerStack, removeGraphLayer } from './layer-graph.js';
+import { addGraphLayer, readLayerStack, removeGraphLayer, syncLayerMasks } from './layer-graph.js';
 import { canConnectSurfaceHits, canConnectUvHits } from './surface-stroke.js';
 import { applyPaintPatches, capturePaintPatches } from './paint-history.js';
 import { moveSelectionInUv, shiftedUvSelection, shiftedUvSelectionParts } from './uv-lasso-move.js';
 import { copySelectedPixels, cutSelectedPixels, pasteSelectedPixels } from './selection-clipboard.js';
-
-const SIZE = 1024;
+import { textureResolution as SIZE } from './texture-resolution.js';
 
 function configureTextureSampling(texture, antialiasEnabled) {
   texture.magFilter = antialiasEnabled ? THREE.LinearFilter : THREE.NearestFilter;
@@ -65,7 +64,7 @@ export function createTexturePainter() {
       polygonOffsetFactor: -2, side: THREE.DoubleSide, toneMapped: false });
     const surface = { canvas, context, compositeCanvas, compositeContext, texture, shaded, unlit,
       overlayCanvas, overlayContext, overlayTexture, overlayMaterial, graph: createTextureGraph(),
-      imageAssets: new Map(), imageCache: new Map(), compositeFrame: null };
+      imageAssets: new Map(), imageCache: new Map(), compositeFrame: null, compositeRevision: 0 };
     surface.activePaint = null;
     surface.resetPaint = () => {
       context.fillStyle = '#ffffff';
@@ -76,12 +75,14 @@ export function createTexturePainter() {
       if (surface.compositeFrame !== null) cancelAnimationFrame(surface.compositeFrame);
       surface.compositeFrame = null;
       renderTextureGraph(surface);
+      surface.compositeRevision++;
     };
     surface.requestComposite = () => {
       if (surface.compositeFrame !== null) return;
       surface.compositeFrame = requestAnimationFrame(() => {
         surface.compositeFrame = null;
         renderTextureGraph(surface);
+        surface.compositeRevision++;
       });
     };
     surface.refreshComposite();
@@ -116,8 +117,13 @@ export function createTexturePainter() {
       const originals = isArray ? mesh.material : [mesh.material];
       const record = { mesh, isArray, slots: originals.map(makeSurface) };
       record.slots.forEach((surface, slotIndex) => {
+        const original = originals[slotIndex];
         surface.id = `${mesh.uuid}:${slotIndex}`;
-        surface.label = `${mesh.name || `Mesh ${meshIndex + 1}`}${record.slots.length > 1 ? ` / Material ${slotIndex + 1}` : ''}`;
+        surface.meshName = mesh.name?.trim() || `Mesh ${meshIndex + 1}`;
+        surface.materialName = original?.name?.trim() ||
+          (record.slots.length > 1 ? `Material ${slotIndex + 1}` : surface.meshName);
+        surface.materialColor = original?.color?.getHexString ?
+          `#${original.color.getHexString()}` : '#e9edf3';
         surface.geometry = mesh.geometry;
         surface.slotIndex = slotIndex;
       });
@@ -141,6 +147,20 @@ export function createTexturePainter() {
         surface.refreshComposite();
       }
       setMeshMaterial(record);
+    }
+    const allSlots = [...surfaces.values()].flatMap((record) => record.slots);
+    const nameCounts = new Map();
+    for (const surface of allSlots) nameCounts.set(surface.materialName,
+      (nameCounts.get(surface.materialName) ?? 0) + 1);
+    const usedLabels = new Set();
+    for (const surface of allSlots) {
+      const base = nameCounts.get(surface.materialName) > 1 ?
+        `${surface.materialName} · ${surface.meshName}` : surface.materialName;
+      let label = base;
+      for (let number = 2; usedLabels.has(label); number++) label = `${base} (${number})`;
+      surface.label = label;
+      usedLabels.add(label);
+      if (surface.activePaint) surface.activePaint.label = label;
     }
     return meshes.length;
   }
@@ -535,7 +555,8 @@ export function createTexturePainter() {
 
   function graphTargets() {
     return [...surfaces.values()].flatMap((record) => record.slots.map((surface) =>
-      ({ id: surface.id, label: surface.label, graph: cloneTextureGraph(surface.graph) })));
+      ({ id: surface.id, label: surface.label, color: surface.materialColor,
+        graph: cloneTextureGraph(surface.graph) })));
   }
 
   function findSurface(targetId) {
@@ -545,6 +566,11 @@ export function createTexturePainter() {
 
   function getLayerImage(targetId, imageKey) {
     return findSurface(targetId)?.imageAssets.get(imageKey)?.canvas ?? null;
+  }
+
+  function getCompositePreview(targetId) {
+    const surface = findSurface(targetId);
+    return surface ? { canvas: surface.compositeCanvas, revision: surface.compositeRevision } : null;
   }
 
   function createImage(targetId, nodeId, source = null, name = 'Untitled image', savedKey = null) {
@@ -615,7 +641,9 @@ export function createTexturePainter() {
     const blank = document.createElement('canvas');
     blank.width = blank.height = SIZE;
     const apply = (base, layer) => {
-      const image = evaluateTextureNode(surface, layer.source.id, 'Color', graph);
+      const colorLink = graph.links.find((link) => link.to === layer.id && link.toSocket === 'B');
+      const image = colorLink ? evaluateTextureNode(surface, colorLink.from,
+        colorLink.fromSocket, graph) : null;
       if (!image) return base;
       const factorLink = graph.links.find((link) => link.to === layer.id && link.toSocket === 'Factor');
       const mask = factorLink ? evaluateTextureNode(surface, factorLink.from, factorLink.fromSocket, graph) : null;
@@ -636,8 +664,10 @@ export function createTexturePainter() {
     lowerMix.mode = 'mix';
     lowerMix.factor = 1;
     lowerMix.layerVisible = true;
+    lowerMix.layerInvert = false;
     next.links = next.links.filter((link) => !(link.to === lowerMix.id && link.toSocket === 'Factor'));
     connectTextureNodes(next, source.id, 'Color', lowerMix.id, 'B');
+    syncLayerMasks(next);
     if (!next.links.some((link) => link.from === previousSource.id)) removeTextureNode(next, previousSource.id);
     return { graph: next, layerId: lowerMix.id, sourceId: source.id };
   }
@@ -682,7 +712,7 @@ export function createTexturePainter() {
     beginLasso, endLasso, cancelLasso, selectedAt, beginMove, updateMove, endMove,
     cancelMove, clearSelection, copySelection, cutSelection, pasteSelection,
     canCopySelection: () => !!selection && !lassoDraft && !movePreview,
-    canPasteSelection: () => !!clipboard, getLayerImage,
+    canPasteSelection: () => !!clipboard, getLayerImage, getCompositePreview,
     setMaskEnabled: (enabled) => { maskEnabled = enabled; },
     setBlurSelectionIsolation: (enabled) => { isolateBlur = enabled; },
     beginStroke, endStroke, undo, redo, canUndo: () => undoStack.length > 0,

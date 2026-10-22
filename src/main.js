@@ -1,11 +1,14 @@
 import { createScene } from './editor/scene.js';
+import { setTextureResolution } from './editor/texture-resolution.js';
 import { listRecent, parseProject, PROJECT_VERSION, projectFileName,
-  removeRecent, saveRecent, writeProjectFile } from './editor/project-file.js';
+  getModelHandle, removeRecent, saveModelHandle, saveRecent, writeProjectFile } from './editor/project-file.js';
 import { TOOL_DEFINITIONS } from './editor/tools.js';
 import { colorPalette } from './ui/color-palette.js';
 import { createNodeEditor } from './ui/node-editor.js';
 import { createProjectHome } from './ui/project-home.js';
 import { createLayersPanel } from './ui/layers-panel.js';
+import { createTexturePreview } from './ui/texture-preview.js';
+import { createModelRelinkDialog, GLB_PICKER } from './ui/model-relink.js';
 import { dropdown, element, notice, panel, renderControl, renderPanel, toggleButton, toolbar } from './ui/index.js';
 import mirrorIcon from './ui/icons/mirror.svg';
 import samplingIcon from './ui/icons/sampling.svg';
@@ -23,15 +26,16 @@ const toolSettings = Object.fromEntries(TOOL_DEFINITIONS.map((tool) => [tool.id,
 let activeTool = 'brush';
 let nodeEditor;
 let layersPanel;
+let texturePreview;
 let projectId = null;
 let projectName = '';
 let projectHandle = null;
+let currentModelHandle = null;
 let dirty = false;
 let loadingProject = false;
 function markDirty() { if (projectId && !loadingProject) dirty = true; }
 const scene = createScene(viewport, {
   onGraphTargetsChanged: (targets) => nodeEditor?.setTargets(targets),
-  onPaintTargetChanged: (id) => nodeEditor?.selectTarget(id),
   onSelectionChanged: (message) => { setStatus(message); editMenu.refresh(); },
   onContentChanged: () => { layersPanel?.refreshThumbnails(); markDirty(); }, onColorPicked: (color) => {
   palette.setColor(color);
@@ -42,7 +46,12 @@ nodeEditor = createNodeEditor({ targets: scene.getGraphTargets(),
   onCreateImage: (id, nodeId) => scene.createImage(id, nodeId),
   onImportImage: (id, nodeId, file) => scene.importImage(id, nodeId, file),
   onPaintSourceChange: (id, nodeId) => { const changed = scene.setPaintSource(id, nodeId); if (changed) markDirty(); return changed; },
-  onStateChange: (state) => layersPanel?.setState(state),
+  onStateChange: (state) => {
+    scene.setPaintTarget(state.targetId);
+    layersPanel?.setState(state);
+    texturePreview?.setTarget(state.targetId,
+      state.targets.find((target) => target.id === state.targetId)?.label);
+  },
   onError: (message) => setStatus(message, true)
 });
 layersPanel = createLayersPanel({ nodeEditor,
@@ -52,6 +61,12 @@ layersPanel = createLayersPanel({ nodeEditor,
   getImageCanvas: (id, key) => scene.getLayerImage(id, key),
   onError: (message) => setStatus(message, true)
 });
+texturePreview = createTexturePreview({ getTexture: (id) => scene.getTexturePreview(id),
+  onClose: () => displayMenu.refresh() });
+const initialTarget = nodeEditor.getState();
+texturePreview.setTarget(initialTarget.targetId,
+  initialTarget.targets.find((target) => target.id === initialTarget.targetId)?.label);
+const modelRelink = createModelRelinkDialog();
 for (const tool of TOOL_DEFINITIONS) scene.setToolSettings(tool.id, toolSettings[tool.id]);
 const palette = colorPalette({ color: '#000000', onChange: (color) => {
   for (const tool of TOOL_DEFINITIONS.filter((item) => item.usesColor)) {
@@ -68,29 +83,54 @@ function setStatus(message, error = false) {
   status.classList.toggle('is-error', error);
 }
 
-fileInput.addEventListener('change', async () => {
-  const file = fileInput.files?.[0];
+async function importModelFile(file, handle = null) {
   if (!file) return;
   setStatus(`Loading ${file.name}…`);
   try {
     const { paintableMeshes } = await scene.importGlb(file);
+    currentModelHandle = handle;
+    let linkStored = false;
+    if (handle) {
+      try {
+        await saveModelHandle(scene.getModelSource().referenceId, handle);
+        linkStored = true;
+      } catch { /* The model can still be located manually when reopening. */ }
+    }
     markDirty();
     hint.remove();
-    setStatus(`${file.name} imported · ${paintableMeshes} paintable mesh${paintableMeshes === 1 ? '' : 'es'}`);
+    setStatus(`${file.name} imported · ${paintableMeshes} paintable mesh${paintableMeshes === 1 ? '' : 'es'}` +
+      (linkStored ? '' : ' · locate the GLB when reopening'), !linkStored);
   } catch (error) {
     setStatus(error.message || 'Import failed', true);
-  } finally {
-    fileInput.value = '';
   }
+}
+
+fileInput.addEventListener('change', async () => {
+  const file = fileInput.files?.[0];
+  fileInput.value = '';
+  await importModelFile(file);
 });
 
+async function chooseModelFile() {
+  if (!window.showOpenFilePicker) { fileInput.click(); return; }
+  try {
+    const [handle] = await window.showOpenFilePicker(GLB_PICKER);
+    if (handle) await importModelFile(await handle.getFile(), handle);
+  } catch (error) {
+    if (error.name !== 'AbortError') setStatus(error.message || 'Could not open model.', true);
+  }
+}
+
 const fileMenu = dropdown({ label: 'File', items: [
-  { label: 'New Project', onSelect: () => projectHome.show(Boolean(projectId)) },
+  { label: 'New Project', onSelect: () => {
+    projectHome.show(Boolean(projectId));
+    projectHome.showNew();
+  } },
   { label: 'Open Project', onSelect: chooseProjectFile },
   { label: 'Save Project', shortcut: 'Ctrl+S', getDisabled: () => !projectId, onSelect: saveProject },
   { label: 'Save Project As', getDisabled: () => !projectId, onSelect: () => saveProject(true) },
   { type: 'separator' },
-  { label: 'Import Model', onSelect: () => fileInput.click() }
+  { label: 'Import Model', onSelect: chooseModelFile }
 ] });
 
 function undo() {
@@ -164,7 +204,9 @@ const displayMenu = dropdown({ label: 'Display', items: [
     gridVisible = !gridVisible;
     scene.setGridVisible(gridVisible);
     markDirty();
-  } }
+  } },
+  { type: 'checkbox', label: '2D Texture', getChecked: () => texturePreview.isVisible(),
+    keepOpen: true, onSelect: () => texturePreview.setVisible(!texturePreview.isVisible()) }
 ] });
 const renderingMenu = dropdown({ label: 'Rendering', items: [
   { type: 'radio', label: 'Shaded', getChecked: () => lightingMode === 'shaded', onSelect: () => {
@@ -285,6 +327,22 @@ function chooseProjectFile() {
   openProjectFromPicker();
 }
 
+async function resolveProjectModel(model) {
+  if (model.kind === 'starter') return { file: null, handle: null, relinked: false };
+  let handle = null;
+  try { handle = await getModelHandle(model.referenceId); }
+  catch { /* The model can still be located manually. */ }
+  if (handle) {
+    try {
+      const permission = handle.queryPermission ? await handle.queryPermission({ mode: 'read' }) : 'granted';
+      if (permission === 'granted') return { file: await handle.getFile(), handle, relinked: false };
+    } catch { /* The saved file may have moved or been deleted. */ }
+  }
+  const choice = await modelRelink.prompt(model.name, handle);
+  if (!choice) throw new DOMException('Project opening cancelled.', 'AbortError');
+  return { ...choice, relinked: true };
+}
+
 async function openProjectFromPicker() {
   try {
     const [handle] = await window.showOpenFilePicker({
@@ -328,22 +386,69 @@ function restoreEditorSettings(saved = {}, view = {}) {
   nodeEditor.restoreProjectState(saved.nodes);
 }
 
-function newProject(name) {
+function projectDocument(id, name) {
+  return { format: 'tp3d', version: PROJECT_VERSION,
+    id, name, updatedAt: new Date().toISOString(),
+    scene: scene.exportProjectData(),
+    editor: { nodes: nodeEditor.getProjectState(), palette: palette.getState(),
+      activeTool, toolSettings: structuredClone(toolSettings) } };
+}
+
+async function newProject({ name, resolution, model: selectedModel }) {
   if (!canLeaveProject()) return;
+  if (!window.showSaveFilePicker)
+    throw new Error('Use Chrome or Edge to choose where to save the project.');
+  const handle = await window.showSaveFilePicker({
+    id: 'texture-painter-project',
+    suggestedName: projectFileName(name),
+    types: [{ description: 'Texture Painter Project', accept: { 'application/json': ['.tp3d'] } }],
+    excludeAcceptAllOption: true
+  });
+  const previous = projectId ? { scene: scene.exportProjectData(),
+    modelFile: scene.getModelFile(), modelHandle: currentModelHandle,
+    editor: { nodes: nodeEditor.getProjectState(), palette: palette.getState(),
+      activeTool, toolSettings: structuredClone(toolSettings) }, dirty } : null;
   loadingProject = true;
+  setStatus(`Creating ${name}…`);
   try {
-    scene.newProject();
+    setTextureResolution(resolution);
+    await scene.importGlb(selectedModel.file);
     restoreEditorSettings();
-    projectId = crypto.randomUUID();
+    const id = crypto.randomUUID();
+    const project = projectDocument(id, name);
+    await writeProjectFile(handle, project);
+    projectId = id;
     projectName = name;
-    projectHandle = null;
-    projectTag.textContent = projectName;
-    dirty = true;
+    projectHandle = handle;
+    currentModelHandle = selectedModel.handle;
+    projectTag.textContent = name;
+    dirty = false;
+    hint.remove();
     projectHome.hide();
     fileMenu.refresh();
-    setStatus(`${projectName} created · save to create a .tp3d file`);
+    let modelLinkStored = false;
+    if (currentModelHandle) {
+      try { await saveModelHandle(project.scene.model.referenceId, currentModelHandle); modelLinkStored = true; }
+      catch { /* The GLB can be located manually when reopening. */ }
+    }
+    setStatus(`${name} created · ${resolution} × ${resolution}` +
+      (modelLinkStored ? '' : ' · locate the GLB when reopening'), !modelLinkStored);
+    try { await saveRecent(project, handle); await refreshRecent(); }
+    catch { setStatus(`${name} created · recent list unavailable`); }
   } catch (error) {
-    projectHome.setMessage(error.message || 'Could not create project.');
+    try {
+      if (previous) {
+        await scene.restoreProjectData(previous.scene, previous.modelFile);
+        restoreEditorSettings(previous.editor, previous.scene.view);
+        currentModelHandle = previous.modelHandle;
+        dirty = previous.dirty;
+      } else {
+        scene.newProject();
+        restoreEditorSettings();
+      }
+    } catch { /* Keep the setup screen available after a failed import. */ }
+    setStatus(error.message || 'Could not create project.', true);
+    throw error;
   } finally { loadingProject = false; }
 }
 
@@ -354,26 +459,36 @@ async function openProject(project, handle = null) {
   setStatus(`Opening ${project.name}…`);
   let previous = null;
   try {
+    const modelReference = await resolveProjectModel(project.scene.model);
     if (projectId) previous = { scene: scene.exportProjectData(),
+      modelFile: scene.getModelFile(), modelHandle: currentModelHandle,
       editor: { nodes: nodeEditor.getProjectState(), palette: palette.getState(),
         activeTool, toolSettings: structuredClone(toolSettings) }, dirty };
-    await scene.restoreProjectData(project.scene);
+    await scene.restoreProjectData(project.scene, modelReference.file);
     restoreEditorSettings(project.editor, project.scene.view);
+    currentModelHandle = modelReference.handle;
+    if (modelReference.handle) {
+      try { await saveModelHandle(project.scene.model.referenceId, modelReference.handle); }
+      catch { /* Reopening can still use the manual locator. */ }
+    }
+    if (modelReference.relinked) project.scene.model = scene.getModelSource();
     projectId = project.id;
     projectName = project.name;
     projectHandle = handle;
     projectTag.textContent = projectName;
-    dirty = false;
+    dirty = modelReference.relinked;
     projectHome.hide();
     fileMenu.refresh();
-    setStatus(`${projectName} opened`);
+    setStatus(`${projectName} opened${modelReference.relinked ? ' · model located; save project' : ''}`);
     try { await saveRecent(project, handle); await refreshRecent(); }
     catch { setStatus(`${projectName} opened · recent list unavailable`); }
   } catch (error) {
+    if (error.name === 'AbortError') { setStatus('Project opening cancelled'); return; }
     if (previous) {
       try {
-        await scene.restoreProjectData(previous.scene);
+        await scene.restoreProjectData(previous.scene, previous.modelFile);
         restoreEditorSettings(previous.editor, previous.scene.view);
+        currentModelHandle = previous.modelHandle;
         dirty = previous.dirty;
       } catch { /* Keep the project chooser open if the previous scene cannot be restored. */ }
     }
@@ -412,18 +527,21 @@ async function saveProject(saveAs = false) {
   }
   setStatus(`Saving ${handle.name}…`);
   try {
-    const savedName = handle.name.replace(/\.tp3d$/i, '') || projectName;
-    const project = { format: 'tp3d', version: PROJECT_VERSION,
-      id: projectId, name: savedName, updatedAt: new Date().toISOString(),
-      scene: scene.exportProjectData(),
-      editor: { nodes: nodeEditor.getProjectState(), palette: palette.getState(),
-        activeTool, toolSettings: structuredClone(toolSettings) } };
+    const modelSource = scene.getModelSource();
+    let modelLinkStored = modelSource.kind !== 'glb';
+    if (modelSource.kind === 'glb' && currentModelHandle) {
+      try {
+        await saveModelHandle(modelSource.referenceId, currentModelHandle);
+        modelLinkStored = true;
+      } catch { /* The project file can still be saved and relinked later. */ }
+    }
+    const project = projectDocument(projectId, projectName);
     await writeProjectFile(handle, project);
     projectHandle = handle;
-    projectName = savedName;
     projectTag.textContent = projectName;
     dirty = false;
-    setStatus(`${handle.name} saved`);
+    setStatus(`${handle.name} saved${modelLinkStored ? '' : ' · locate the GLB when reopening'}`,
+      !modelLinkStored);
     try { await saveRecent(project, handle); await refreshRecent(); }
     catch { setStatus(`${handle.name} saved · recent list unavailable`); }
   } catch (error) { setStatus(error.message || 'Could not save project.', true); }
@@ -475,5 +593,6 @@ window.addEventListener('beforeunload', (event) => {
   event.returnValue = '';
 });
 
-app.append(header, workspace, footer, fileInput, projectInput, projectHome.element);
+app.append(header, workspace, footer, fileInput, projectInput, texturePreview.element,
+  projectHome.element, modelRelink.element);
 refreshRecent();

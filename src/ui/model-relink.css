@@ -1,0 +1,8 @@
+.model-relink[hidden] { display: none; }
+.model-relink { position: fixed; z-index: 110; inset: 0; display: grid; place-items: center; padding: 20px; background: #000a; }
+.model-relink__card { width: min(420px, 100%); padding: 22px; border: 1px solid var(--border-control); border-radius: 10px; background: var(--surface-panel); box-shadow: 0 20px 60px #0009; }
+.model-relink__card h2 { margin: 0 0 16px; color: var(--text-primary); font-size: 16px; }
+.model-relink__name { display: block; overflow: hidden; color: var(--accent-soft); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.model-relink__message { min-height: 34px; margin: 8px 0 18px; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+.model-relink__actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
+.model-relink__actions .ui-button[hidden] { display: none; }

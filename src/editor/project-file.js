@@ -1,21 +1,7 @@
 const DATABASE = 'texture-painter-projects';
 const STORE = 'recent';
-export const PROJECT_VERSION = 2;
-
-export function bytesToBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (let offset = 0; offset < bytes.length; offset += 0x8000)
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-  return btoa(binary);
-}
-
-export function base64ToBytes(value) {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-  return bytes;
-}
+const MODEL_HANDLES = 'model-handles';
+export const PROJECT_VERSION = 3;
 
 export function parseProject(text) {
   let project;
@@ -26,26 +12,33 @@ export function parseProject(text) {
       !project.scene || !Array.isArray(project.scene.textures) ||
       !['starter', 'glb'].includes(project.scene.model?.kind))
     throw new Error('Unsupported or incomplete .tp3d project.');
-  if (project.scene.model.kind === 'glb' && typeof project.scene.model.data !== 'string')
-    throw new Error('The project has no embedded GLB model.');
+  if (project.scene.model.kind === 'glb' &&
+      (typeof project.scene.model.referenceId !== 'string' ||
+        typeof project.scene.model.name !== 'string'))
+    throw new Error('The project has no valid GLB reference.');
   return project;
 }
 
 function database() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DATABASE, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(STORE, { keyPath: 'id' });
+    const request = indexedDB.open(DATABASE, 2);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(STORE))
+        request.result.createObjectStore(STORE, { keyPath: 'id' });
+      if (!request.result.objectStoreNames.contains(MODEL_HANDLES))
+        request.result.createObjectStore(MODEL_HANDLES);
+    };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
 }
 
-async function transaction(mode, action) {
+async function transaction(storeName, mode, action) {
   const db = await database();
   try {
     return await new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, mode);
-      const result = action(tx.objectStore(STORE));
+      const tx = db.transaction(storeName, mode);
+      const result = action(tx.objectStore(storeName));
       tx.oncomplete = () => resolve(result.result);
       tx.onerror = () => reject(tx.error);
       tx.onabort = () => reject(tx.error);
@@ -54,19 +47,27 @@ async function transaction(mode, action) {
 }
 
 export async function saveRecent(project, handle = null) {
-  await transaction('readwrite', (store) => store.put({
+  await transaction(STORE, 'readwrite', (store) => store.put({
     id: project.id, name: project.name, updatedAt: new Date().toISOString(),
     document: JSON.stringify(project), handle
   }));
 }
 
 export async function listRecent() {
-  const records = await transaction('readonly', (store) => store.getAll());
+  const records = await transaction(STORE, 'readonly', (store) => store.getAll());
   return records.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 10);
 }
 
 export async function removeRecent(id) {
-  await transaction('readwrite', (store) => store.delete(id));
+  await transaction(STORE, 'readwrite', (store) => store.delete(id));
+}
+
+export async function saveModelHandle(referenceId, handle) {
+  await transaction(MODEL_HANDLES, 'readwrite', (store) => store.put(handle, referenceId));
+}
+
+export async function getModelHandle(referenceId) {
+  return transaction(MODEL_HANDLES, 'readonly', (store) => store.get(referenceId));
 }
 
 export function projectFileName(name) {

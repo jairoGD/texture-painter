@@ -34,8 +34,10 @@ export function readLayerStack(graph) {
     const mix = nodes.get(current.from);
     if (current.fromSocket !== 'Result' || mix?.type !== 'blend' || !mix.layerSourceId || visited.has(mix.id)) break;
     const top = incoming(graph, mix.id, 'B');
-    const source = nodes.get(top?.from);
-    if (!source || top.from !== mix.layerSourceId || !layerSources.has(source.type)) break;
+    const topNode = nodes.get(top?.from);
+    const sourceLink = topNode?.type === 'invert' ? incoming(graph, topNode.id, 'Color') : top;
+    const source = nodes.get(sourceLink?.from);
+    if (!source || source.id !== mix.layerSourceId || !layerSources.has(source.type)) break;
     visited.add(mix.id);
     layers.push({ id: mix.id, mix, source, type: source.type,
       label: mix.layerName || source.imageName || layerSources.get(source.type).label });
@@ -82,9 +84,25 @@ export function syncLayerMasks(graph) {
   graph.nodes = graph.nodes.filter((node) => !generatedIds.has(node.id));
   graph.links = graph.links.filter((link) => !generatedIds.has(link.from) &&
     !generatedIds.has(link.to) &&
-    !(layers.some((layer) => layer.id === link.to) && link.toSocket === 'Factor'));
+    !(layers.some((layer) => layer.id === link.to) &&
+      (link.toSocket === 'Factor' || link.toSocket === 'B')));
 
   const nodeIds = new Set(graph.nodes.map((node) => node.id));
+  const layerColors = new Map();
+  for (const layer of layers) {
+    const source = { from: layer.source.id, fromSocket: layerSources.get(layer.type).output };
+    const needsInvert = layer.mix.layerIsMask ? !layer.mix.layerInvert : Boolean(layer.mix.layerInvert);
+    if (needsInvert) {
+      const inverted = addTextureNode(graph, 'invert', { x: 0, y: 0 });
+      inverted.layerGeneratedFor = layer.id;
+      inverted.layerInvertOwner = layer.id;
+      connectTextureNodes(graph, source.from, source.fromSocket, inverted.id, 'Color');
+      source.from = inverted.id;
+      source.fromSocket = 'Color';
+    }
+    connectTextureNodes(graph, source.from, source.fromSocket, layer.id, 'B');
+    layerColors.set(layer.id, source);
+  }
   for (const layer of layers) {
     let factor = layer.mix.layerManualFactor;
     if (factor && !nodeIds.has(factor.from)) factor = null;
@@ -92,7 +110,7 @@ export function syncLayerMasks(graph) {
       .filter((ancestor) => ancestor.mix.layerIsMask && ancestor.mix.layerVisible !== false)
       .reverse();
     for (const mask of masks) {
-      const source = { from: mask.source.id, fromSocket: layerSources.get(mask.type).output };
+      const source = layerColors.get(mask.id);
       if (!factor) { factor = source; continue; }
       const combined = addTextureNode(graph, 'layerMask', { x: 0, y: 0 });
       combined.layerGeneratedFor = layer.id;
@@ -151,6 +169,7 @@ export function addGraphLayer(graph, type) {
   mix.layerName = `Layer ${Math.max(0, ...usedNumbers) + 1}`;
   mix.factor = 1;
   mix.layerVisible = true;
+  mix.layerInvert = false;
   connectTextureNodes(graph, source.id, definition.output, mix.id, 'B');
   const next = [{ id: mix.id, mix, source, type }, ...layers];
   reconnect(graph, next, base);

@@ -1,7 +1,7 @@
-const SIZE = 1024;
 import { decodeVisibleUv } from './screen-lasso.js';
 import { blendSelectedPixel } from './selection-clipboard.js';
 import { indexSelectionTiles } from './selection-coverage.js';
+import { textureResolution as SIZE } from './texture-resolution.js';
 
 function drawSelectionOutline(context, alpha, indices) {
   const stride = SIZE + 1;

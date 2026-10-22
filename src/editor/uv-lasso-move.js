@@ -1,7 +1,6 @@
 import { combineSelectionParts, selectionFromMask } from './lasso-selection.js';
 import { blendSelectedPixel } from './selection-clipboard.js';
-
-const SIZE = 1024;
+import { textureResolution as SIZE } from './texture-resolution.js';
 
 export function shiftedUvSelection(selection, dx, dy) {
   const canvas = document.createElement('canvas');

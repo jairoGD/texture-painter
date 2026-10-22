@@ -22,7 +22,10 @@ test('a mask layer feeds its child Mix factor and disappears from the color stac
   assert.equal(moveGraphLayerTo(graph, childId, maskId, 'inside'), true);
   const layers = readLayerStack(graph).layers;
   assert.equal(layers.find((layer) => layer.id === childId).mix.layerParentId, maskId);
-  assert.equal(factorLink(graph, childId).from, layers.find((layer) => layer.id === maskId).source.id);
+  const maskInput = graph.nodes.find((node) => node.id === factorLink(graph, childId).from);
+  assert.equal(maskInput.type, 'invert');
+  assert.equal(graph.links.find((link) => link.to === maskInput.id && link.toSocket === 'Color').from,
+    layers.find((layer) => layer.id === maskId).source.id);
   assert.equal(factorLink(graph, childId).fromSocket, 'Color');
   assert.equal(mask.layerIsMask, true);
   assert.ok(graph.links.some((link) => link.from === maskId && link.fromSocket === 'Result'),
@@ -93,8 +96,8 @@ test('a new Factor connection becomes the manual factor beneath the layer mask',
   assert.ok(generated);
   assert.ok(graph.links.some((link) => link.from === manual.id && link.to === generated.id &&
     link.toSocket === 'Base'));
-  assert.ok(graph.links.some((link) => link.from === readLayerStack(graph).layers
-    .find((layer) => layer.id === maskId).source.id && link.to === generated.id &&
+  const maskColor = graph.links.find((link) => link.to === maskId && link.toSocket === 'B');
+  assert.ok(graph.links.some((link) => link.from === maskColor.from && link.to === generated.id &&
     link.toSocket === 'Mask'));
   assert.equal(factorLink(graph, childId).from, generated.id);
 
@@ -102,4 +105,30 @@ test('a new Factor connection becomes the manual factor beneath the layer mask',
   syncLayerMasks(graph);
   assert.equal(factorLink(graph, childId).from, manual.id,
     'hiding the mask leaves the manually connected factor active');
+});
+
+test('Invert changes a normal layer and switches a mask to the bright color', () => {
+  const { graph, ids: [childId, maskId] } = graphWithLayers(2);
+  const child = graph.nodes.find((node) => node.id === childId);
+  const mask = graph.nodes.find((node) => node.id === maskId);
+  child.layerInvert = true;
+  syncLayerMasks(graph);
+  let childColor = graph.links.find((link) => link.to === childId && link.toSocket === 'B');
+  assert.equal(graph.nodes.find((node) => node.id === childColor.from).type, 'invert');
+  assert.equal(readLayerStack(graph).layers.find((layer) => layer.id === childId).source.id,
+    child.layerSourceId);
+
+  mask.layerIsMask = true;
+  moveGraphLayerTo(graph, childId, maskId, 'inside');
+  let maskColor = graph.links.find((link) => link.to === maskId && link.toSocket === 'B');
+  assert.equal(graph.nodes.find((node) => node.id === maskColor.from).type, 'invert');
+  mask.layerInvert = true;
+  syncLayerMasks(graph);
+  maskColor = graph.links.find((link) => link.to === maskId && link.toSocket === 'B');
+  assert.equal(maskColor.from, mask.layerSourceId);
+  assert.equal(factorLink(graph, childId).from, mask.layerSourceId);
+  child.layerInvert = false;
+  syncLayerMasks(graph);
+  childColor = graph.links.find((link) => link.to === childId && link.toSocket === 'B');
+  assert.equal(childColor.from, child.layerSourceId);
 });

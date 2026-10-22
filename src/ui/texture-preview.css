@@ -1,0 +1,4 @@
+.texture-preview__body { display: grid; place-items: center; flex: 1; min-height: 0; overflow: hidden; padding: 12px; background-color: var(--surface-sidebar); background-image: linear-gradient(45deg, #2d343d 25%, transparent 25%), linear-gradient(-45deg, #2d343d 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #2d343d 75%), linear-gradient(-45deg, transparent 75%, #2d343d 75%); background-size: 18px 18px; background-position: 0 0, 0 9px, 9px -9px, -9px 0; }
+.texture-preview__canvas { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; aspect-ratio: 1; object-fit: contain; box-shadow: 0 0 0 1px var(--border-control), 0 8px 24px #0006; }
+.texture-preview__canvas[hidden], .texture-preview__empty[hidden] { display: none; }
+.texture-preview__empty { color: var(--text-subtle); font-size: 12px; }

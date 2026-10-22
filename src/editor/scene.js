@@ -3,12 +3,12 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createTexturePainter } from './texture-painter.js';
 import { captureVisibleUv, projectLassoToUv } from './screen-lasso.js';
-import { base64ToBytes, bytesToBase64 } from './project-file.js';
 import { sampleScreenStroke } from './surface-stroke.js';
 import { createModelMirror, reflectedCamera } from './model-mirror.js';
+import { setTextureResolution, textureResolution } from './texture-resolution.js';
 
 export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTargetsChanged,
-  onPaintTargetChanged, onContentChanged } = {}) {
+  onContentChanged } = {}) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color('#252b34');
 
@@ -59,10 +59,12 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   }
   let model = starterModel();
   let modelSource = { kind: 'starter' };
+  let modelFile = null;
   scene.add(model);
   const loader = new GLTFLoader();
   const painter = createTexturePainter();
   painter.prepare(model);
+  let selectedTargetId = painter.getGraphTargets()[0]?.id ?? null;
   let paintMeshes = painter.getMeshes();
   let mirrorEnabled = false;
   let samplingMode = 'surface';
@@ -108,7 +110,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
-    return raycaster.intersectObjects(paintMeshes, false).find((hit) => hit.uv);
+    const hit = raycaster.intersectObjects(paintMeshes, false).find((candidate) => candidate.uv);
+    return hit && painter.targetIdAt(hit) === selectedTargetId ? hit : null;
   }
 
   function hitTest(event) { return hitTestAt(event.clientX, event.clientY); }
@@ -121,15 +124,15 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   function mirrorHitAt(hit) {
     if (!mirrorEnabled || !hit) return null;
     const mirrored = resolveMirrorHit(hit);
-    if (!mirrored) return null;
+    if (!mirrored || painter.targetIdAt(mirrored) !== selectedTargetId) return null;
     const sameSlot = mirrored.object === hit.object &&
       mirrored.face?.materialIndex === hit.face?.materialIndex;
     const uvGap = (a, b) => {
       const difference = Math.abs(a - b) % 1;
       return Math.min(difference, 1 - difference);
     };
-    if (sameSlot && uvGap(hit.uv.x, mirrored.uv.x) < 1 / 1024 &&
-        uvGap(hit.uv.y, mirrored.uv.y) < 1 / 1024) return null;
+    if (sameSlot && uvGap(hit.uv.x, mirrored.uv.x) < 1 / textureResolution &&
+        uvGap(hit.uv.y, mirrored.uv.y) < 1 / textureResolution) return null;
     return mirrored;
   }
 
@@ -249,7 +252,6 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     lineStartHit = null;
     lineStartMirrorHit = null;
     const hit = hitTest(event);
-    if (hit) onPaintTargetChanged?.(painter.targetIdAt(hit));
     if (activeTool === 'lasso') {
       pointerAction = painter.selectedAt(hit) ? 'moveSelection' : 'lasso';
       if (pointerAction === 'moveSelection') {
@@ -390,7 +392,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     controls.update();
   }
 
-  function importGlb(file) {
+  function importGlb(file, referenceId = crypto.randomUUID()) {
     if (!file || !/\.glb$/i.test(file.name)) return Promise.reject(new Error('Select a .glb file.'));
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -407,7 +409,9 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
           model = next;
           paintMeshes = painter.getMeshes();
           resolveMirrorHit = createModelMirror(model, paintMeshes);
-          modelSource = { kind: 'glb', name: file.name, data: bytesToBase64(reader.result) };
+          modelSource = { kind: 'glb', referenceId, name: file.name,
+            size: file.size, lastModified: file.lastModified };
+          modelFile = file;
           scene.add(model);
           frame(model);
           onGraphTargetsChanged?.(painter.getGraphTargets());
@@ -418,7 +422,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     });
   }
 
-  function newProject() {
+  function newProject(resolution = 1024) {
+    setTextureResolution(resolution);
     const next = starterModel();
     painter.prepare(next);
     scene.remove(model);
@@ -426,24 +431,26 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     paintMeshes = painter.getMeshes();
     resolveMirrorHit = createModelMirror(model, paintMeshes);
     modelSource = { kind: 'starter' };
+    modelFile = null;
     scene.add(model);
     frame(model);
     onGraphTargetsChanged?.(painter.getGraphTargets());
   }
 
   function exportProjectData() {
-    return { model: modelSource, textures: painter.exportProjectTextures(),
+    return { model: modelSource, resolution: textureResolution,
+      textures: painter.exportProjectTextures(),
       view: { camera: camera.position.toArray(), target: controls.target.toArray(),
         lighting: currentLightingMode, grid: grid.visible, mirror: mirrorEnabled,
         sampling: samplingMode, antialias: antialiasEnabled } };
   }
 
-  async function restoreProjectData(saved) {
-    if (saved.model.kind === 'starter') newProject();
+  async function restoreProjectData(saved, file = null) {
+    setTextureResolution(saved.resolution ?? 1024);
+    if (saved.model.kind === 'starter') newProject(textureResolution);
     else {
-      const file = new File([base64ToBytes(saved.model.data)], saved.model.name || 'model.glb',
-        { type: 'model/gltf-binary' });
-      await importGlb(file);
+      if (!file) throw new Error(`Model not found: ${saved.model.name}`);
+      await importGlb(file, saved.model.referenceId);
     }
     await painter.restoreProjectTextures(saved.textures);
     mirrorEnabled = saved.view?.mirror === true;
@@ -532,7 +539,11 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     canCopySelection: painter.canCopySelection,
     canPasteSelection: painter.canPasteSelection,
     getLayerImage: painter.getLayerImage,
+    getModelFile: () => modelFile,
+    getModelSource: () => ({ ...modelSource }),
+    getTexturePreview: painter.getCompositePreview,
     getGraphTargets: painter.getGraphTargets,
+    setPaintTarget: (id) => { selectedTargetId = id; },
     setGraph: painter.setGraph,
     mergeLayerDown: painter.mergeLayerDown,
     createImage: painter.createImage,

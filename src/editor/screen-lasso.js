@@ -1,6 +1,5 @@
 import * as THREE from 'three';
-
-const SIZE = 1024;
+import { textureResolution as SIZE } from './texture-resolution.js';
 const vertexShader = `#include <skinning_pars_vertex>
   varying vec2 vUv;
   void main() {

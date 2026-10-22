@@ -2,6 +2,7 @@ import { bakeImageToUv } from './image-projection.js';
 
 export const NODE_TYPES = {
   color: { title: 'Solid Color', inputs: [], outputs: ['Color'] },
+  invert: { title: 'Invert', inputs: ['Color'], outputs: ['Color'] },
   blend: { title: 'Mix', inputs: ['A', 'B', 'Factor'], outputs: ['Result'] },
   layerMask: { title: 'Layer Mask', inputs: ['Base', 'Mask'], outputs: ['Factor'] },
   image: { title: 'Image', inputs: [], outputs: ['Color', 'Alpha'] },
@@ -95,6 +96,21 @@ function solidCanvas(size, color) {
   const context = canvas.getContext('2d');
   context.fillStyle = /^#[0-9a-f]{6}$/i.test(color) ? color : '#ffffff';
   context.fillRect(0, 0, size, size);
+  return canvas;
+}
+
+export function invertCanvas(source, size) {
+  if (!source) return null;
+  const canvas = newCanvas(size);
+  const context = canvas.getContext('2d');
+  context.drawImage(source, 0, 0);
+  const pixels = context.getImageData(0, 0, size, size);
+  for (let offset = 0; offset < pixels.data.length; offset += 4) {
+    pixels.data[offset] = 255 - pixels.data[offset];
+    pixels.data[offset + 1] = 255 - pixels.data[offset + 1];
+    pixels.data[offset + 2] = 255 - pixels.data[offset + 2];
+  }
+  context.putImageData(pixels, 0, 0);
   return canvas;
 }
 
@@ -252,6 +268,7 @@ export function evaluateTextureNode(surface, nodeId, socket = 'Color', graph = s
     visiting.add(id);
     let result = null;
     if (node.type === 'color') result = solidCanvas(size, node.color);
+    else if (node.type === 'invert') result = invertCanvas(input(node, 'Color'), size);
     else if (node.type === 'image') {
       const asset = surface.imageAssets?.get(node.imageKey);
       if (asset) {

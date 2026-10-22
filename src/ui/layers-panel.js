@@ -1,7 +1,8 @@
 import { addGraphLayer, layerAncestors, moveGraphLayer, moveGraphLayerTo,
   readLayerStack, removeGraphLayer, syncLayerMasks } from '../editor/layer-graph.js';
 import { BLEND_MODES, cloneTextureGraph } from '../editor/texture-graph.js';
-import { button, checkbox, element } from './index.js';
+import { button, element, toggleButton } from './index.js';
+import { createMaterialsPanel } from './materials-panel.js';
 import upIcon from './icons/layer-up.svg';
 import downIcon from './icons/layer-down.svg';
 import addIcon from './icons/layer-add.svg';
@@ -10,14 +11,15 @@ import imageIcon from './icons/image.svg';
 import removeIcon from './icons/layer-remove.svg';
 import eyeIcon from './icons/layer-eye.svg';
 import hiddenIcon from './icons/layer-hidden.svg';
+import maskIcon from './icons/mask.svg';
+import invertIcon from './icons/invert_color.svg';
 import './layers-panel.css';
 
 export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, onMergeLayer,
   getImageCanvas, onError }) {
   const selectedByTarget = new Map();
   let draggingId = null;
-  const material = element('select', { className: 'layers-panel__select',
-    attributes: { 'aria-label': 'Texture material' } });
+  const materialsPanel = createMaterialsPanel({ onSelect: (id) => nodeEditor.selectTarget(id) });
   const list = element('div', { className: 'layers-panel__list', attributes: { role: 'listbox', 'aria-label': 'Layers' } });
   const newImageInput = element('input', { attributes: { type: 'file', accept: 'image/*', hidden: '' } });
   const replaceImageInput = element('input', { attributes: { type: 'file', accept: 'image/*', hidden: '' } });
@@ -33,13 +35,24 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     title: 'Open image as layer', onClick: () => newImageInput.click() });
   const removeButton = button({ label: 'Remove layer', iconUrl: removeIcon, variant: 'ghost', iconOnly: true,
     title: 'Remove layer', onClick: remove });
-  const optionsPanel = element('div', { className: 'layers-panel__options' });
+  const maskToggle = toggleButton({ label: 'Mask', iconUrl: maskIcon,
+    className: 'layers-panel__option-toggle', onChange: (checked) => {
+      const selected = selectedLayer(current());
+      if (selected) editSpecificLayer(selected.id, (node) => { node.layerIsMask = checked; });
+    } });
+  const invertToggle = toggleButton({ label: 'Invert', iconUrl: invertIcon,
+    className: 'layers-panel__option-toggle', onChange: (checked) => {
+      const selected = selectedLayer(current());
+      if (selected) editSpecificLayer(selected.id, (node) => { node.layerInvert = checked; });
+    } });
+  const optionsPanel = element('div', { className: 'layers-panel__options' }, [maskToggle, invertToggle]);
   const rootDrop = element('div', { className: 'layers-panel__root-drop',
     text: 'Drop here to move out of group' });
   const root = element('aside', { className: 'layers-sidebar', attributes: { 'aria-label': 'Layers sidebar' } }, [
-    element('div', { className: 'layers-panel__header' }, [element('h2', { text: 'LAYERS' }), material]),
+    materialsPanel.element,
+    element('div', { className: 'ui-section-header' }, [element('h2', { text: 'LAYERS' }), optionsPanel]),
     element('div', { className: 'layers-panel__toolbar' }, [upButton, downButton, addButton, mergeButton, openButton, removeButton]),
-    optionsPanel, list,
+    list,
     newImageInput, replaceImageInput
   ]);
 
@@ -75,7 +88,6 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     rootDrop.classList.remove('is-drop-target');
   });
 
-  material.addEventListener('change', () => nodeEditor.selectTarget(material.value));
   function current() { return nodeEditor.getState(); }
   function selectedLayer(state) {
     const layers = state.graph ? readLayerStack(state.graph).layers : [];
@@ -223,6 +235,7 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
         attributes: { width: '52', height: '50' } });
       thumbnail.dataset.targetId = state.targetId;
       thumbnail.dataset.imageKey = source.imageKey;
+      thumbnail.dataset.inverted = String(node.layerIsMask ? !node.layerInvert : Boolean(node.layerInvert));
       swatch.append(thumbnail);
     }
     const name = element('span', { className: 'layers-panel__name', text: label,
@@ -326,23 +339,14 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
   }
 
   function renderOptions(selected) {
-    optionsPanel.hidden = !selected;
-    if (!selected) { optionsPanel.replaceChildren(); return; }
-    optionsPanel.replaceChildren(
-      element('span', { className: 'layers-panel__options-title', text: selected.label }),
-      checkbox({ label: 'Mask', checked: Boolean(selected.mix.layerIsMask), onChange: (checked) => {
-        editSpecificLayer(selected.id, (node) => { node.layerIsMask = checked; });
-      } })
-    );
+    maskToggle.disabled = invertToggle.disabled = !selected;
+    maskToggle.setPressed(Boolean(selected?.mix.layerIsMask));
+    invertToggle.setPressed(Boolean(selected?.mix.layerInvert));
   }
 
   function render(state) {
     const hasGraph = Boolean(state.graph);
-    material.replaceChildren(...state.targets.map(({ id, label }) =>
-      element('option', { text: label, attributes: { value: id } })));
-    if (state.targetId) material.value = state.targetId;
-    material.hidden = state.targets.length < 2;
-    material.disabled = !hasGraph;
+    materialsPanel.setState(state.targets, state.targetId);
     addButton.disabled = !hasGraph;
     openButton.disabled = !hasGraph;
     if (!hasGraph) {
@@ -393,7 +397,18 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
       const context = thumbnail.getContext('2d');
       context.clearRect(0, 0, thumbnail.width, thumbnail.height);
       const image = getImageCanvas?.(thumbnail.dataset.targetId, thumbnail.dataset.imageKey);
-      if (image) context.drawImage(image, 0, 0, thumbnail.width, thumbnail.height);
+      if (image) {
+        context.drawImage(image, 0, 0, thumbnail.width, thumbnail.height);
+        if (thumbnail.dataset.inverted === 'true') {
+          const pixels = context.getImageData(0, 0, thumbnail.width, thumbnail.height);
+          for (let offset = 0; offset < pixels.data.length; offset += 4) {
+            pixels.data[offset] = 255 - pixels.data[offset];
+            pixels.data[offset + 1] = 255 - pixels.data[offset + 1];
+            pixels.data[offset + 2] = 255 - pixels.data[offset + 2];
+          }
+          context.putImageData(pixels, 0, 0);
+        }
+      }
     }
   }
 

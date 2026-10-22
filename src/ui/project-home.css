@@ -15,4 +15,13 @@
 .project-home__empty { margin: 0; padding: 15px; border: 1px dashed #425367; border-radius: 7px; color: #8195a8; font-size: 12px; }
 .project-home__message { margin: 12px 0 0; color: #ffaaaa; font-size: 12px; }
 .project-home__message:empty { display: none; }
+.project-home__home[hidden], .project-home__setup[hidden] { display: none; }
+.project-home__setup { display: grid; gap: 17px; }
+.project-home__setup h2 { margin: 0 0 3px; color: var(--text-primary); font-size: 16px; font-weight: 700; }
+.project-home__field { display: grid; gap: 8px; color: var(--text-muted); font-size: 12px; font-weight: 600; }
+.project-home__input { width: 100%; min-height: 38px; padding: 7px 10px; border: 1px solid var(--border-control); border-radius: 7px; background: var(--surface-control); color: var(--text-primary); }
+.project-home__input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.project-home__model-row { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.project-home__model-name { overflow: hidden; color: var(--text-subtle); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.project-home__setup-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 5px; }
 @media (max-width: 520px) { .project-home { padding: 12px; } .project-home__card { padding: 20px; } .project-home__choices { grid-template-columns: 1fr; } }
