@@ -11,7 +11,8 @@ import eyeIcon from './icons/layer-eye.svg';
 import hiddenIcon from './icons/layer-hidden.svg';
 import './layers-panel.css';
 
-export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, onMergeLayer, onError }) {
+export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, onMergeLayer,
+  getImageCanvas, onError }) {
   const selectedByTarget = new Map();
   const material = element('select', { className: 'layers-panel__select',
     attributes: { 'aria-label': 'Texture material' } });
@@ -174,6 +175,13 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     visible.classList.add('layers-panel__visibility');
     const swatch = element('span', { className: 'layers-panel__swatch',
       attributes: { title: source ? 'Double-click to replace image' : 'Paint layer' } });
+    if (source?.imageKey) {
+      const thumbnail = element('canvas', { className: 'layers-panel__thumbnail',
+        attributes: { width: '52', height: '50' } });
+      thumbnail.dataset.targetId = state.targetId;
+      thumbnail.dataset.imageKey = source.imageKey;
+      swatch.append(thumbnail);
+    }
     const name = element('span', { className: 'layers-panel__name', text: label,
       attributes: { title: 'Double-click to rename layer' } });
     const blend = element('select', { className: 'layers-panel__blend',
@@ -253,6 +261,7 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     const selected = selectedLayer(state);
     list.replaceChildren(...layers.map((layer) => createRow({ state, id: layer.id, node: layer.mix,
       source: layer.source, label: layer.label, selected: selected?.id === layer.id })));
+    refreshThumbnails();
     const index = layers.findIndex((layer) => layer.id === selected?.id);
     upButton.disabled = index <= 0;
     downButton.disabled = index < 0 || index >= layers.length - 1;
@@ -269,7 +278,16 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     nodeEditor.replaceGraph(graph);
   }
 
+  function refreshThumbnails() {
+    for (const thumbnail of list.querySelectorAll('.layers-panel__thumbnail')) {
+      const context = thumbnail.getContext('2d');
+      context.clearRect(0, 0, thumbnail.width, thumbnail.height);
+      const image = getImageCanvas?.(thumbnail.dataset.targetId, thumbnail.dataset.imageKey);
+      if (image) context.drawImage(image, 0, 0, thumbnail.width, thumbnail.height);
+    }
+  }
+
   function setState(state) { render(state); }
   setState(current());
-  return { element: root, setState };
+  return { element: root, setState, refreshThumbnails };
 }

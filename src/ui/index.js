@@ -143,8 +143,11 @@ export function dropdown({ label, items }) {
 export function toolGroup({ items, active, onChange }) {
   const buttons = new Map();
   const root = element('div', { className: 'ui-tool-group', attributes: { role: 'group', 'aria-label': 'Tools' } });
-  const select = (value) => {
+  const setActive = (value) => {
     for (const [key, node] of buttons) node.setAttribute('aria-pressed', String(key === value));
+  };
+  const select = (value) => {
+    setActive(value);
     onChange?.(value);
   };
   for (const item of items) {
@@ -154,6 +157,7 @@ export function toolGroup({ items, active, onChange }) {
     buttons.set(item.value, node);
     root.append(node);
   }
+  root.setActive = setActive;
   return root;
 }
 

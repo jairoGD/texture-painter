@@ -32,7 +32,8 @@ function markDirty() { if (projectId && !loadingProject) dirty = true; }
 const scene = createScene(viewport, {
   onGraphTargetsChanged: (targets) => nodeEditor?.setTargets(targets),
   onPaintTargetChanged: (id) => nodeEditor?.selectTarget(id),
-  onSelectionChanged: setStatus, onContentChanged: markDirty, onColorPicked: (color) => {
+  onSelectionChanged: (message) => { setStatus(message); editMenu.refresh(); },
+  onContentChanged: () => { layersPanel?.refreshThumbnails(); markDirty(); }, onColorPicked: (color) => {
   palette.setColor(color);
   setStatus(`Sampled ${color.toUpperCase()}`);
 } });
@@ -48,6 +49,7 @@ layersPanel = createLayersPanel({ nodeEditor,
   onCreateImage: (id, nodeId) => scene.createImage(id, nodeId),
   onImportImage: (id, nodeId, file) => scene.importImage(id, nodeId, file),
   onMergeLayer: (id, layerId, graph) => scene.mergeLayerDown(id, layerId, graph),
+  getImageCanvas: (id, key) => scene.getLayerImage(id, key),
   onError: (message) => setStatus(message, true)
 });
 for (const tool of TOOL_DEFINITIONS) scene.setToolSettings(tool.id, toolSettings[tool.id]);
@@ -91,21 +93,59 @@ const fileMenu = dropdown({ label: 'File', items: [
 ] });
 
 function undo() {
-  if (scene.undo()) { setStatus('Undid action'); markDirty(); }
+  if (scene.undo()) { setStatus('Undid action'); layersPanel.refreshThumbnails(); markDirty(); }
   editMenu.refresh();
 }
 
 function redo() {
-  if (scene.redo()) { setStatus('Redid action'); markDirty(); }
+  if (scene.redo()) { setStatus('Redid action'); layersPanel.refreshThumbnails(); markDirty(); }
+  editMenu.refresh();
+}
+
+function copySelection() {
+  if (scene.copySelection()) setStatus('Selection copied');
+  editMenu.refresh();
+}
+
+function cutSelection() {
+  if (scene.cutSelection()) {
+    setStatus('Selection cut'); layersPanel.refreshThumbnails(); markDirty();
+  }
+  editMenu.refresh();
+}
+
+function pasteSelection() {
+  if (scene.pasteSelection(nodeEditor.getState().targetId)) {
+    selectTool('lasso');
+    setStatus('Selection pasted · drag to move');
+    layersPanel.refreshThumbnails(); markDirty();
+  }
   editMenu.refresh();
 }
 
 const editMenu = dropdown({ label: 'Edit', items: [
   { label: 'Undo', shortcut: 'Ctrl+Z', getDisabled: () => !scene.canUndo(), onSelect: undo },
-  { label: 'Redo', shortcut: 'Ctrl+Shift+Z', getDisabled: () => !scene.canRedo(), onSelect: redo }
+  { label: 'Redo', shortcut: 'Ctrl+Shift+Z', getDisabled: () => !scene.canRedo(), onSelect: redo },
+  { type: 'separator' },
+  { label: 'Copy', shortcut: 'Ctrl+C', getDisabled: () => !scene.canCopySelection(), onSelect: copySelection },
+  { label: 'Cut', shortcut: 'Ctrl+X', getDisabled: () => !scene.canCopySelection(), onSelect: cutSelection },
+  { label: 'Paste', shortcut: 'Ctrl+V', getDisabled: () => !scene.canPasteSelection(), onSelect: pasteSelection }
 ] });
 
 document.addEventListener('keydown', (event) => {
+  const key = event.key.toLowerCase();
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey &&
+      !event.target.closest?.('input, textarea, select, [contenteditable], .node-editor')) {
+    if (key === 'c' && scene.canCopySelection()) {
+      event.preventDefault(); copySelection(); return;
+    }
+    if (key === 'x' && scene.canCopySelection()) {
+      event.preventDefault(); cutSelection(); return;
+    }
+    if (key === 'v' && scene.canPasteSelection()) {
+      event.preventDefault(); pasteSelection(); return;
+    }
+  }
   if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 's') {
     event.preventDefault();
     saveProject();
@@ -192,13 +232,15 @@ function renderProperties() {
 function selectTool(tool) {
   activeTool = tool;
   scene.setTool(tool);
+  toolsPanel?.querySelector('.ui-tool-group')?.setActive(tool);
   renderProperties();
   markDirty();
 }
 renderProperties();
+let toolsPanel = null;
 const sidebar = element('aside', { className: 'sidebar' }, [
   palette.element,
-  renderPanel({ title: 'Tools', subtitle: 'Paint directly on the model', controls: [
+  toolsPanel = renderPanel({ title: 'Tools', subtitle: 'Paint directly on the model', controls: [
     { type: 'toolGroup', active: 'brush', onChange: selectTool,
       items: TOOL_DEFINITIONS.map(({ id, label, iconUrl }) => ({ value: id, label, iconUrl })) }
   ] }),
@@ -259,6 +301,7 @@ function restoreEditorSettings(saved = {}, view = {}) {
   palette.loadState(saved.palette);
   activeTool = TOOL_DEFINITIONS.some((tool) => tool.id === saved.activeTool) ? saved.activeTool : 'brush';
   scene.setTool(activeTool);
+  toolsPanel.querySelector('.ui-tool-group').setActive(activeTool);
   renderProperties();
   lightingMode = ['shaded', 'unlit'].includes(view.lighting) ? view.lighting : 'shaded';
   gridVisible = view.grid !== false;

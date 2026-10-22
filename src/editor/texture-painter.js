@@ -1,13 +1,14 @@
 import * as THREE from 'three';
 import { executePaintCommand, samplePaintColor } from './paint-operations.js';
-import { containsSelection, moveSelectionInView, selectionFromAlpha,
+import { combineSelectionParts, containsSelection, moveSelectionInView, selectionFromAlpha,
   selectionFromMask, visibleSelectionSamples } from './lasso-selection.js';
 import { addTextureNode, blendCanvases, cloneTextureGraph, connectTextureNodes,
   createTextureGraph, evaluateTextureNode, removeTextureNode, renderTextureGraph } from './texture-graph.js';
 import { addGraphLayer, readLayerStack, removeGraphLayer } from './layer-graph.js';
 import { canConnectSurfaceHits, canConnectUvHits } from './surface-stroke.js';
 import { applyPaintPatches, capturePaintPatches } from './paint-history.js';
-import { moveSelectionInUv, shiftedUvSelection } from './uv-lasso-move.js';
+import { moveSelectionInUv, shiftedUvSelection, shiftedUvSelectionParts } from './uv-lasso-move.js';
+import { copySelectedPixels, cutSelectedPixels, pasteSelectedPixels } from './selection-clipboard.js';
 
 const SIZE = 1024;
 
@@ -19,6 +20,7 @@ export function createTexturePainter() {
   let activeStroke = null;
   let linePreview = null;
   let selection = null;
+  let clipboard = null;
   let lassoDraft = null;
   let movePreview = null;
   let overlaySurface = null;
@@ -43,8 +45,14 @@ export function createTexturePainter() {
     overlayCanvas.width = overlayCanvas.height = SIZE;
     const overlayContext = overlayCanvas.getContext('2d');
     const overlayTexture = new THREE.CanvasTexture(overlayCanvas);
+    overlayTexture.generateMipmaps = false;
+    overlayTexture.minFilter = THREE.LinearFilter;
     const overlayMaterial = new THREE.MeshBasicMaterial({ map: overlayTexture, transparent: true,
-      depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, side: THREE.DoubleSide, toneMapped: false });
+      alphaTest: 0.3, blending: THREE.CustomBlending,
+      blendEquation: THREE.AddEquation, blendSrc: THREE.OneMinusDstColorFactor,
+      blendDst: THREE.ZeroFactor, blendSrcAlpha: THREE.ZeroFactor,
+      blendDstAlpha: THREE.OneFactor, depthWrite: false, polygonOffset: true,
+      polygonOffsetFactor: -2, side: THREE.DoubleSide, toneMapped: false });
     const surface = { canvas, context, compositeCanvas, compositeContext, texture, shaded, unlit,
       overlayCanvas, overlayContext, overlayTexture, overlayMaterial, graph: createTextureGraph(),
       imageAssets: new Map(), imageCache: new Map(), compositeFrame: null };
@@ -173,11 +181,13 @@ export function createTexturePainter() {
     return true;
   }
 
-  function endLasso(maskCanvas) {
+  function endLasso(maskCanvas, mirrorMask = null) {
     if (!lassoDraft) return false;
     const { surface, before } = lassoDraft;
     lassoDraft = null;
-    const next = maskCanvas ? selectionFromMask(surface, maskCanvas) : null;
+    const primary = maskCanvas ? selectionFromMask(surface, maskCanvas) : null;
+    const mirrored = mirrorMask ? selectionFromMask(surface, mirrorMask) : null;
+    const next = primary && mirrored ? combineSelectionParts(surface, [primary, mirrored]) : primary;
     if (!next) { selection = before; renderOverlay(); return false; }
     selection = before;
     recordSelection(next);
@@ -203,29 +213,98 @@ export function createTexturePainter() {
     return !!selection && surfaceAt(hit) === selection.surface && containsSelection(selection, toPixel(hit.uv));
   }
 
-  function beginMove(hit, projection, screen, mode = 'surface') {
+  function copySelection() {
+    if (!selection || lassoDraft || movePreview) return false;
+    const image = selection.floatingSourceImage ?? selection.surface.context.getImageData(0, 0, SIZE, SIZE);
+    clipboard = copySelectedPixels(image, selection);
+    return true;
+  }
+
+  function cutSelection() {
+    if (!copySelection()) return false;
+    const before = selection.surface.context.getImageData(0, 0, SIZE, SIZE);
+    const after = selection.surface.context.createImageData(SIZE, SIZE);
+    after.data.set(selection.floatingBase?.data ?? cutSelectedPixels(before, selection));
+    selection.surface.context.putImageData(after, 0, 0);
+    selection.surface.requestComposite();
+    const previous = selection;
+    selection = null;
+    undoStack.push({ patches: capturePaintPatches([{ kind: 'moveSelection', surface: previous.surface }],
+      new Map([[previous.surface, before]])), selectionBefore: previous, selectionAfter: null });
+    redoStack = [];
+    renderOverlay();
+    return true;
+  }
+
+  function pasteSelection(targetId) {
+    const surface = findSurface(targetId)?.activePaint;
+    if (!clipboard || !surface || lassoDraft || movePreview) return false;
+    const before = surface.context.getImageData(0, 0, SIZE, SIZE);
+    const after = surface.context.createImageData(SIZE, SIZE);
+    after.data.set(pasteSelectedPixels(before, clipboard));
+    surface.context.putImageData(after, 0, 0);
+    surface.requestComposite();
+    const next = selectionFromAlpha(surface, clipboard.alpha.slice(), null, clipboard.indices);
+    if (!next) return false;
+    if (clipboard.parts) next.parts = clipboard.parts.map((part) => ({
+      alpha: part.alpha.slice(), indices: Uint32Array.from(part.indices) }));
+    next.floatingBase = before;
+    next.floatingSourceImage = clipboard.image;
+    const previous = selection;
+    selection = next;
+    undoStack.push({ patches: capturePaintPatches([{ kind: 'moveSelection', surface }],
+      new Map([[surface, before]])), selectionBefore: previous, selectionAfter: next });
+    redoStack = [];
+    renderOverlay();
+    return true;
+  }
+
+  function beginMove(hit, projection, screen, mode = 'surface', mirrored = null) {
     if (!selectedAt(hit)) return false;
-    const samples = mode === 'surface' ? visibleSelectionSamples(selection, projection) : null;
-    if (mode === 'surface' && !samples.screen.length) return false;
+    const paired = selection.parts?.length === 2 && !!mirrored;
+    const point = toPixel(hit.uv);
+    const originPart = paired && !containsSelection(selection.parts[0], point) &&
+      containsSelection(selection.parts[1], point) ? 1 : 0;
+    const branches = paired && mode === 'surface' ? [0, 1].map((index) => ({
+      selection: selection.parts[index],
+      projection: index === originPart ? projection : mirrored.projection,
+      samples: visibleSelectionSamples(selection.parts[index],
+        index === originPart ? projection : mirrored.projection),
+      sign: index === originPart ? 1 : -1
+    })) : null;
+    const samples = mode === 'surface' && !branches ? visibleSelectionSamples(selection, projection) : null;
+    if (mode === 'surface' && !(branches ? branches.some((part) => part.samples.screen.length) :
+      samples.screen.length)) return false;
     movePreview = { before: selection, projection, samples, mode,
-      anchor: mode === 'uv' ? toPixel(hit.uv) : screen, dx: 0, dy: 0,
+      paired, branches, originPart, mirrorAnchor: mirrored?.hit ? toPixel(mirrored.hit.uv) : null,
+      mirrorDx: 0, mirrorDy: 0,
+      anchor: mode === 'uv' ? point : screen, dx: 0, dy: 0,
       after: selection, image: selection.surface.context.getImageData(0, 0, SIZE, SIZE),
+      sourceImage: selection.floatingSourceImage ?? null, baseImage: selection.floatingBase ?? null,
       scratch: mode === 'surface' ? selection.surface.context.createImageData(SIZE, SIZE) : null,
       destinationAlpha: mode === 'surface' ? new Uint8Array(SIZE * SIZE) : null };
     return true;
   }
 
-  function updateMove(position) {
+  function updateMove(position, mirroredHit = null) {
     if (!movePreview) return false;
     const point = movePreview.mode === 'uv' ?
       (surfaceAt(position) === movePreview.before.surface ? toPixel(position.uv) : null) : position;
     if (!point) return false;
     const dx = Math.round(point.x - movePreview.anchor.x);
     const dy = Math.round(point.y - movePreview.anchor.y);
-    if (dx === movePreview.dx && dy === movePreview.dy) return false;
+    const mirrorPoint = movePreview.paired && mirroredHit &&
+      surfaceAt(mirroredHit) === movePreview.before.surface ? toPixel(mirroredHit.uv) : null;
+    const mirrorDx = mirrorPoint ? Math.round(mirrorPoint.x - movePreview.mirrorAnchor.x) :
+      movePreview.mirrorDx;
+    const mirrorDy = mirrorPoint ? Math.round(mirrorPoint.y - movePreview.mirrorAnchor.y) :
+      movePreview.mirrorDy;
+    if (dx === movePreview.dx && dy === movePreview.dy &&
+        mirrorDx === movePreview.mirrorDx && mirrorDy === movePreview.mirrorDy) return false;
     movePreview.dx = dx; movePreview.dy = dy;
-    const { before, image } = movePreview;
-    if (!dx && !dy) {
+    movePreview.mirrorDx = mirrorDx; movePreview.mirrorDy = mirrorDy;
+    const { before, image, sourceImage, baseImage } = movePreview;
+    if (!dx && !dy && !mirrorDx && !mirrorDy) {
       before.surface.context.putImageData(image, 0, 0);
       movePreview.after = before;
       renderOverlay();
@@ -233,16 +312,27 @@ export function createTexturePainter() {
       return true;
     }
     if (movePreview.mode === 'uv') {
-      before.surface.context.putImageData(moveSelectionInUv(before.surface, before, image, dx, dy), 0, 0);
+      const offsets = movePreview.paired ? [0, 1].map((index) => index === movePreview.originPart ?
+        { dx, dy } : { dx: mirrorDx, dy: mirrorDy }) : null;
+      movePreview.offsets = offsets;
+      before.surface.context.putImageData(moveSelectionInUv(before.surface, before,
+        sourceImage ?? image, dx, dy, offsets, baseImage), 0, 0);
       before.surface.requestComposite();
-      movePreview.after = null;
-      renderOverlay(before.surface, before.overlayCanvas, dx, dy);
+      movePreview.after = offsets ? shiftedUvSelectionParts(before, offsets) : null;
+      renderOverlay(before.surface, offsets ? movePreview.after?.overlayCanvas ?? null :
+        before.overlayCanvas, offsets ? 0 : dx, offsets ? 0 : dy);
     } else {
-      const moved = moveSelectionInView(before, image, movePreview.projection, movePreview.samples,
-        dx, dy, movePreview.scratch, movePreview.destinationAlpha);
+      const branches = movePreview.branches?.map((branch) => ({ ...branch,
+        dx: dx * branch.sign, dy }));
+      movePreview.movedBranches = branches;
+      const moved = moveSelectionInView(before, sourceImage ?? image,
+        movePreview.projection, movePreview.samples, dx, dy, movePreview.scratch,
+        movePreview.destinationAlpha, branches, baseImage);
       before.surface.context.putImageData(moved.image, 0, 0);
       before.surface.requestComposite();
-      movePreview.after = selectionFromAlpha(before.surface, moved.alpha, null, moved.indices, false);
+      movePreview.after = moved.parts ? combineSelectionParts(before.surface,
+        moved.parts.filter((part) => part.indices.length), false) :
+        selectionFromAlpha(before.surface, moved.alpha, null, moved.indices, false);
       renderOverlay(before.surface, movePreview.after?.overlayCanvas ?? null);
     }
     return true;
@@ -250,12 +340,22 @@ export function createTexturePainter() {
 
   function endMove() {
     if (!movePreview) return false;
-    const { before, after: previewAfter, image, dx, dy, mode } = movePreview;
+    const { before, after: previewAfter, image, sourceImage, baseImage,
+      projection, samples, dx, dy, mode, mirrorDx, mirrorDy, offsets, movedBranches } = movePreview;
     movePreview = null;
-    if (!dx && !dy) { renderOverlay(); return false; }
-    const after = mode === 'uv' ? shiftedUvSelection(before, dx, dy) :
+    if (!dx && !dy && !mirrorDx && !mirrorDy) { renderOverlay(); return false; }
+    const after = mode === 'uv' ? previewAfter ?? shiftedUvSelection(before, dx, dy) : previewAfter?.parts ?
+      combineSelectionParts(before.surface, previewAfter.parts) :
       previewAfter ? selectionFromAlpha(before.surface,
         previewAfter.alpha, null, previewAfter.indices) : null;
+    if (after && baseImage) {
+      const empty = { width: SIZE, height: SIZE, data: new Uint8ClampedArray(SIZE * SIZE * 4) };
+      after.floatingBase = baseImage;
+      after.floatingSourceImage = mode === 'uv' ?
+        moveSelectionInUv(before.surface, before, sourceImage, dx, dy, offsets, empty) :
+        moveSelectionInView(before, sourceImage, projection,
+          samples, dx, dy, null, null, movedBranches, empty).image;
+    }
     const command = { kind: 'moveSelection', surface: before.surface, selection: before, dx, dy };
     undoStack.push({ patches: capturePaintPatches([command], new Map([[before.surface, image]])),
       selectionBefore: before, selectionAfter: after });
@@ -274,7 +374,15 @@ export function createTexturePainter() {
     return true;
   }
 
-  function beginStroke() { activeStroke = { commands: [], before: new Map() }; }
+  function commitFloatingSelection() {
+    if (selection?.floatingBase) selection = { ...selection, floatingBase: null,
+      floatingSourceImage: null };
+  }
+
+  function beginStroke() {
+    commitFloatingSelection();
+    activeStroke = { commands: [], before: new Map() };
+  }
   function apply(command) {
     if (activeStroke && !activeStroke.before.has(command.surface)) {
       const { canvas, context } = command.surface;
@@ -315,6 +423,7 @@ export function createTexturePainter() {
   function beginLine(hit, options, mirroredHit = null, mode = 'surface') {
     const surface = surfaceAt(hit);
     if (!surface || (selection && maskEnabled && surface !== selection.surface)) return false;
+    commitFloatingSelection();
     linePreview = { options: { ...options }, mode, before: new Map(), commands: [] };
     updateLine([[hit], mirroredHit ? [mirroredHit] : []]);
     return true;
@@ -415,6 +524,10 @@ export function createTexturePainter() {
   function findSurface(targetId) {
     return [...surfaces.values()].flatMap((record) => record.slots)
       .find((item) => item.id === targetId);
+  }
+
+  function getLayerImage(targetId, imageKey) {
+    return findSurface(targetId)?.imageAssets.get(imageKey)?.canvas ?? null;
   }
 
   function createImage(targetId, nodeId, source = null, name = 'Untitled image', savedKey = null) {
@@ -546,7 +659,10 @@ export function createTexturePainter() {
 
   return { prepare, clear, paint, fill, sample, beginLine, updateLine, commitLine, cancelLine,
     beginLasso, endLasso, cancelLasso, selectedAt, beginMove, updateMove, endMove,
-    cancelMove, clearSelection, setMaskEnabled: (enabled) => { maskEnabled = enabled; },
+    cancelMove, clearSelection, copySelection, cutSelection, pasteSelection,
+    canCopySelection: () => !!selection && !lassoDraft && !movePreview,
+    canPasteSelection: () => !!clipboard, getLayerImage,
+    setMaskEnabled: (enabled) => { maskEnabled = enabled; },
     beginStroke, endStroke, undo, redo, canUndo: () => undoStack.length > 0,
     canRedo: () => redoStack.length > 0, setLightingMode, getMeshes: () => [...surfaces.keys()],
     getGraphTargets: graphTargets, setGraph, createImage, setPaintSource, mergeLayerDown,

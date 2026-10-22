@@ -18,7 +18,7 @@ export function createModelMirror(root, meshes) {
   const offset = radius * 0.05;
   const tolerance = radius * 0.025;
 
-  return (hit) => {
+  const resolve = (hit) => {
     if (!hit?.point || !hit.face || !hit.uv) return null;
     const signedDistance = hit.point.clone().sub(planePoint).dot(planeNormal);
     if (Math.abs(signedDistance) < radius * 0.0001) return null;
@@ -33,4 +33,19 @@ export function createModelMirror(root, meshes) {
       .sort((a, b) => a.point.distanceToSquared(reflectedPoint) - b.point.distanceToSquared(reflectedPoint))[0];
     return opposite ?? null;
   };
+  resolve.planePoint = planePoint;
+  resolve.planeNormal = planeNormal;
+  return resolve;
+}
+
+export function reflectedCamera(camera, planePoint, planeNormal) {
+  const reflectPoint = (point) => point.clone().addScaledVector(planeNormal,
+    -2 * point.clone().sub(planePoint).dot(planeNormal));
+  const reflected = camera.clone();
+  const direction = camera.getWorldDirection(new THREE.Vector3()).reflect(planeNormal);
+  reflected.position.copy(reflectPoint(camera.position));
+  reflected.up.copy(camera.up).reflect(planeNormal);
+  reflected.lookAt(reflected.position.clone().add(direction));
+  reflected.updateMatrixWorld(true);
+  return reflected;
 }

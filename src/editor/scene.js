@@ -5,7 +5,7 @@ import { createTexturePainter } from './texture-painter.js';
 import { captureVisibleUv, projectLassoToUv } from './screen-lasso.js';
 import { base64ToBytes, bytesToBase64 } from './project-file.js';
 import { sampleScreenStroke } from './surface-stroke.js';
-import { createModelMirror } from './model-mirror.js';
+import { createModelMirror, reflectedCamera } from './model-mirror.js';
 
 export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTargetsChanged,
   onPaintTargetChanged, onContentChanged } = {}) {
@@ -166,8 +166,11 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       const next = pendingDraw;
       pendingDraw = null;
       if (!next || next.pointerId !== activePointer) return;
-      if (pointerAction === 'moveSelection') painter.updateMove(gestureSamplingMode === 'uv' ?
-        hitTest(next) : viewportPoint(next));
+      if (pointerAction === 'moveSelection') {
+        const hit = gestureSamplingMode === 'uv' ? hitTest(next) : null;
+        painter.updateMove(hit ?? (gestureSamplingMode === 'uv' ? null : viewportPoint(next)),
+          hit ? mirrorHitAt(hit) : null);
+      }
       else if (activeTool === 'line') previewLineAt(next);
       else paintAt(next);
     });
@@ -194,17 +197,24 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     context.beginPath();
     context.moveTo(lassoPath[0].x, lassoPath[0].y);
     for (const point of lassoPath.slice(1)) context.lineTo(point.x, point.y);
-    context.strokeStyle = '#0b243c';
-    context.lineWidth = 5;
-    context.stroke();
-    context.strokeStyle = '#79c6ff';
-    context.lineWidth = 2.5;
+    context.strokeStyle = '#ffffff';
+    context.lineWidth = 1.25;
+    context.setLineDash([5, 4]);
     context.stroke();
   }
 
   function finishLasso() {
     const mask = projectLassoToUv(renderer, camera, lassoSourceHit, lassoPath, painter.getMeshes());
-    const created = painter.endLasso(mask);
+    const mirroredHit = mirrorHitAt(lassoSourceHit);
+    let mirrorMask = null;
+    if (mask && mirroredHit && painter.targetIdAt(mirroredHit) === painter.targetIdAt(lassoSourceHit)) {
+      const mirrorCamera = reflectedCamera(camera, resolveMirrorHit.planePoint,
+        resolveMirrorHit.planeNormal);
+      const width = renderer.domElement.getBoundingClientRect().width;
+      mirrorMask = projectLassoToUv(renderer, mirrorCamera, mirroredHit,
+        lassoPath.map((point) => ({ x: width - point.x, y: point.y })), painter.getMeshes());
+    }
+    const created = painter.endLasso(mask, mirrorMask);
     lassoSourceHit = null;
     lassoPath = [];
     renderLassoPath();
@@ -240,7 +250,13 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       if (pointerAction === 'moveSelection') {
         const projection = gestureSamplingMode === 'surface' ?
           captureVisibleUv(renderer, camera, hit, paintMeshes) : null;
-        if (!painter.beginMove(hit, projection, viewportPoint(event), gestureSamplingMode)) pointerAction = null;
+        const mirroredHit = mirrorHitAt(hit);
+        const mirrored = mirroredHit && painter.targetIdAt(mirroredHit) === painter.targetIdAt(hit) ?
+          { hit: mirroredHit, projection: gestureSamplingMode === 'surface' ?
+            captureVisibleUv(renderer, reflectedCamera(camera, resolveMirrorHit.planePoint,
+              resolveMirrorHit.planeNormal), mirroredHit, paintMeshes) : null } : null;
+        if (!painter.beginMove(hit, projection, viewportPoint(event), gestureSamplingMode,
+          mirrored)) pointerAction = null;
       }
       else {
         if (painter.beginLasso(hit)) lassoSourceHit = hit;
@@ -294,8 +310,11 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     drawFrame = null;
     pendingDraw = null;
     if (event.type === 'pointerup') {
-      if (pointerAction === 'moveSelection') painter.updateMove(gestureSamplingMode === 'uv' ?
-        hitTest(event) : viewportPoint(event));
+      if (pointerAction === 'moveSelection') {
+        const hit = gestureSamplingMode === 'uv' ? hitTest(event) : null;
+        painter.updateMove(hit ?? (gestureSamplingMode === 'uv' ? null : viewportPoint(event)),
+          hit ? mirrorHitAt(hit) : null);
+      }
       else if (activeTool === 'brush' || activeTool === 'eraser' || activeTool === 'blur') paintAt(event);
     }
     activePointer = null;
@@ -473,6 +492,12 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     redo: painter.redo,
     canUndo: painter.canUndo,
     canRedo: painter.canRedo,
+    copySelection: painter.copySelection,
+    cutSelection: painter.cutSelection,
+    pasteSelection: painter.pasteSelection,
+    canCopySelection: painter.canCopySelection,
+    canPasteSelection: painter.canPasteSelection,
+    getLayerImage: painter.getLayerImage,
     getGraphTargets: painter.getGraphTargets,
     setGraph: painter.setGraph,
     mergeLayerDown: painter.mergeLayerDown,
