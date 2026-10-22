@@ -67,14 +67,7 @@ export function moveSelectionInUv(surface, selection, originalImage, dx, dy,
     const mask = movement.part.alpha[index] / 255;
     const targetIndex = targetY * width + targetX;
     destinationIndices?.push(targetIndex);
-    if (backgroundImage) blendSelectedPixel(pixels, targetIndex, original, index, mask);
-    else {
-      const sourceOffset = index * 4;
-      const targetOffset = targetIndex * 4;
-      for (let channel = 0; channel < 4; channel++)
-        pixels[targetOffset + channel] = pixels[targetOffset + channel] * (1 - mask) +
-          original[sourceOffset + channel] * mask;
-    }
+    blendSelectedPixel(pixels, targetIndex, original, index, mask);
   }
   if (reuse) reuse.previousIndices = destinationIndices;
   return output;

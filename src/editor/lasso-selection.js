@@ -196,7 +196,6 @@ export function moveSelectionInView(selection, originalImage, projection, sample
       const radius = Math.max(2, Math.min(12, distance < 48 ? Math.ceil(distance * 0.75) : 2));
       const sourceIndex = entry.samples.source[index];
       const mask = entry.selection.alpha[sourceIndex];
-      const sourcePixel = sourceIndex * 4;
       for (let py = Math.max(0, target.y - radius); py <= Math.min(SIZE - 1, target.y + radius); py++)
         for (let px = Math.max(0, target.x - radius); px <= Math.min(SIZE - 1, target.x + radius); px++) {
           if ((px - target.x) ** 2 + (py - target.y) ** 2 > radius * radius) continue;
@@ -208,14 +207,7 @@ export function moveSelectionInView(selection, originalImage, projection, sample
           if (destinationAlpha[destinationIndex] >= mask) continue;
           if (!destinationAlpha[destinationIndex]) destinationIndices.push(destinationIndex);
           const mix = mask / 255;
-          if (backgroundImage) blendSelectedPixel(data, destinationIndex,
-            originalImage.data, sourceIndex, mix);
-          else {
-            const destinationPixel = destinationIndex * 4;
-            for (let channel = 0; channel < 4; channel++)
-              data[destinationPixel + channel] = data[destinationPixel + channel] * (1 - mix) +
-                originalImage.data[sourcePixel + channel] * mix;
-          }
+          blendSelectedPixel(data, destinationIndex, originalImage.data, sourceIndex, mix);
           destinationAlpha[destinationIndex] = mask;
         }
     }

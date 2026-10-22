@@ -63,3 +63,61 @@ test('UV lasso preview reuse restores both mirrored destinations', () => {
     [{ dx: 2, dy: 0 }, { dx: -2, dy: 0 }]);
   assert.deepEqual(reused.data, fresh.data);
 });
+
+test('mirrored UV move keeps the destination beneath transparent selected pixels', () => {
+  const width = 12;
+  const height = 2;
+  const surface = { canvas: { width, height }, imageLayer: true,
+    context: { createImageData: () => ({ width, height,
+      data: new Uint8ClampedArray(width * height * 4) }) } };
+  const first = width + 2;
+  const second = width + 9;
+  const alpha = new Uint8Array(width * height);
+  alpha[first] = alpha[second] = 255;
+  const selection = { alpha, indices: [first, second], parts: [
+    { alpha, indices: [first] }, { alpha, indices: [second] }
+  ] };
+  const image = surface.context.createImageData();
+  image.data.set([255, 0, 0, 255], first * 4);
+  image.data.set([255, 255, 255, 0], second * 4);
+  image.data.set([0, 0, 255, 255], (second - 1) * 4);
+  const moved = moveSelectionInUv(surface, selection, image, 1, 0,
+    [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }]);
+  assert.deepEqual([...moved.data.slice((first + 1) * 4, (first + 2) * 4)],
+    [255, 0, 0, 255]);
+  assert.deepEqual([...moved.data.slice((second - 1) * 4, second * 4)],
+    [0, 0, 255, 255]);
+});
+
+test('mirrored surface move keeps the destination beneath transparent selected pixels', () => {
+  const width = 5;
+  const buffer = new Uint8Array(width * 4).fill(255);
+  setUv(buffer, width, 1, 0, 0, 100, 100);
+  setUv(buffer, width, 1, 1, 0, 110, 100);
+  setUv(buffer, width, 1, 3, 0, 220, 100);
+  setUv(buffer, width, 1, 4, 0, 230, 100);
+  const projection = { buffer, width, height: 1 };
+  const first = 100 * SIZE + 100;
+  const second = 100 * SIZE + 230;
+  const destination = 100 * SIZE + 220;
+  const alpha = new Uint8Array(SIZE * SIZE);
+  alpha[first] = alpha[second] = 255;
+  const selection = { alpha, indices: Uint32Array.of(first, second),
+    surface: { imageLayer: true } };
+  const image = { data: new Uint8ClampedArray(SIZE * SIZE * 4) };
+  image.data.set([255, 0, 0, 255], first * 4);
+  image.data.set([255, 255, 255, 0], second * 4);
+  image.data.set([0, 0, 255, 255], destination * 4);
+  const branches = [
+    { selection, projection, samples: { screen: Int32Array.of(0), source: Int32Array.of(first) },
+      dx: 1, dy: 0 },
+    { selection, projection, samples: { screen: Int32Array.of(4), source: Int32Array.of(second) },
+      dx: -1, dy: 0 }
+  ];
+  const moved = moveSelectionInView(selection, image, projection, null, 1, 0,
+    null, null, branches);
+  assert.deepEqual([...moved.image.data.slice((100 * SIZE + 110) * 4,
+    (100 * SIZE + 110) * 4 + 4)], [255, 0, 0, 255]);
+  assert.deepEqual([...moved.image.data.slice(destination * 4, destination * 4 + 4)],
+    [0, 0, 255, 255]);
+});
