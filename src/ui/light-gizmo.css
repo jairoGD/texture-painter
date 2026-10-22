@@ -1,0 +1,11 @@
+.light-gizmo { position: absolute; z-index: 4; top: 12px; right: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; width: 94px; height: 108px; padding: 7px 6px 8px; border: 1px solid var(--border-control); border-radius: 11px; color: var(--text-muted); background: #1b222bdc; box-shadow: 0 10px 26px #0006; cursor: grab; user-select: none; touch-action: none; }
+.light-gizmo:hover { border-color: var(--accent); background: #222c37ee; }
+.light-gizmo:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.light-gizmo.is-dragging { cursor: grabbing; }
+.light-gizmo__label { color: var(--text-muted); font-size: 9px; font-weight: 800; letter-spacing: .16em; line-height: 1; }
+.light-gizmo__stage { position: relative; display: block; flex: 0 0 76px; width: 76px; height: 76px; border: 1px solid var(--border-control); border-radius: 50%; background: radial-gradient(circle, #303b4b 0 33%, #1b242f 34% 64%, #131b25 65% 100%); }
+.light-gizmo__stage::after { content: ''; position: absolute; inset: 4px; border: 1px solid #748aa044; border-radius: 50%; pointer-events: none; }
+.light-gizmo__sphere { position: absolute; top: 50%; left: 50%; width: 37px; height: 37px; transform: translate(-50%, -50%); border: 1px solid #9fb3c888; border-radius: 50%; background: radial-gradient(circle at var(--light-x, 65%) var(--light-y, 25%), #dceaff 0%, #9ab1cb 25%, #46576b 62%, #1b2735 100%); box-shadow: inset -3px -4px 7px #0c172a99, 0 2px 6px #0007; }
+.light-gizmo__beam { position: absolute; top: 50%; left: 50%; height: 1px; transform-origin: left center; background: var(--accent-soft); box-shadow: 0 0 5px var(--accent); opacity: .65; }
+.light-gizmo__sun { position: absolute; width: 14px; height: 14px; transform: translate(-50%, -50%); border: 2px solid #fff; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px #70bfff44, 0 0 13px #b8dfff; }
+.light-gizmo__sun.is-behind { opacity: .48; box-shadow: 0 0 0 3px #70bfff22; }

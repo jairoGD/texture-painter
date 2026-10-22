@@ -44,7 +44,7 @@ function rgb(hex) {
 }
 
 function dab(context, x, y, { color, size, hardness }) {
-  const radius = Math.max(1, size / 2);
+  const radius = Math.max(0.5, size / 2);
   if (hardness >= 100) {
     context.fillStyle = color;
   } else {
@@ -66,7 +66,7 @@ function drawMark({ surface, kind, point, previous, options, mask }) {
   const distance = Math.hypot(point.x - from.x, point.y - from.y);
   const spacing = Math.max(1, settings.size * 0.16);
   const steps = Math.max(1, Math.ceil(distance / spacing));
-  const radius = Math.max(1, settings.size / 2);
+  const radius = Math.max(0.5, settings.size / 2);
   if (mask && !strokeTouchesSelection(mask, from, point, radius + 1,
     surface.canvas.width, surface.canvas.height)) return false;
   const left = Math.floor(Math.min(from.x, point.x) - radius - 1);

@@ -9,7 +9,7 @@ import { createModelMirror, reflectedCamera } from './model-mirror.js';
 import { setTextureResolution, textureResolution } from './texture-resolution.js';
 
 export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTargetsChanged,
-  onContentChanged } = {}) {
+  onContentChanged, onLightViewChanged } = {}) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color('#252b34');
 
@@ -40,12 +40,46 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   controls.update();
 
   scene.add(new THREE.HemisphereLight('#dbe9ff', '#525667', 2.1));
+  const lightRig = new THREE.Group();
   const keyLight = new THREE.DirectionalLight('#ffffff', 3.2);
   keyLight.position.set(3, 6, 4);
-  scene.add(keyLight);
+  lightRig.add(keyLight);
   const fillLight = new THREE.DirectionalLight('#9bbcff', 1.5);
   fillLight.position.set(-4, 2, -3);
-  scene.add(fillLight);
+  lightRig.add(fillLight);
+  scene.add(lightRig);
+  let lightYaw = 0;
+  let lightPitch = 0;
+  let lightViewDirty = true;
+  const lastLightCamera = new THREE.Quaternion();
+  const lightDirection = new THREE.Vector3();
+  const inverseCamera = new THREE.Quaternion();
+
+  function setLightRotation(yaw, pitch) {
+    if (!Number.isFinite(yaw)) yaw = 0;
+    if (!Number.isFinite(pitch)) pitch = 0;
+    lightYaw = Math.atan2(Math.sin(yaw), Math.cos(yaw));
+    lightPitch = THREE.MathUtils.clamp(pitch, -1.4, 1.4);
+    lightRig.rotation.set(-lightPitch, lightYaw, 0, 'YXZ');
+    lightViewDirty = true;
+  }
+
+  function getLightViewState() {
+    lightRig.updateWorldMatrix(true, true);
+    keyLight.getWorldPosition(lightDirection).normalize();
+    inverseCamera.copy(camera.quaternion).invert();
+    lightDirection.applyQuaternion(inverseCamera);
+    return { x: lightDirection.x, y: lightDirection.y,
+      z: lightDirection.z, yaw: lightYaw, pitch: lightPitch };
+  }
+
+  function updateLightView() {
+    if (!onLightViewChanged ||
+        (!lightViewDirty && lastLightCamera.equals(camera.quaternion))) return;
+    onLightViewChanged(getLightViewState());
+    lastLightCamera.copy(camera.quaternion);
+    lightViewDirty = false;
+  }
 
   const grid = new THREE.GridHelper(20, 20, '#66717d', '#3a434e');
   grid.position.y = -0.005;
@@ -537,6 +571,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
 
   function newProject(resolution = 1024) {
     setTextureResolution(resolution);
+    setLightRotation(0, 0);
     const next = starterModel();
     painter.prepare(next);
     scene.remove(model);
@@ -556,7 +591,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       view: { camera: camera.position.toArray(), target: controls.target.toArray(),
         lighting: currentLightingMode, grid: grid.visible, mirror: mirrorEnabled,
         sampling: samplingMode, antialias: antialiasEnabled,
-        wireframe: wireframeVisible } };
+        wireframe: wireframeVisible,
+        lightRotation: { yaw: lightYaw, pitch: lightPitch } } };
   }
 
   async function restoreProjectData(saved, file = null) {
@@ -569,6 +605,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     await painter.restoreProjectTextures(saved.textures);
     mirrorEnabled = saved.view?.mirror === true;
     samplingMode = saved.view?.sampling === 'uv' ? 'uv' : 'surface';
+    setLightRotation(saved.view?.lightRotation?.yaw ?? 0,
+      saved.view?.lightRotation?.pitch ?? 0);
     if (Array.isArray(saved.view?.camera) && saved.view.camera.length === 3 &&
         saved.view.camera.every(Number.isFinite) && Array.isArray(saved.view?.target) &&
         saved.view.target.length === 3 && saved.view.target.every(Number.isFinite)) {
@@ -595,7 +633,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   }
   new ResizeObserver(resize).observe(host);
   resize();
-  const renderFrame = () => { controls.update(); renderer.render(scene, camera); };
+  const renderFrame = () => { controls.update(); updateLightView(); renderer.render(scene, camera); };
   renderer.setAnimationLoop(renderFrame);
 
   function setAntialiasEnabled(enabled) {
@@ -605,6 +643,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     const nextRenderer = createRenderer(enabled);
     host.insertBefore(nextRenderer.domElement, oldRenderer.domElement);
     renderer = nextRenderer;
+    painter.setRenderer(nextRenderer);
     controls.connect(nextRenderer.domElement);
     bindRendererCanvas(nextRenderer.domElement);
     oldRenderer.setAnimationLoop(null);
@@ -627,6 +666,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       painter.setWireframeEnabled(wireframeVisible);
     },
     setAntialiasEnabled,
+    setLightRotation,
+    getLightViewState,
     setMirrorEnabled: (enabled) => { mirrorEnabled = Boolean(enabled); },
     getMirrorEnabled: () => mirrorEnabled,
     setSamplingMode: (mode) => { samplingMode = mode === 'uv' ? 'uv' : 'surface'; },

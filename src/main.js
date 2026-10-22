@@ -9,6 +9,7 @@ import { createProjectHome } from './ui/project-home.js';
 import { createLayersPanel } from './ui/layers-panel.js';
 import { createTexturePreview } from './ui/texture-preview.js';
 import { createTextureExportDialog } from './ui/texture-export-dialog.js';
+import { createLightGizmo } from './ui/light-gizmo.js';
 import { createModelRelinkDialog, GLB_PICKER } from './ui/model-relink.js';
 import { createSelectionSizeDialog } from './ui/selection-size-dialog.js';
 import { createFilterDialog } from './ui/filter-dialog.js';
@@ -31,6 +32,7 @@ let activeTool = 'brush';
 let nodeEditor;
 let layersPanel;
 let texturePreview;
+let lightGizmo;
 let projectId = null;
 let projectName = '';
 let projectHandle = null;
@@ -41,6 +43,7 @@ function markDirty() { if (projectId && !loadingProject) dirty = true; }
 const scene = createScene(viewport, {
   onGraphTargetsChanged: (targets) => nodeEditor?.setTargets(targets),
   onSelectionChanged: (message) => { setStatus(message); editMenu.refresh(); selectMenu.refresh(); },
+  onLightViewChanged: (state) => lightGizmo?.setState(state),
   onContentChanged: () => { layersPanel?.refreshThumbnails(); markDirty(); }, onColorPicked: (color) => {
   palette.setColor(color);
   setStatus(`Sampled ${color.toUpperCase()}`);
@@ -78,6 +81,17 @@ const textureExportDialog = createTextureExportDialog({
   onComplete: (count, folder) => setStatus(`${count} texture${count === 1 ? '' : 's'} exported to ${folder}`),
   onError: (message) => setStatus(message, true)
 });
+lightGizmo = createLightGizmo({
+  onChange: (yaw, pitch) => { scene.setLightRotation(yaw, pitch); markDirty(); },
+  onEnd: () => setStatus('Lighting rotated'),
+  onReset: () => {
+    scene.setLightRotation(0, 0);
+    markDirty();
+    setStatus('Lighting reset');
+  }
+});
+lightGizmo.setState(scene.getLightViewState());
+viewport.append(lightGizmo.element);
 const initialTarget = nodeEditor.getState();
 texturePreview.setTarget(initialTarget.targetId,
   initialTarget.targets.find((target) => target.id === initialTarget.targetId)?.label);

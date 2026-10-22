@@ -5,15 +5,19 @@ function parseColor(hex) {
 export function rasterizePixelStroke({ width, height, left, top, from, to, steps,
   hasPrevious, size, hardness, color, mask = null, surfaceWidth = width,
   surfaceHeight = height }) {
-  const radius = Math.max(1, size / 2);
+  const radius = Math.max(0.5, size / 2);
   const radiusSquared = radius * radius;
   const innerRadius = radius * Math.max(0, hardness / 100);
   const coverage = new Float32Array(width * height);
 
   for (let step = hasPrevious ? 0 : steps; step <= steps; step++) {
     const t = step / steps;
-    const centerX = from.x + (to.x - from.x) * t - left;
-    const centerY = from.y + (to.y - from.y) * t - top;
+    let centerX = from.x + (to.x - from.x) * t - left;
+    let centerY = from.y + (to.y - from.y) * t - top;
+    if (size <= 1) {
+      centerX = Math.floor(centerX) + 0.5;
+      centerY = Math.floor(centerY) + 0.5;
+    }
     const x0 = Math.max(0, Math.floor(centerX - radius));
     const y0 = Math.max(0, Math.floor(centerY - radius));
     const x1 = Math.min(width, Math.ceil(centerX + radius));

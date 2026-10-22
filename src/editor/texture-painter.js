@@ -26,7 +26,8 @@ function configureTextureSampling(texture, antialiasEnabled) {
   texture.needsUpdate = true;
 }
 
-export function createTexturePainter(renderer) {
+export function createTexturePainter(initialRenderer) {
+  let renderer = initialRenderer;
   const surfaces = new Map();
   let lightingMode = 'shaded';
   let antialiasEnabled = true;
@@ -49,8 +50,6 @@ export function createTexturePainter(renderer) {
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = SIZE;
     const context = canvas.getContext('2d');
-    context.fillStyle = '#ffffff';
-    context.fillRect(0, 0, SIZE, SIZE);
     const compositeCanvas = document.createElement('canvas');
     compositeCanvas.width = compositeCanvas.height = SIZE;
     const compositeContext = compositeCanvas.getContext('2d');
@@ -93,8 +92,7 @@ export function createTexturePainter(renderer) {
     }
     surface.activePaint = null;
     surface.resetPaint = () => {
-      context.fillStyle = '#ffffff';
-      context.fillRect(0, 0, SIZE, SIZE);
+      context.clearRect(0, 0, SIZE, SIZE);
       surface.requestComposite();
     };
     surface.refreshComposite = () => {
@@ -216,7 +214,7 @@ export function createTexturePainter(renderer) {
       surfaces.set(mesh, record);
       for (const surface of record.slots) {
         const layer = addGraphLayer(surface.graph, 'image');
-        const asset = createImage(surface.id, layer.source.id, surface.canvas, 'Layer 1');
+        const asset = createImage(surface.id, layer.source.id, null, 'Layer 1');
         layer.source.imageKey = asset.key;
         layer.source.imageName = asset.name;
         surface.activePaint = surface.imageAssets.get(asset.key).paintSurface;
@@ -1169,6 +1167,7 @@ export function createTexturePainter(renderer) {
     beginStroke, endStroke, undo, redo, canUndo: () => undoStack.length > 0 && !filterSession,
     canRedo: () => redoStack.length > 0 && !filterSession, setLightingMode,
     setWireframeEnabled, setAntialiasEnabled,
+    setRenderer: (nextRenderer) => { renderer = nextRenderer; },
     getMeshes: () => [...surfaces.keys()], getFaceTarget,
     getGraphTargets: graphTargets, setGraph, createImage, setPaintSource, mergeLayerDown,
     exportProjectTextures, restoreProjectTextures,

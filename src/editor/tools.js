@@ -9,13 +9,14 @@ import magicIcon from '../ui/icons/magic.svg';
 import wireIcon from '../ui/icons/wire.svg';
 
 const size = { type: 'slider', key: 'size', label: 'Size', min: 2, max: 128, step: 1, unit: ' px' };
+const fineSize = { ...size, min: 1 };
 const hardness = { type: 'slider', key: 'hardness', label: 'Hardness', min: 0, max: 100, step: 1, unit: '%' };
 const opacity = { type: 'slider', key: 'opacity', label: 'Opacity', min: 1, max: 100, step: 1, unit: '%' };
 const antialias = { type: 'checkbox', key: 'antialias', label: 'Antialiasing' };
 export const TOOL_DEFINITIONS = [
   { id: 'brush', label: 'Brush', iconUrl: brushIcon,
     usesColor: true, defaults: { size: 10, hardness: 100, opacity: 100, antialias: true },
-    controls: [size, hardness, opacity, antialias] },
+    controls: [fineSize, hardness, opacity, antialias] },
   { id: 'eraser', label: 'Eraser', iconUrl: eraserIcon,
     defaults: { size: 10, hardness: 100, opacity: 100, antialias: true },
     controls: [size, hardness, opacity, antialias] },
@@ -24,7 +25,7 @@ export const TOOL_DEFINITIONS = [
     controls: [{ type: 'slider', key: 'tolerance', label: 'Tolerance', min: 0, max: 100, step: 1, unit: '%' }, opacity] },
   { id: 'line', label: 'Line', iconUrl: lineIcon,
     usesColor: true, defaults: { size: 2, hardness: 100, opacity: 100, antialias: true },
-    controls: [size, hardness, opacity, antialias] },
+    controls: [fineSize, hardness, opacity, antialias] },
   { id: 'blur', label: 'Blur', iconUrl: blurIcon,
     defaults: { size: 72, hardness: 35, strength: 20, spread: 20 },
     controls: [size, hardness,
