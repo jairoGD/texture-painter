@@ -6,7 +6,9 @@ import { colorPalette } from './ui/color-palette.js';
 import { createNodeEditor } from './ui/node-editor.js';
 import { createProjectHome } from './ui/project-home.js';
 import { createLayersPanel } from './ui/layers-panel.js';
-import { dropdown, element, notice, panel, renderControl, renderPanel, toolbar } from './ui/index.js';
+import { dropdown, element, notice, panel, renderControl, renderPanel, toggleButton, toolbar } from './ui/index.js';
+import mirrorIcon from './ui/icons/mirror.svg';
+import samplingIcon from './ui/icons/sampling.svg';
 import './style.css';
 
 const app = document.querySelector('#app');
@@ -138,13 +140,33 @@ const displayMenu = dropdown({ label: 'Display', items: [
 ] });
 
 const projectTag = element('span', { className: 'app-header__tag', text: 'NO PROJECT' });
+const samplingButton = toggleButton({ label: 'Switch to UV sampling', iconUrl: samplingIcon,
+  className: 'app-header__sampling', onChange: (enabled) => {
+    const mode = enabled ? 'uv' : 'surface';
+    scene.setSamplingMode(mode);
+    updateSamplingButton(mode);
+    markDirty();
+    setStatus(mode === 'uv' ? 'UV sampling' : '3D surface sampling');
+  } });
+function updateSamplingButton(mode) {
+  samplingButton.setPressed(mode === 'uv');
+  const label = mode === 'uv' ? 'Switch to 3D surface sampling' : 'Switch to UV sampling';
+  samplingButton.setAttribute('title', label);
+  samplingButton.setAttribute('aria-label', label);
+}
+const mirrorButton = toggleButton({ label: 'Mirror on X axis', iconUrl: mirrorIcon,
+  className: 'app-header__mirror', onChange: (enabled) => {
+    scene.setMirrorEnabled(enabled);
+    markDirty();
+    setStatus(`Mirror ${enabled ? 'on' : 'off'}`);
+  } });
 const header = element('header', { className: 'app-header' }, [
   element('div', { className: 'brand' }, [
     element('span', { className: 'brand__mark', text: '◈', attributes: { 'aria-hidden': 'true' } }),
     element('span', { className: 'brand__name', text: 'TEXTURE PAINTER' })
   ]),
   toolbar({ items: [fileMenu, editMenu, displayMenu], className: 'app-header__menu' }),
-  projectTag
+  element('div', { className: 'app-header__right' }, [samplingButton, mirrorButton, projectTag])
 ]);
 
 const propertiesBody = element('div', { className: 'tool-properties' });
@@ -242,6 +264,10 @@ function restoreEditorSettings(saved = {}, view = {}) {
   gridVisible = view.grid !== false;
   scene.setLightingMode(lightingMode);
   scene.setGridVisible(gridVisible);
+  scene.setMirrorEnabled(view.mirror === true);
+  mirrorButton.setPressed(scene.getMirrorEnabled());
+  scene.setSamplingMode(view.sampling === 'uv' ? 'uv' : 'surface');
+  updateSamplingButton(scene.getSamplingMode());
   modeLabel.textContent = lightingMode === 'unlit' ? '●  UNLIT' : '●  SHADED';
   displayMenu.refresh();
   nodeEditor.restoreProjectState(saved.nodes);

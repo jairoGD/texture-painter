@@ -1,5 +1,20 @@
 const WHITE = '#ffffff';
-import { moveSelectionPixels } from './lasso-selection.js';
+
+let markCanvas = null;
+let markContext = null;
+
+function markBuffer(width, height) {
+  if (!markCanvas) {
+    markCanvas = document.createElement('canvas');
+    markContext = markCanvas.getContext('2d');
+  }
+  if (markCanvas.width < width) markCanvas.width = width;
+  if (markCanvas.height < height) markCanvas.height = height;
+  markContext.globalCompositeOperation = 'source-over';
+  markContext.globalAlpha = 1;
+  markContext.clearRect(0, 0, width, height);
+  return markContext;
+}
 
 function rgb(hex) {
   return [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16));
@@ -34,10 +49,9 @@ function drawMark({ surface, kind, point, previous, options, mask }) {
   if (mask && (left >= mask.bounds.right || top >= mask.bounds.bottom ||
       Math.ceil(Math.max(from.x, point.x) + radius + 1) <= mask.bounds.left ||
       Math.ceil(Math.max(from.y, point.y) + radius + 1) <= mask.bounds.top)) return false;
-  const layer = document.createElement('canvas');
-  layer.width = Math.ceil(Math.max(from.x, point.x) + radius + 1) - left;
-  layer.height = Math.ceil(Math.max(from.y, point.y) + radius + 1) - top;
-  const layerContext = layer.getContext('2d');
+  const layerWidth = Math.ceil(Math.max(from.x, point.x) + radius + 1) - left;
+  const layerHeight = Math.ceil(Math.max(from.y, point.y) + radius + 1) - top;
+  const layerContext = markBuffer(layerWidth, layerHeight);
   context.save();
   for (let step = previous ? 0 : steps; step <= steps; step++) {
     const t = step / steps;
@@ -46,7 +60,7 @@ function drawMark({ surface, kind, point, previous, options, mask }) {
   if (mask) {
     layerContext.globalCompositeOperation = 'destination-in';
     layerContext.drawImage(mask.canvas, -left, -top);
-    const pixels = layerContext.getImageData(0, 0, layer.width, layer.height).data;
+    const pixels = layerContext.getImageData(0, 0, layerWidth, layerHeight).data;
     let visible = false;
     for (let index = 3; index < pixels.length; index += 4) {
       if (pixels[index]) { visible = true; break; }
@@ -55,7 +69,8 @@ function drawMark({ surface, kind, point, previous, options, mask }) {
   }
   context.globalAlpha = settings.opacity / 100;
   if (kind === 'eraser' && surface.imageLayer) context.globalCompositeOperation = 'destination-out';
-  context.drawImage(layer, left, top);
+  context.drawImage(markCanvas, 0, 0, layerWidth, layerHeight,
+    left, top, layerWidth, layerHeight);
   context.restore();
   return true;
 }
@@ -213,8 +228,7 @@ function floodFill({ surface, point, options, mask }) {
 
 export function executePaintCommand(command) {
   const changed = command.kind === 'bucket' ? floodFill(command) :
-    command.kind === 'blur' ? blurStroke(command) :
-      command.kind === 'moveSelection' ? moveSelectionPixels(command) : drawMark(command);
+    command.kind === 'blur' ? blurStroke(command) : drawMark(command);
   if (changed) command.surface.requestComposite();
   return changed;
 }

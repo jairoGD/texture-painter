@@ -28,7 +28,7 @@ const hiddenMaterial = new THREE.ShaderMaterial({
   toneMapped: false
 });
 
-function decode(buffer, width, height, x, y) {
+export function decodeVisibleUv(buffer, width, height, x, y) {
   if (x < 0 || x >= width || y < 0 || y >= height) return null;
   const pixel = ((height - 1 - y) * width + x) * 4;
   if (buffer[pixel] === 255 && buffer[pixel + 1] === 255 &&
@@ -39,8 +39,8 @@ function decode(buffer, width, height, x, y) {
   };
 }
 
-export function projectLassoToUv(renderer, camera, hit, path, meshes) {
-  if (!hit || path.length < 3) return null;
+export function captureVisibleUv(renderer, camera, hit, meshes) {
+  if (!hit) return null;
   const mesh = hit.object;
   const materialIndex = hit.face?.materialIndex ?? 0;
   const rect = renderer.domElement.getBoundingClientRect();
@@ -80,6 +80,14 @@ export function projectLassoToUv(renderer, camera, hit, path, meshes) {
     target.dispose();
   }
 
+  return { buffer, width, height };
+}
+
+export function projectLassoToUv(renderer, camera, hit, path, meshes) {
+  if (!hit || path.length < 3) return null;
+  const projection = captureVisibleUv(renderer, camera, hit, meshes);
+  if (!projection) return null;
+  const { buffer, width, height } = projection;
   const polygon = document.createElement('canvas');
   polygon.width = width; polygon.height = height;
   const polygonContext = polygon.getContext('2d');
@@ -98,10 +106,10 @@ export function projectLassoToUv(renderer, camera, hit, path, meshes) {
   let count = 0;
   for (let y = top; y < bottom; y++) for (let x = left; x < right; x++) {
     if (inside[(y * width + x) * 4 + 3] < 128) continue;
-    const uv = decode(buffer, width, height, x, y);
+    const uv = decodeVisibleUv(buffer, width, height, x, y);
     if (!uv) continue;
-    const rightUv = decode(buffer, width, height, x + 1, y);
-    const downUv = decode(buffer, width, height, x, y + 1);
+    const rightUv = decodeVisibleUv(buffer, width, height, x + 1, y);
+    const downUv = decodeVisibleUv(buffer, width, height, x, y + 1);
     const distance = Math.max(rightUv ? Math.hypot(uv.x - rightUv.x, uv.y - rightUv.y) : 0,
       downUv ? Math.hypot(uv.x - downUv.x, uv.y - downUv.y) : 0);
     const radius = Math.max(2, Math.min(12, distance < 48 ? Math.ceil(distance * 0.75) : 2));

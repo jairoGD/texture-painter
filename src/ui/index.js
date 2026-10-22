@@ -30,6 +30,19 @@ export function button({ label, icon, iconUrl, variant = 'default', title, toolt
   return node;
 }
 
+export function toggleButton({ label, iconUrl, pressed = false, onChange, className = '' }) {
+  const node = button({ label, iconUrl, variant: 'toggle', iconOnly: true, title: label,
+    onClick: () => {
+      const next = node.getAttribute('aria-pressed') !== 'true';
+      node.setPressed(next);
+      onChange?.(next);
+    } });
+  node.className += ` ${className}`;
+  node.setPressed = (value) => node.setAttribute('aria-pressed', String(Boolean(value)));
+  node.setPressed(pressed);
+  return node;
+}
+
 export function slider({ label, min = 0, max = 100, step = 1, value = min, unit = '', onChange }) {
   const output = element('output', { className: 'ui-slider__value' });
   const input = element('input', {

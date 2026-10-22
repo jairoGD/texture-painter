@@ -1,9 +1,13 @@
 import * as THREE from 'three';
 import { executePaintCommand, samplePaintColor } from './paint-operations.js';
-import { containsSelection, selectionFromMask, shiftedSelection } from './lasso-selection.js';
+import { containsSelection, moveSelectionInView, selectionFromAlpha,
+  selectionFromMask, visibleSelectionSamples } from './lasso-selection.js';
 import { addTextureNode, blendCanvases, cloneTextureGraph, connectTextureNodes,
   createTextureGraph, evaluateTextureNode, removeTextureNode, renderTextureGraph } from './texture-graph.js';
 import { addGraphLayer, readLayerStack, removeGraphLayer } from './layer-graph.js';
+import { canConnectSurfaceHits, canConnectUvHits } from './surface-stroke.js';
+import { applyPaintPatches, capturePaintPatches } from './paint-history.js';
+import { moveSelectionInUv, shiftedUvSelection } from './uv-lasso-move.js';
 
 const SIZE = 1024;
 
@@ -154,7 +158,7 @@ export function createTexturePainter() {
   function recordSelection(next) {
     const before = selection;
     selection = next;
-    undoStack.push([{ kind: 'selection', before, after: next }]);
+    undoStack.push({ patches: [], selectionBefore: before, selectionAfter: next });
     redoStack = [];
     renderOverlay();
   }
@@ -199,35 +203,62 @@ export function createTexturePainter() {
     return !!selection && surfaceAt(hit) === selection.surface && containsSelection(selection, toPixel(hit.uv));
   }
 
-  function beginMove(hit) {
+  function beginMove(hit, projection, screen, mode = 'surface') {
     if (!selectedAt(hit)) return false;
-    movePreview = { before: selection, anchor: toPixel(hit.uv), dx: 0, dy: 0,
-      image: selection.surface.context.getImageData(0, 0, SIZE, SIZE) };
+    const samples = mode === 'surface' ? visibleSelectionSamples(selection, projection) : null;
+    if (mode === 'surface' && !samples.screen.length) return false;
+    movePreview = { before: selection, projection, samples, mode,
+      anchor: mode === 'uv' ? toPixel(hit.uv) : screen, dx: 0, dy: 0,
+      after: selection, image: selection.surface.context.getImageData(0, 0, SIZE, SIZE),
+      scratch: mode === 'surface' ? selection.surface.context.createImageData(SIZE, SIZE) : null,
+      destinationAlpha: mode === 'surface' ? new Uint8Array(SIZE * SIZE) : null };
     return true;
   }
 
-  function updateMove(hit) {
-    if (!movePreview || surfaceAt(hit) !== movePreview.before.surface) return false;
-    const point = toPixel(hit.uv);
+  function updateMove(position) {
+    if (!movePreview) return false;
+    const point = movePreview.mode === 'uv' ?
+      (surfaceAt(position) === movePreview.before.surface ? toPixel(position.uv) : null) : position;
+    if (!point) return false;
     const dx = Math.round(point.x - movePreview.anchor.x);
     const dy = Math.round(point.y - movePreview.anchor.y);
     if (dx === movePreview.dx && dy === movePreview.dy) return false;
     movePreview.dx = dx; movePreview.dy = dy;
     const { before, image } = movePreview;
-    before.surface.context.putImageData(image, 0, 0);
-    before.surface.requestComposite();
-    if (dx || dy) executePaintCommand({ kind: 'moveSelection', surface: before.surface, selection: before, dx, dy });
-    renderOverlay(before.surface, before.overlayCanvas, dx, dy);
+    if (!dx && !dy) {
+      before.surface.context.putImageData(image, 0, 0);
+      movePreview.after = before;
+      renderOverlay();
+      before.surface.requestComposite();
+      return true;
+    }
+    if (movePreview.mode === 'uv') {
+      before.surface.context.putImageData(moveSelectionInUv(before.surface, before, image, dx, dy), 0, 0);
+      before.surface.requestComposite();
+      movePreview.after = null;
+      renderOverlay(before.surface, before.overlayCanvas, dx, dy);
+    } else {
+      const moved = moveSelectionInView(before, image, movePreview.projection, movePreview.samples,
+        dx, dy, movePreview.scratch, movePreview.destinationAlpha);
+      before.surface.context.putImageData(moved.image, 0, 0);
+      before.surface.requestComposite();
+      movePreview.after = selectionFromAlpha(before.surface, moved.alpha, null, moved.indices, false);
+      renderOverlay(before.surface, movePreview.after?.overlayCanvas ?? null);
+    }
     return true;
   }
 
   function endMove() {
     if (!movePreview) return false;
-    const { before, dx, dy } = movePreview;
+    const { before, after: previewAfter, image, dx, dy, mode } = movePreview;
     movePreview = null;
     if (!dx && !dy) { renderOverlay(); return false; }
-    const after = shiftedSelection(before, dx, dy);
-    undoStack.push([{ kind: 'moveSelection', surface: before.surface, selection: before, before, after, dx, dy }]);
+    const after = mode === 'uv' ? shiftedUvSelection(before, dx, dy) :
+      previewAfter ? selectionFromAlpha(before.surface,
+        previewAfter.alpha, null, previewAfter.indices) : null;
+    const command = { kind: 'moveSelection', surface: before.surface, selection: before, dx, dy };
+    undoStack.push({ patches: capturePaintPatches([command], new Map([[before.surface, image]])),
+      selectionBefore: before, selectionAfter: after });
     redoStack = [];
     selection = after;
     renderOverlay();
@@ -243,20 +274,26 @@ export function createTexturePainter() {
     return true;
   }
 
-  function beginStroke() { activeStroke = []; }
+  function beginStroke() { activeStroke = { commands: [], before: new Map() }; }
   function apply(command) {
+    if (activeStroke && !activeStroke.before.has(command.surface)) {
+      const { canvas, context } = command.surface;
+      activeStroke.before.set(command.surface, context.getImageData(0, 0, canvas.width, canvas.height));
+    }
     if (!executePaintCommand(command)) return false;
-    activeStroke?.push(command);
+    activeStroke?.commands.push(command);
     return true;
   }
 
-  function paint(hit, kind, previousHit, options) {
+  function paint(hit, kind, previousHit, options, mode = 'surface') {
     const surface = surfaceAt(hit);
     if (!surface) return null;
     if (selection && maskEnabled && surface !== selection.surface) return null;
     const point = toPixel(hit.uv);
     const previous = surfaceAt(previousHit) === surface ? toPixel(previousHit.uv) : null;
-    const continuous = previous && Math.hypot(point.x - previous.x, point.y - previous.y) < SIZE * 0.2;
+    const continuous = previous && (mode === 'uv' ?
+      canConnectUvHits(previousHit, hit, previous, point, SIZE * 0.2) :
+      canConnectSurfaceHits(previousHit, hit, previous, point, SIZE * 0.2));
     apply({ kind, surface, point, previous: continuous ? previous : null,
       options: { ...options }, mask: maskEnabled ? selection : null });
     return hit;
@@ -275,66 +312,98 @@ export function createTexturePainter() {
     return surface ? samplePaintColor(surface, toPixel(hit.uv)) : null;
   }
 
-  function beginLine(hit, options) {
+  function beginLine(hit, options, mirroredHit = null, mode = 'surface') {
     const surface = surfaceAt(hit);
     if (!surface || (selection && maskEnabled && surface !== selection.surface)) return false;
-    linePreview = { surface, anchor: toPixel(hit.uv), options: { ...options }, before: surface.context.getImageData(0, 0, SIZE, SIZE), command: null };
-    updateLine(hit);
+    linePreview = { options: { ...options }, mode, before: new Map(), commands: [] };
+    updateLine([[hit], mirroredHit ? [mirroredHit] : []]);
     return true;
   }
 
-  function updateLine(hit) {
-    if (!linePreview || surfaceAt(hit) !== linePreview.surface) return false;
-    const { surface, before, anchor, options } = linePreview;
-    surface.context.putImageData(before, 0, 0);
-    linePreview.command = { kind: 'line', surface, point: toPixel(hit.uv), previous: anchor, options,
-      mask: maskEnabled ? selection : null };
-    linePreview.changed = executePaintCommand(linePreview.command);
+  function updateLine(paths) {
+    if (!linePreview) return false;
+    const { before, options, mode } = linePreview;
+    for (const [surface, image] of before) {
+      surface.context.putImageData(image, 0, 0);
+      surface.requestComposite();
+    }
+    const commands = [];
+    for (const rawHits of paths) {
+      if (mode === 'uv' && (!rawHits[0] || !rawHits.at(-1))) continue;
+      if (mode === 'uv' && rawHits.length > 1 &&
+          surfaceAt(rawHits[0]) !== surfaceAt(rawHits.at(-1))) continue;
+      const hits = mode === 'uv' ? [rawHits[0], rawHits.at(-1)] : rawHits;
+      let previousHit = null;
+      let previousPoint = null;
+      let segment = null;
+      for (const hit of hits) {
+        const surface = surfaceAt(hit);
+        if (!surface || (selection && maskEnabled && surface !== selection.surface)) {
+          previousHit = null; previousPoint = null; segment = null;
+          continue;
+        }
+        if (!before.has(surface)) before.set(surface, surface.context.getImageData(0, 0, SIZE, SIZE));
+        const point = toPixel(hit.uv);
+        if (segment && surface === segment.surface &&
+            (mode === 'uv' || canConnectSurfaceHits(previousHit, hit, previousPoint, point, SIZE * 0.2))) {
+          segment.point = point;
+        } else {
+          segment = { kind: 'line', surface, point, previous: point, options,
+            mask: maskEnabled ? selection : null };
+          commands.push(segment);
+        }
+        previousHit = hit;
+        previousPoint = point;
+      }
+    }
+    linePreview.commands = commands;
+    linePreview.changed = false;
+    for (const command of commands) {
+      if (executePaintCommand(command)) linePreview.changed = true;
+    }
     return true;
   }
 
   function commitLine() {
     if (!linePreview) return false;
-    const { command, changed } = linePreview;
-    if (changed) { undoStack.push([command]); redoStack = []; }
+    const { commands, changed } = linePreview;
+    if (changed) {
+      undoStack.push({ patches: capturePaintPatches(commands, linePreview.before) });
+      redoStack = [];
+    }
     linePreview = null;
     return changed;
   }
 
   function cancelLine() {
     if (!linePreview) return;
-    const { surface, before } = linePreview;
-    surface.context.putImageData(before, 0, 0); surface.requestComposite();
+    for (const [surface, image] of linePreview.before) {
+      surface.context.putImageData(image, 0, 0); surface.requestComposite();
+    }
     linePreview = null;
   }
 
   function endStroke() {
-    if (activeStroke?.length) { undoStack.push(activeStroke); redoStack = []; }
-    activeStroke = null;
-  }
-
-  function rebuild(affectedSurfaces) {
-    for (const surface of affectedSurfaces) surface.resetPaint();
-    for (const stroke of undoStack) for (const command of stroke) {
-      if (command.kind !== 'selection' && affectedSurfaces.has(command.surface)) executePaintCommand(command);
+    if (activeStroke?.commands.length) {
+      undoStack.push({ patches: capturePaintPatches(activeStroke.commands, activeStroke.before) });
+      redoStack = [];
     }
+    activeStroke = null;
   }
 
   function undo() {
     if (!undoStack.length || activeStroke || linePreview) return false;
-    const stroke = undoStack.pop(); redoStack.push(stroke);
-    rebuild(new Set(stroke.map((command) => command.surface).filter(Boolean)));
-    const selectionChange = stroke.find((command) => command.kind === 'selection' || command.kind === 'moveSelection');
-    if (selectionChange) { selection = selectionChange.before; renderOverlay(); }
+    const entry = undoStack.pop(); redoStack.push(entry);
+    applyPaintPatches(entry.patches, 'before');
+    if ('selectionBefore' in entry) { selection = entry.selectionBefore; renderOverlay(); }
     return true;
   }
 
   function redo() {
     if (!redoStack.length || activeStroke || linePreview) return false;
-    const stroke = redoStack.pop(); undoStack.push(stroke);
-    rebuild(new Set(stroke.map((command) => command.surface).filter(Boolean)));
-    const selectionChange = stroke.find((command) => command.kind === 'selection' || command.kind === 'moveSelection');
-    if (selectionChange) { selection = selectionChange.after; renderOverlay(); }
+    const entry = redoStack.pop(); undoStack.push(entry);
+    applyPaintPatches(entry.patches, 'after');
+    if ('selectionAfter' in entry) { selection = entry.selectionAfter; renderOverlay(); }
     return true;
   }
 

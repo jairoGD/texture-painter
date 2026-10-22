@@ -269,12 +269,45 @@ export function evaluateTextureNode(surface, nodeId, socket = 'Color', graph = s
   return evaluate(nodeId, socket);
 }
 
+function renderSimpleLayerStack(surface) {
+  const { graph, compositeContext, imageAssets } = surface;
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const incoming = (id, socket) => graph.links.find((link) => link.to === id && link.toSocket === socket);
+  let link = incoming('output', 'Color');
+  if (!link) return false;
+  const layers = [];
+  const visited = new Set();
+  while (link) {
+    const blend = nodes.get(link.from);
+    if (link.fromSocket !== 'Result' || blend?.type !== 'blend' || blend.mode !== 'mix' ||
+        !blend.layerSourceId || visited.has(blend.id) || incoming(blend.id, 'Factor')) return false;
+    const sourceLink = incoming(blend.id, 'B');
+    const source = nodes.get(sourceLink?.from);
+    if (sourceLink?.fromSocket !== 'Color' || source?.type !== 'image' ||
+        source.id !== blend.layerSourceId || !imageAssets.has(source.imageKey) ||
+        (source.projection ?? 'flat') !== 'flat' || (Number(source.scale) || 1) !== 1 ||
+        Number(source.offsetU) || Number(source.offsetV)) return false;
+    visited.add(blend.id);
+    layers.push({ blend, canvas: imageAssets.get(source.imageKey).canvas });
+    link = incoming(blend.id, 'A');
+    if (!link && blend.colorA !== '#ffffff') return false;
+  }
+  compositeContext.save();
+  for (const { blend, canvas } of layers.reverse()) {
+    if (blend.layerVisible === false) continue;
+    compositeContext.globalAlpha = Math.max(0, Math.min(1, Number(blend.factor) || 0));
+    compositeContext.drawImage(canvas, 0, 0);
+  }
+  compositeContext.restore();
+  return true;
+}
+
 export function renderTextureGraph(surface) {
   const { canvas, compositeCanvas, compositeContext } = surface;
   const size = canvas.width;
   compositeContext.fillStyle = '#ffffff';
   compositeContext.fillRect(0, 0, size, size);
-  const result = evaluateTextureNode(surface, 'output');
+  const result = renderSimpleLayerStack(surface) ? null : evaluateTextureNode(surface, 'output');
   if (result && result !== compositeCanvas) compositeContext.drawImage(result, 0, 0);
   surface.texture.needsUpdate = true;
 }
