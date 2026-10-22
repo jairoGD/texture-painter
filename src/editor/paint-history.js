@@ -1,6 +1,6 @@
 const TILE_SIZE = 64;
 
-function commandBounds(command, width, height) {
+export function commandBounds(command, width, height) {
   if (command.kind === 'bucket' || command.kind === 'moveSelection')
     return { left: 0, top: 0, right: width, bottom: height };
   const from = command.previous ?? command.point;

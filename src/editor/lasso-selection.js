@@ -115,13 +115,26 @@ export function visibleSelectionSamples(selection, projection) {
 }
 
 export function moveSelectionInView(selection, originalImage, projection, samples, dx, dy,
-  outputImage = null, outputAlpha = null, branches = null, backgroundImage = null) {
+  outputImage = null, outputAlpha = null, branches = null, backgroundImage = null, reuse = null) {
   const image = outputImage ?? { width: SIZE, height: SIZE,
     data: new Uint8ClampedArray(originalImage.data.length) };
   const data = image.data;
-  data.set(backgroundImage?.data ?? originalImage.data);
+  const base = backgroundImage?.data ?? originalImage.data;
   const destinationAlpha = outputAlpha ?? new Uint8Array(SIZE * SIZE);
-  destinationAlpha.fill(0);
+  if (reuse?.initialized) {
+    for (const index of reuse.previousIndices) {
+      const pixel = index * 4;
+      data[pixel] = base[pixel];
+      data[pixel + 1] = base[pixel + 1];
+      data[pixel + 2] = base[pixel + 2];
+      data[pixel + 3] = base[pixel + 3];
+      destinationAlpha[index] = 0;
+    }
+  } else {
+    data.set(base);
+    destinationAlpha.fill(0);
+    if (reuse) reuse.initialized = true;
+  }
   const destinationIndices = [];
   const { alpha } = selection;
   const empty = selection.surface.imageLayer ? 0 : 255;
@@ -133,7 +146,12 @@ export function moveSelectionInView(selection, originalImage, projection, sample
       data[pixel + channel] = originalImage.data[pixel + channel] * (1 - mask) + empty * mask;
   }
   const entries = branches ?? [{ selection, projection, samples, dx, dy }];
-  const partAlphas = branches ? entries.map(() => new Uint8Array(SIZE * SIZE)) : null;
+  const partAlphas = branches ? reuse?.partAlphas ??
+    entries.map(() => new Uint8Array(SIZE * SIZE)) : null;
+  if (partAlphas && reuse?.partIndices)
+    reuse.partIndices.forEach((indices, index) => {
+      for (const pixel of indices) partAlphas[index][pixel] = 0;
+    });
   const partIndices = branches ? entries.map(() => []) : null;
   for (const [partIndex, entry] of entries.entries()) {
     const { buffer, width, height } = entry.projection;
@@ -173,6 +191,11 @@ export function moveSelectionInView(selection, originalImage, projection, sample
           destinationAlpha[destinationIndex] = mask;
         }
     }
+  }
+  if (reuse) {
+    reuse.previousIndices = destinationIndices;
+    reuse.partAlphas = partAlphas;
+    reuse.partIndices = partIndices;
   }
   return { image, alpha: destinationAlpha, indices: destinationIndices,
     parts: partAlphas?.map((partAlpha, index) => ({ alpha: partAlpha, indices: partIndices[index] })) };

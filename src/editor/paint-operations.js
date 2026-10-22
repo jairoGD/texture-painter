@@ -1,10 +1,30 @@
 import { strokeTouchesSelection } from './selection-coverage.js';
 import { rasterizePixelStroke } from './pixel-brush.js';
+import { commandBounds } from './paint-history.js';
 
 const WHITE = '#ffffff';
 
 let markCanvas = null;
 let markContext = null;
+let blurHorizontalBuffer = new Float32Array(0);
+let blurWeightBuffer = new Float32Array(0);
+const blurKernels = new Map();
+
+function blurKernel(sigma, reach) {
+  const key = `${sigma}:${reach}`;
+  let kernel = blurKernels.get(key);
+  if (kernel) return kernel;
+  kernel = new Float32Array(reach * 2 + 1);
+  let total = 0;
+  for (let offset = -reach; offset <= reach; offset++) {
+    const weight = Math.exp(-(offset * offset) / (2 * sigma * sigma));
+    kernel[offset + reach] = weight;
+    total += weight;
+  }
+  for (let index = 0; index < kernel.length; index++) kernel[index] /= total;
+  blurKernels.set(key, kernel);
+  return kernel;
+}
 
 function markBuffer(width, height) {
   if (!markCanvas) {
@@ -104,21 +124,25 @@ function blurStroke({ surface, point, previous, options, mask, isolateBlur = tru
   const image = context.getImageData(sourceLeft, sourceTop, width, height);
   const data = image.data;
   // Work in premultiplied RGBA so fully transparent pixels cannot contribute black.
-  const horizontal = new Float32Array(width * height * 4);
+  const targetWidth = right - left;
+  const horizontalLength = targetWidth * height * 4;
+  if (blurHorizontalBuffer.length < horizontalLength)
+    blurHorizontalBuffer = new Float32Array(horizontalLength);
+  const horizontal = blurHorizontalBuffer;
+  horizontal.fill(0, 0, horizontalLength);
   const isolateSamples = !!mask && isolateBlur;
-  const horizontalWeights = isolateSamples ? new Float32Array(width * height) : null;
-  const kernel = new Float32Array(reach * 2 + 1);
-  let total = 0;
-  for (let offset = -reach; offset <= reach; offset++) {
-    const weight = Math.exp(-(offset * offset) / (2 * sigma * sigma));
-    kernel[offset + reach] = weight;
-    total += weight;
-  }
-  for (let index = 0; index < kernel.length; index++) kernel[index] /= total;
+  const weightLength = targetWidth * height;
+  if (isolateSamples && blurWeightBuffer.length < weightLength)
+    blurWeightBuffer = new Float32Array(weightLength);
+  const horizontalWeights = isolateSamples ? blurWeightBuffer : null;
+  if (horizontalWeights) horizontalWeights.fill(0, 0, weightLength);
+  const kernel = blurKernel(sigma, reach);
 
-  // Separable convolution keeps a broad, smooth brush practical while dragging.
-  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-    const target = (y * width + x) * 4;
+  // Horizontal samples need the halo, but only columns that can be written need a result.
+  for (let y = 0; y < height; y++) for (let canvasX = left; canvasX < right; canvasX++) {
+    const x = canvasX - sourceLeft;
+    const column = canvasX - left;
+    const target = (y * targetWidth + column) * 4;
     for (let offset = -reach; offset <= reach; offset++) {
       const sampleX = Math.max(0, Math.min(width - 1, x + offset));
       const source = (y * width + sampleX) * 4;
@@ -130,7 +154,7 @@ function blurStroke({ surface, point, previous, options, mask, isolateBlur = tru
       horizontal[target + 1] += data[source + 1] * alpha * weight;
       horizontal[target + 2] += data[source + 2] * alpha * weight;
       horizontal[target + 3] += data[source + 3] * weight;
-      if (isolateSamples) horizontalWeights[y * width + x] += weight;
+      if (isolateSamples) horizontalWeights[y * targetWidth + column] += weight;
     }
   }
 
@@ -156,6 +180,7 @@ function blurStroke({ surface, point, previous, options, mask, isolateBlur = tru
     const x = canvasX - sourceLeft;
     const y = canvasY - sourceTop;
     const pixel = (y * width + x) * 4;
+    const column = canvasX - left;
     let blurredRed = 0;
     let blurredGreen = 0;
     let blurredBlue = 0;
@@ -163,13 +188,13 @@ function blurStroke({ surface, point, previous, options, mask, isolateBlur = tru
     let sampleWeight = 0;
     for (let offset = -reach; offset <= reach; offset++) {
       const sampleY = Math.max(0, Math.min(height - 1, y + offset));
-      const source = (sampleY * width + x) * 4;
+      const source = (sampleY * targetWidth + column) * 4;
       const weight = kernel[offset + reach];
       blurredRed += horizontal[source] * weight;
       blurredGreen += horizontal[source + 1] * weight;
       blurredBlue += horizontal[source + 2] * weight;
       blurredAlpha += horizontal[source + 3] * weight;
-      if (isolateSamples) sampleWeight += horizontalWeights[sampleY * width + x] * weight;
+      if (isolateSamples) sampleWeight += horizontalWeights[sampleY * targetWidth + column] * weight;
     }
     if (isolateSamples) {
       if (!sampleWeight) continue;
@@ -189,7 +214,8 @@ function blurStroke({ surface, point, previous, options, mask, isolateBlur = tru
     }
     if (nextAlpha !== originalAlpha) { data[pixel + 3] = nextAlpha; changed = true; }
   }
-  if (changed) context.putImageData(image, sourceLeft, sourceTop);
+  if (changed) context.putImageData(image, sourceLeft, sourceTop,
+    left - sourceLeft, top - sourceTop, targetWidth, bottom - top);
   return changed;
 }
 
@@ -250,7 +276,8 @@ function floodFill({ surface, point, options, mask }) {
 export function executePaintCommand(command) {
   const changed = command.kind === 'bucket' ? floodFill(command) :
     command.kind === 'blur' ? blurStroke(command) : drawMark(command);
-  if (changed) command.surface.requestComposite();
+  if (changed) command.surface.requestComposite(commandBounds(command,
+    command.surface.canvas.width, command.surface.canvas.height));
   return changed;
 }
 

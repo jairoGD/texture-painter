@@ -28,14 +28,26 @@ export function shiftedUvSelectionParts(selection, offsets) {
 }
 
 export function moveSelectionInUv(surface, selection, originalImage, dx, dy,
-  offsets = null, backgroundImage = null) {
+  offsets = null, backgroundImage = null, outputImage = null, reuse = null) {
   const { canvas, context } = surface;
   const width = canvas.width;
   const height = canvas.height;
-  const output = context.createImageData(width, height);
+  const output = outputImage ?? context.createImageData(width, height);
   const original = originalImage.data;
-  output.data.set(backgroundImage?.data ?? original);
+  const base = backgroundImage?.data ?? original;
   const pixels = output.data;
+  if (reuse?.initialized) {
+    for (const index of reuse.previousIndices) {
+      const pixel = index * 4;
+      pixels[pixel] = base[pixel];
+      pixels[pixel + 1] = base[pixel + 1];
+      pixels[pixel + 2] = base[pixel + 2];
+      pixels[pixel + 3] = base[pixel + 3];
+    }
+  } else {
+    pixels.set(base);
+    if (reuse) reuse.initialized = true;
+  }
   const empty = surface.imageLayer ? 0 : 255;
   if (!backgroundImage) for (const index of selection.indices) {
     const mask = selection.alpha[index] / 255;
@@ -45,6 +57,7 @@ export function moveSelectionInUv(surface, selection, originalImage, dx, dy,
   }
   const movements = offsets ? selection.parts.map((part, index) => ({ part, ...offsets[index] })) :
     [{ part: selection, dx, dy }];
+  const destinationIndices = reuse ? [] : null;
   for (const movement of movements) for (const index of movement.part.indices) {
     const x = index % width;
     const y = Math.floor(index / width);
@@ -53,6 +66,7 @@ export function moveSelectionInUv(surface, selection, originalImage, dx, dy,
     if (targetX < 0 || targetX >= width || targetY < 0 || targetY >= height) continue;
     const mask = movement.part.alpha[index] / 255;
     const targetIndex = targetY * width + targetX;
+    destinationIndices?.push(targetIndex);
     if (backgroundImage) blendSelectedPixel(pixels, targetIndex, original, index, mask);
     else {
       const sourceOffset = index * 4;
@@ -62,5 +76,6 @@ export function moveSelectionInUv(surface, selection, originalImage, dx, dy,
           original[sourceOffset + channel] * mask;
     }
   }
+  if (reuse) reuse.previousIndices = destinationIndices;
   return output;
 }

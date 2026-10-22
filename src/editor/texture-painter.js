@@ -6,10 +6,11 @@ import { addTextureNode, blendCanvases, cloneTextureGraph, connectTextureNodes,
   createTextureGraph, evaluateTextureNode, removeTextureNode, renderTextureGraph } from './texture-graph.js';
 import { addGraphLayer, readLayerStack, removeGraphLayer, syncLayerMasks } from './layer-graph.js';
 import { canConnectSurfaceHits, canConnectUvHits } from './surface-stroke.js';
-import { applyPaintPatches, capturePaintPatches } from './paint-history.js';
+import { applyPaintPatches, capturePaintPatches, commandBounds } from './paint-history.js';
 import { moveSelectionInUv, shiftedUvSelection, shiftedUvSelectionParts } from './uv-lasso-move.js';
 import { copySelectedPixels, cutSelectedPixels, pasteSelectedPixels } from './selection-clipboard.js';
 import { textureResolution as SIZE } from './texture-resolution.js';
+import { addDirtyRegion, dirtyArea } from './dirty-regions.js';
 
 function configureTextureSampling(texture, antialiasEnabled) {
   texture.magFilter = antialiasEnabled ? THREE.LinearFilter : THREE.NearestFilter;
@@ -19,7 +20,7 @@ function configureTextureSampling(texture, antialiasEnabled) {
   texture.needsUpdate = true;
 }
 
-export function createTexturePainter() {
+export function createTexturePainter(renderer) {
   const surfaces = new Map();
   let lightingMode = 'shaded';
   let antialiasEnabled = true;
@@ -32,6 +33,7 @@ export function createTexturePainter() {
   let lassoDraft = null;
   let movePreview = null;
   let overlaySurface = null;
+  let overlayRegions = [];
   let maskEnabled = true;
   let isolateBlur = true;
 
@@ -64,7 +66,23 @@ export function createTexturePainter() {
       polygonOffsetFactor: -2, side: THREE.DoubleSide, toneMapped: false });
     const surface = { canvas, context, compositeCanvas, compositeContext, texture, shaded, unlit,
       overlayCanvas, overlayContext, overlayTexture, overlayMaterial, graph: createTextureGraph(),
-      imageAssets: new Map(), imageCache: new Map(), compositeFrame: null, compositeRevision: 0 };
+      imageAssets: new Map(), imageCache: new Map(), compositeFrame: null,
+      compositeDirty: [], compositeLastDirty: null, compositeRevision: 0 };
+    function uploadRegion(region) {
+      if (!surface.uploadCanvas) {
+        surface.uploadCanvas = document.createElement('canvas');
+        surface.uploadTexture = new THREE.Texture(surface.uploadCanvas);
+      }
+      const width = region.right - region.left;
+      const height = region.bottom - region.top;
+      if (surface.uploadCanvas.width !== width) surface.uploadCanvas.width = width;
+      if (surface.uploadCanvas.height !== height) surface.uploadCanvas.height = height;
+      surface.uploadCanvas.getContext('2d').drawImage(compositeCanvas,
+        region.left, region.top, width, height, 0, 0, width, height);
+      // Canvas pixels start at the top; WebGL texture positions start at the bottom.
+      renderer.copyTextureToTexture(surface.uploadTexture, texture, null,
+        new THREE.Vector2(region.left, compositeCanvas.height - region.bottom));
+    }
     surface.activePaint = null;
     surface.resetPaint = () => {
       context.fillStyle = '#ffffff';
@@ -74,14 +92,34 @@ export function createTexturePainter() {
     surface.refreshComposite = () => {
       if (surface.compositeFrame !== null) cancelAnimationFrame(surface.compositeFrame);
       surface.compositeFrame = null;
+      surface.compositeDirty = [];
       renderTextureGraph(surface);
+      surface.compositeLastDirty = null;
       surface.compositeRevision++;
     };
-    surface.requestComposite = () => {
+    surface.requestComposite = (region = null) => {
+      if (surface.compositeFrame === null) surface.compositeDirty = [];
+      if (!region) surface.compositeDirty = null;
+      else if (surface.compositeDirty) addDirtyRegion(surface.compositeDirty, region,
+        compositeCanvas.width, compositeCanvas.height);
       if (surface.compositeFrame !== null) return;
       surface.compositeFrame = requestAnimationFrame(() => {
         surface.compositeFrame = null;
-        renderTextureGraph(surface);
+        const dirty = surface.compositeDirty;
+        surface.compositeDirty = [];
+        let partial = false;
+        if (!renderer || !dirty?.length || dirtyArea(dirty) > SIZE * SIZE * 0.4) {
+          renderTextureGraph(surface);
+        } else {
+          try {
+            partial = true;
+            for (const region of dirty) {
+              if (!renderTextureGraph(surface, region)) { partial = false; break; }
+              uploadRegion(region);
+            }
+          } catch { partial = false; renderTextureGraph(surface); }
+        }
+        surface.compositeLastDirty = partial ? dirty : null;
         surface.compositeRevision++;
       });
     };
@@ -100,11 +138,14 @@ export function createTexturePainter() {
       for (const surface of record.slots) {
         if (surface.compositeFrame !== null) cancelAnimationFrame(surface.compositeFrame);
         surface.texture.dispose(); surface.shaded.dispose(); surface.unlit.dispose();
+        surface.uploadTexture?.dispose();
+        surface.overlayUploadTexture?.dispose();
         surface.overlayTexture.dispose(); surface.overlayMaterial.dispose();
       }
     }
     surfaces.clear(); undoStack = []; redoStack = []; activeStroke = null; linePreview = null;
-    selection = null; lassoDraft = null; movePreview = null; overlaySurface = null;
+    selection = null; lassoDraft = null; movePreview = null;
+    overlaySurface = null; overlayRegions = [];
   }
 
   function prepare(root) {
@@ -187,17 +228,57 @@ export function createTexturePainter() {
   function surfaceAt(hit) {
     return hit?.uv ? surfaces.get(hit.object)?.slots[hit.face?.materialIndex ?? 0]?.activePaint ?? null : null;
   }
-  function renderOverlay(surface = selection?.surface, mask = selection?.overlayCanvas, dx = 0, dy = 0) {
+  function uploadOverlayRegion(surface, region) {
+    if (!renderer) { surface.overlayTexture.needsUpdate = true; return; }
+    try {
+      if (!surface.overlayUploadCanvas) {
+        surface.overlayUploadCanvas = document.createElement('canvas');
+        surface.overlayUploadTexture = new THREE.Texture(surface.overlayUploadCanvas);
+      }
+      const width = region.right - region.left;
+      const height = region.bottom - region.top;
+      if (surface.overlayUploadCanvas.width !== width) surface.overlayUploadCanvas.width = width;
+      if (surface.overlayUploadCanvas.height !== height) surface.overlayUploadCanvas.height = height;
+      surface.overlayUploadCanvas.getContext('2d').drawImage(surface.overlayCanvas,
+        region.left, region.top, width, height, 0, 0, width, height);
+      renderer.copyTextureToTexture(surface.overlayUploadTexture, surface.overlayTexture, null,
+        new THREE.Vector2(region.left, SIZE - region.bottom));
+    } catch { surface.overlayTexture.needsUpdate = true; }
+  }
+
+  function renderOverlay(surface = selection?.surface, mask = selection?.overlayCanvas,
+    dx = 0, dy = 0, sourceRegions = selectionRegions(selection)) {
     if (overlaySurface && overlaySurface !== surface) {
-      overlaySurface.overlayContext.clearRect(0, 0, SIZE, SIZE);
-      overlaySurface.overlayTexture.needsUpdate = true;
+      for (const region of overlayRegions) {
+        overlaySurface.overlayContext.clearRect(region.left, region.top,
+          region.right - region.left, region.bottom - region.top);
+        uploadOverlayRegion(overlaySurface, region);
+      }
+      overlayRegions = [];
     }
     overlaySurface = surface ?? null;
     if (!surface) return;
+    const source = mask ? sourceRegions.map((region) => ({
+      left: Math.max(0, region.left - 2), top: Math.max(0, region.top - 2),
+      right: Math.min(SIZE, region.right + 2), bottom: Math.min(SIZE, region.bottom + 2)
+    })) : [];
+    const next = [];
+    for (const region of source) addDirtyRegion(next, {
+      left: region.left + dx, top: region.top + dy,
+      right: region.right + dx, bottom: region.bottom + dy
+    }, SIZE, SIZE);
+    const dirty = [];
+    for (const region of [...overlayRegions, ...next])
+      addDirtyRegion(dirty, region, SIZE, SIZE);
     const context = surface.overlayContext;
-    context.clearRect(0, 0, SIZE, SIZE);
-    if (mask) context.drawImage(mask, dx, dy);
-    surface.overlayTexture.needsUpdate = true;
+    for (const region of dirty) context.clearRect(region.left, region.top,
+      region.right - region.left, region.bottom - region.top);
+    for (const region of source) context.drawImage(mask, region.left, region.top,
+      region.right - region.left, region.bottom - region.top,
+      region.left + dx, region.top + dy,
+      region.right - region.left, region.bottom - region.top);
+    for (const region of dirty) uploadOverlayRegion(surface, region);
+    overlayRegions = next;
   }
 
   function recordSelection(next) {
@@ -248,6 +329,41 @@ export function createTexturePainter() {
 
   function selectedAt(hit) {
     return !!selection && surfaceAt(hit) === selection.surface && containsSelection(selection, toPixel(hit.uv));
+  }
+
+  function selectionRegions(value, dx = 0, dy = 0) {
+    if (!value) return [];
+    const parts = value.parts?.length ? value.parts : [value];
+    return parts.map((part) => {
+      let bounds = part.bounds;
+      if (!bounds && part.indices?.length) {
+        bounds = { left: SIZE, top: SIZE, right: 0, bottom: 0 };
+        for (const index of part.indices) {
+          const x = index % SIZE;
+          const y = Math.floor(index / SIZE);
+          bounds.left = Math.min(bounds.left, x);
+          bounds.top = Math.min(bounds.top, y);
+          bounds.right = Math.max(bounds.right, x + 1);
+          bounds.bottom = Math.max(bounds.bottom, y + 1);
+        }
+      }
+      return bounds && { left: bounds.left + dx, top: bounds.top + dy,
+        right: bounds.right + dx, bottom: bounds.bottom + dy };
+    }).filter(Boolean);
+  }
+
+  function writeMovePreview(preview, output, nextRegions) {
+    const surface = preview.before.surface;
+    const regions = [];
+    for (const region of [...selectionRegions(preview.before),
+      ...(preview.lastPaintRegions ?? []), ...nextRegions])
+      addDirtyRegion(regions, region, SIZE, SIZE);
+    for (const region of regions) {
+      surface.context.putImageData(output, 0, 0, region.left, region.top,
+        region.right - region.left, region.bottom - region.top);
+      surface.requestComposite(region);
+    }
+    preview.lastPaintRegions = nextRegions;
   }
 
   function copySelection() {
@@ -318,8 +434,10 @@ export function createTexturePainter() {
       anchor: mode === 'uv' ? point : screen, dx: 0, dy: 0,
       after: selection, image: selection.surface.context.getImageData(0, 0, SIZE, SIZE),
       sourceImage: selection.floatingSourceImage ?? null, baseImage: selection.floatingBase ?? null,
-      scratch: mode === 'surface' ? selection.surface.context.createImageData(SIZE, SIZE) : null,
-      destinationAlpha: mode === 'surface' ? new Uint8Array(SIZE * SIZE) : null };
+      scratch: selection.surface.context.createImageData(SIZE, SIZE),
+      destinationAlpha: mode === 'surface' ? new Uint8Array(SIZE * SIZE) : null,
+      moveReuse: { initialized: false, previousIndices: [] },
+      lastPaintRegions: [] };
     return true;
   }
 
@@ -342,35 +460,39 @@ export function createTexturePainter() {
     movePreview.mirrorDx = mirrorDx; movePreview.mirrorDy = mirrorDy;
     const { before, image, sourceImage, baseImage } = movePreview;
     if (!dx && !dy && !mirrorDx && !mirrorDy) {
-      before.surface.context.putImageData(image, 0, 0);
+      writeMovePreview(movePreview, image, []);
       movePreview.after = before;
       renderOverlay();
-      before.surface.requestComposite();
       return true;
     }
     if (movePreview.mode === 'uv') {
       const offsets = movePreview.paired ? [0, 1].map((index) => index === movePreview.originPart ?
         { dx, dy } : { dx: mirrorDx, dy: mirrorDy }) : null;
       movePreview.offsets = offsets;
-      before.surface.context.putImageData(moveSelectionInUv(before.surface, before,
-        sourceImage ?? image, dx, dy, offsets, baseImage), 0, 0);
-      before.surface.requestComposite();
+      const movedImage = moveSelectionInUv(before.surface, before,
+        sourceImage ?? image, dx, dy, offsets, baseImage,
+        movePreview.scratch, movePreview.moveReuse);
       movePreview.after = offsets ? shiftedUvSelectionParts(before, offsets) : null;
+      const nextRegions = offsets ? selectionRegions(movePreview.after) :
+        selectionRegions(before, dx, dy);
+      writeMovePreview(movePreview, movedImage, nextRegions);
       renderOverlay(before.surface, offsets ? movePreview.after?.overlayCanvas ?? null :
-        before.overlayCanvas, offsets ? 0 : dx, offsets ? 0 : dy);
+        before.overlayCanvas, offsets ? 0 : dx, offsets ? 0 : dy,
+      offsets ? nextRegions : selectionRegions(before));
     } else {
       const branches = movePreview.branches?.map((branch) => ({ ...branch,
         dx: dx * branch.sign, dy }));
       movePreview.movedBranches = branches;
       const moved = moveSelectionInView(before, sourceImage ?? image,
         movePreview.projection, movePreview.samples, dx, dy, movePreview.scratch,
-        movePreview.destinationAlpha, branches, baseImage);
-      before.surface.context.putImageData(moved.image, 0, 0);
-      before.surface.requestComposite();
+        movePreview.destinationAlpha, branches, baseImage, movePreview.moveReuse);
       movePreview.after = moved.parts ? combineSelectionParts(before.surface,
         moved.parts.filter((part) => part.indices.length), false) :
         selectionFromAlpha(before.surface, moved.alpha, null, moved.indices, false);
-      renderOverlay(before.surface, movePreview.after?.overlayCanvas ?? null);
+      const nextRegions = selectionRegions(movePreview.after);
+      writeMovePreview(movePreview, moved.image, nextRegions);
+      renderOverlay(before.surface, movePreview.after?.overlayCanvas ?? null, 0, 0,
+        nextRegions);
     }
     return true;
   }
@@ -405,8 +527,7 @@ export function createTexturePainter() {
   function cancelMove() {
     if (!movePreview) return false;
     const { before, image } = movePreview;
-    before.surface.context.putImageData(image, 0, 0);
-    before.surface.requestComposite();
+    writeMovePreview(movePreview, image, []);
     selection = before; movePreview = null; renderOverlay();
     return true;
   }
@@ -461,17 +582,22 @@ export function createTexturePainter() {
     const surface = surfaceAt(hit);
     if (!surface || (selection && maskEnabled && surface !== selection.surface)) return false;
     commitFloatingSelection();
-    linePreview = { options: { ...options }, mode, before: new Map(), commands: [] };
+    linePreview = { options: { ...options }, mode, before: new Map(),
+      lastDirty: new Map(), commands: [] };
     updateLine([[hit], mirroredHit ? [mirroredHit] : []]);
     return true;
   }
 
   function updateLine(paths) {
     if (!linePreview) return false;
-    const { before, options, mode } = linePreview;
-    for (const [surface, image] of before) {
-      surface.context.putImageData(image, 0, 0);
-      surface.requestComposite();
+    const { before, options, mode, lastDirty } = linePreview;
+    for (const [surface, regions] of lastDirty) {
+      const image = before.get(surface);
+      for (const region of regions) {
+        surface.context.putImageData(image, 0, 0, region.left, region.top,
+          region.right - region.left, region.bottom - region.top);
+        surface.requestComposite(region);
+      }
     }
     const commands = [];
     for (const rawHits of paths) {
@@ -504,8 +630,16 @@ export function createTexturePainter() {
     }
     linePreview.commands = commands;
     linePreview.changed = false;
+    linePreview.lastDirty = new Map();
     for (const command of commands) {
-      if (executePaintCommand(command)) linePreview.changed = true;
+      if (executePaintCommand(command)) {
+        linePreview.changed = true;
+        let regions = linePreview.lastDirty.get(command.surface);
+        if (!regions) linePreview.lastDirty.set(command.surface, regions = []);
+        addDirtyRegion(regions, commandBounds(command,
+          command.surface.canvas.width, command.surface.canvas.height),
+        command.surface.canvas.width, command.surface.canvas.height);
+      }
     }
     return true;
   }
@@ -523,8 +657,13 @@ export function createTexturePainter() {
 
   function cancelLine() {
     if (!linePreview) return;
-    for (const [surface, image] of linePreview.before) {
-      surface.context.putImageData(image, 0, 0); surface.requestComposite();
+    for (const [surface, regions] of linePreview.lastDirty) {
+      const image = linePreview.before.get(surface);
+      for (const region of regions) {
+        surface.context.putImageData(image, 0, 0, region.left, region.top,
+          region.right - region.left, region.bottom - region.top);
+        surface.requestComposite(region);
+      }
     }
     linePreview = null;
   }
@@ -570,7 +709,8 @@ export function createTexturePainter() {
 
   function getCompositePreview(targetId) {
     const surface = findSurface(targetId);
-    return surface ? { canvas: surface.compositeCanvas, revision: surface.compositeRevision } : null;
+    return surface ? { canvas: surface.compositeCanvas, revision: surface.compositeRevision,
+      regions: surface.compositeLastDirty } : null;
   }
 
   function createImage(targetId, nodeId, source = null, name = 'Untitled image', savedKey = null) {
@@ -589,7 +729,11 @@ export function createTexturePainter() {
       compositeContext: parent.compositeContext, overlayContext: parent.overlayContext,
       overlayTexture: parent.overlayTexture, imageLayer: true,
       refreshComposite: parent.refreshComposite,
-      requestComposite: () => { asset.revision++; parent.imageCache.clear(); parent.requestComposite(); },
+      requestComposite: (region = null) => {
+        asset.revision++;
+        parent.imageCache.clear();
+        parent.requestComposite(region);
+      },
       resetPaint: () => {
         context.clearRect(0, 0, SIZE, SIZE);
         context.drawImage(initial, 0, 0);

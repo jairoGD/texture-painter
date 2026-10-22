@@ -62,7 +62,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   let modelFile = null;
   scene.add(model);
   const loader = new GLTFLoader();
-  const painter = createTexturePainter();
+  const painter = createTexturePainter(renderer);
   painter.prepare(model);
   let selectedTargetId = painter.getGraphTargets()[0]?.id ?? null;
   let paintMeshes = painter.getMeshes();

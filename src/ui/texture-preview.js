@@ -26,7 +26,15 @@ export function createTexturePreview({ getTexture, onClose }) {
         canvas.width = source.width;
         canvas.height = source.height;
       }
-      canvas.getContext('2d').drawImage(source, 0, 0);
+      const context = canvas.getContext('2d');
+      if (source === lastSource && preview.revision === lastRevision + 1 && preview.regions?.length) {
+        for (const region of preview.regions) {
+          const width = region.right - region.left;
+          const height = region.bottom - region.top;
+          context.drawImage(source, region.left, region.top, width, height,
+            region.left, region.top, width, height);
+        }
+      } else context.drawImage(source, 0, 0);
       lastSource = source;
       lastRevision = preview.revision;
     }
