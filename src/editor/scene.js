@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createTexturePainter } from './texture-painter.js';
 import { captureVisibleUv, projectLassoToUv } from './screen-lasso.js';
+import { captureVisibleFaces } from './screen-face-selection.js';
 import { sampleScreenStroke } from './surface-stroke.js';
 import { createModelMirror, reflectedCamera } from './model-mirror.js';
 import { setTextureResolution, textureResolution } from './texture-resolution.js';
@@ -32,6 +33,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = false;
+  controls.mouseButtons.LEFT = null;
   controls.mouseButtons.MIDDLE = THREE.MOUSE.ROTATE;
   controls.mouseButtons.RIGHT = null;
   controls.target.set(0, 0.65, 0);
@@ -90,7 +92,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   let lassoDragged = false;
   let lassoSourceHit = null;
   let lassoPath = [];
-  let pendingAltWand = null;
+  let lassoMode = 'replace';
+  let faceStart = null;
+  let faceEnd = null;
+  let faceMode = 'replace';
   let spacePressed = false;
   const toolSettings = {};
 
@@ -212,6 +217,51 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     context.stroke();
   }
 
+  function renderFaceRectangle() {
+    const context = lassoCanvas.getContext('2d');
+    context.clearRect(0, 0, lassoCanvas.width, lassoCanvas.height);
+    if (!faceStart || !faceEnd ||
+        Math.hypot(faceEnd.x - faceStart.x, faceEnd.y - faceStart.y) <= 4) return;
+    context.strokeStyle = '#ffffff';
+    context.lineWidth = 1;
+    context.setLineDash([5, 4]);
+    context.strokeRect(faceStart.x + 0.5, faceStart.y + 0.5,
+      faceEnd.x - faceStart.x, faceEnd.y - faceStart.y);
+  }
+
+  function finishFaceSelection(event) {
+    if (event.type !== 'pointerup' || !faceStart) return;
+    const end = viewportPoint(event);
+    const target = painter.getFaceTarget(selectedTargetId);
+    if (!target) return;
+    let faces = new Set();
+    if (Math.hypot(end.x - faceStart.x, end.y - faceStart.y) > 4) {
+      const rect = { left: faceStart.x, top: faceStart.y,
+        right: end.x, bottom: end.y };
+      faces = captureVisibleFaces(renderer, camera, target.mesh,
+        target.materialIndex, paintMeshes, rect);
+      if (mirrorEnabled) {
+        const width = renderer.domElement.getBoundingClientRect().width;
+        const mirrorCamera = reflectedCamera(camera, resolveMirrorHit.planePoint,
+          resolveMirrorHit.planeNormal);
+        const mirrored = captureVisibleFaces(renderer, mirrorCamera, target.mesh,
+          target.materialIndex, paintMeshes,
+          { left: width - rect.right, top: rect.top,
+            right: width - rect.left, bottom: rect.bottom });
+        for (const index of mirrored) faces.add(index);
+      }
+    } else {
+      const hit = hitTest(event);
+      if (hit?.faceIndex !== undefined) faces.add(hit.faceIndex);
+      const mirrored = mirrorHitAt(hit);
+      if (mirrored?.faceIndex !== undefined) faces.add(mirrored.faceIndex);
+    }
+    const selected = painter.selectFaces(selectedTargetId, faces, faceMode);
+    onSelectionChanged?.(selected ?
+      (faceMode === 'subtract' ? 'Faces deselected' : 'Faces selected') :
+      faceMode === 'replace' ? 'Selection cleared' : 'Selection unchanged');
+  }
+
   function finishLasso() {
     const mask = projectLassoToUv(renderer, camera, lassoSourceHit, lassoPath, painter.getMeshes());
     const mirroredHit = mirrorHitAt(lassoSourceHit);
@@ -223,19 +273,19 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       mirrorMask = projectLassoToUv(renderer, mirrorCamera, mirroredHit,
         lassoPath.map((point) => ({ x: width - point.x, y: point.y })), painter.getMeshes());
     }
-    const created = painter.endLasso(mask, mirrorMask);
+    const changed = painter.endLasso(mask, mirrorMask);
     lassoSourceHit = null;
     lassoPath = [];
     renderLassoPath();
-    onSelectionChanged?.(created ? 'Selection created' : 'Selection needs a larger visible area');
+    onSelectionChanged?.(changed ?
+      (lassoMode === 'subtract' ? 'Selection reduced' :
+        lassoMode === 'add' ? 'Selection expanded' : 'Selection created') :
+      lassoMode === 'replace' ? 'Selection needs a larger visible area' : 'Selection unchanged');
   }
 
   function onPointerDown(event) {
-    if (event.button === 0 && (event.altKey || spacePressed)) {
-      if (activeTool === 'wand' && event.altKey && !spacePressed)
-        pendingAltWand = { pointerId: event.pointerId,
-          x: event.clientX, y: event.clientY };
-      controls.mouseButtons.LEFT = event.altKey ? THREE.MOUSE.ROTATE : THREE.MOUSE.PAN;
+    if (event.button === 0 && spacePressed) {
+      controls.mouseButtons.LEFT = THREE.MOUSE.PAN;
       event.preventDefault();
       return;
     }
@@ -244,6 +294,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       return;
     }
     if (event.button !== 0) return;
+    controls.mouseButtons.LEFT = null;
     event.preventDefault();
     event.stopImmediatePropagation();
     activePointer = event.pointerId;
@@ -256,10 +307,18 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     lineStartHit = null;
     lineStartMirrorHit = null;
     const hit = hitTest(event);
-    if (activeTool === 'lasso' || activeTool === 'wand') {
-      const wandMode = event.shiftKey ? 'add' :
+    if (activeTool === 'faces') {
+      pointerAction = 'faces';
+      faceStart = viewportPoint(event);
+      faceEnd = faceStart;
+      faceMode = event.altKey ? 'subtract' : event.shiftKey ? 'add' : 'replace';
+    } else if (activeTool === 'lasso' || activeTool === 'wand') {
+      if (activeTool === 'lasso')
+        lassoMode = event.altKey ? 'subtract' : event.shiftKey ? 'add' : 'replace';
+      const wandMode = event.altKey ? 'subtract' : event.shiftKey ? 'add' :
         (event.ctrlKey || event.metaKey) ? 'subtract' : 'replace';
-      pointerAction = (activeTool === 'lasso' || wandMode === 'replace') &&
+      pointerAction = ((activeTool === 'lasso' && lassoMode === 'replace') ||
+        (activeTool === 'wand' && wandMode === 'replace')) &&
         painter.selectedAt(hit) ? 'moveSelection' : activeTool;
       if (pointerAction === 'moveSelection') {
         const projection = gestureSamplingMode === 'surface' ?
@@ -273,7 +332,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
           mirrored)) pointerAction = null;
       }
       else if (activeTool === 'lasso') {
-        if (painter.beginLasso(hit)) lassoSourceHit = hit;
+        if (painter.beginLasso(hit, lassoMode)) lassoSourceHit = hit;
         if (lassoSourceHit) {
           const rect = renderer.domElement.getBoundingClientRect();
           lassoPath = [{ x: event.clientX - rect.left, y: event.clientY - rect.top }];
@@ -285,7 +344,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       } else {
         const created = hit ? painter.selectWand(hit, toolSettings.wand, wandMode,
           mirrorHitAt(hit)) : false;
-        if (!hit) painter.clearSelection();
+        if (!hit && wandMode === 'replace') painter.clearSelection();
         onSelectionChanged?.(created ? 'Selection created' : 'Selection cleared');
       }
     } else if (activeTool === 'line') {
@@ -313,7 +372,11 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     if (event.pointerId !== activePointer) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    if (pointerAction === 'lasso') {
+    if (pointerAction === 'faces') {
+      faceEnd = viewportPoint(event);
+      renderFaceRectangle();
+    }
+    else if (pointerAction === 'lasso') {
       if (lassoStartScreen && Math.hypot(event.clientX - lassoStartScreen.x,
         event.clientY - lassoStartScreen.y) > 4) lassoDragged = true;
       traceLassoTo(event);
@@ -323,21 +386,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         activeTool === 'eraser' || activeTool === 'blur') queueDraw(event);
   }
   function endStroke(event) {
-    if (pendingAltWand?.pointerId === event.pointerId) {
-      const click = event.type === 'pointerup' &&
-        Math.hypot(event.clientX - pendingAltWand.x,
-          event.clientY - pendingAltWand.y) <= 4;
-      pendingAltWand = null;
-      if (click) {
-        const hit = hitTest(event);
-        const selected = hit ? painter.selectWand(hit, toolSettings.wand, 'subtract',
-          mirrorHitAt(hit)) : false;
-        if (!hit) painter.clearSelection();
-        onSelectionChanged?.(selected ? 'Selection updated' : 'Selection cleared');
-      }
+    if (event.pointerId !== activePointer) {
+      if (event.button === 0) controls.mouseButtons.LEFT = null;
       return;
     }
-    if (event.pointerId !== activePointer) return;
     event.stopImmediatePropagation();
     if (drawFrame !== null) cancelAnimationFrame(drawFrame);
     drawFrame = null;
@@ -355,7 +407,14 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     previousHit = null;
     previousMirrorHit = null;
     previousPaintScreen = null;
-    if (pointerAction === 'lasso') {
+    if (pointerAction === 'faces') {
+      try { finishFaceSelection(event); }
+      catch (error) { onSelectionChanged?.(`Face selection failed: ${error.message}`); }
+      finally {
+        faceStart = null; faceEnd = null; faceMode = 'replace';
+        renderFaceRectangle();
+      }
+    } else if (pointerAction === 'lasso') {
       if (event.type === 'pointercancel') {
         painter.cancelLasso(); lassoSourceHit = null; lassoPath = []; renderLassoPath();
       }
@@ -366,9 +425,11 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       else {
         painter.cancelLasso();
         lassoSourceHit = null; lassoPath = []; renderLassoPath();
-        const cleared = painter.clearSelection();
-        onSelectionChanged?.(cleared ? 'Selection cleared' :
-          hitTest(event) ? 'Hold and drag to draw a lasso' : 'Start the lasso on the model');
+        if (lassoMode === 'replace') {
+          const cleared = painter.clearSelection();
+          onSelectionChanged?.(cleared ? 'Selection cleared' :
+            hitTest(event) ? 'Hold and drag to draw a lasso' : 'Start the lasso on the model');
+        } else onSelectionChanged?.('Selection unchanged');
       }
     } else if (pointerAction === 'moveSelection') {
       if (event.type === 'pointercancel') painter.cancelMove();
@@ -387,6 +448,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     lastLassoScreen = null;
     lassoStartScreen = null;
     lassoDragged = false;
+    lassoMode = 'replace';
     if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
     if (movedSelection || (activeTool !== 'eyedropper' && activeTool !== 'wand'))
       onContentChanged?.();
@@ -400,8 +462,31 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   bindRendererCanvas(renderer.domElement);
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
+    if (pointerAction === 'lasso') {
+      const pointerId = activePointer;
+      painter.cancelLasso();
+      activePointer = null; pointerAction = null; strokeRect = null;
+      lassoSourceHit = null; lassoPath = []; lassoMode = 'replace';
+      lastLassoScreen = null; lassoStartScreen = null; lassoDragged = false;
+      renderLassoPath();
+      if (pointerId !== null && renderer.domElement.hasPointerCapture(pointerId))
+        renderer.domElement.releasePointerCapture(pointerId);
+      onSelectionChanged?.('Selection gesture cancelled');
+      return;
+    }
+    if (pointerAction === 'faces') {
+      const pointerId = activePointer;
+      activePointer = null; pointerAction = null; strokeRect = null;
+      faceStart = null; faceEnd = null; faceMode = 'replace';
+      renderFaceRectangle();
+      if (pointerId !== null && renderer.domElement.hasPointerCapture(pointerId))
+        renderer.domElement.releasePointerCapture(pointerId);
+      onSelectionChanged?.('Selection gesture cancelled');
+      return;
+    }
     if (painter.cancelLasso() || painter.cancelMove()) {
       lassoSourceHit = null; lassoPath = []; renderLassoPath();
+      lassoMode = 'replace';
       onSelectionChanged?.('Selection gesture cancelled');
     }
   });
@@ -505,7 +590,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     camera.updateProjectionMatrix();
     renderer.setSize(width, height, false);
     lassoCanvas.width = width; lassoCanvas.height = height;
-    renderLassoPath();
+    if (pointerAction === 'faces') renderFaceRectangle();
+    else renderLassoPath();
   }
   new ResizeObserver(resize).observe(host);
   resize();
@@ -547,18 +633,27 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     getSamplingMode: () => samplingMode,
     setLightingMode: (mode) => { currentLightingMode = mode; painter.setLightingMode(mode); },
     setTool: (tool) => {
+      if (tool !== 'faces' && pointerAction === 'faces') {
+        const pointerId = activePointer;
+        activePointer = null; pointerAction = null; strokeRect = null;
+        faceStart = null; faceEnd = null; faceMode = 'replace';
+        renderFaceRectangle();
+        if (pointerId !== null && renderer.domElement.hasPointerCapture(pointerId))
+          renderer.domElement.releasePointerCapture(pointerId);
+      }
       if (tool !== 'lasso' && lassoPath.length) {
-        painter.cancelLasso(); lassoSourceHit = null; lassoPath = []; renderLassoPath();
+        painter.cancelLasso(); lassoSourceHit = null; lassoPath = [];
+        lassoMode = 'replace'; renderLassoPath();
       }
       activeTool = tool;
-      if ((tool === 'lasso' || tool === 'wand') && toolSettings[tool]) {
+      if ((tool === 'lasso' || tool === 'wand' || tool === 'faces') && toolSettings[tool]) {
         painter.setMaskEnabled(toolSettings[tool].maskEnabled);
         painter.setBlurSelectionIsolation(toolSettings[tool].isolateBlur);
       }
     },
     setToolSettings: (tool, settings) => {
       toolSettings[tool] = { ...settings };
-      if (tool === activeTool && (tool === 'lasso' || tool === 'wand')) {
+      if (tool === activeTool && (tool === 'lasso' || tool === 'wand' || tool === 'faces')) {
         painter.setMaskEnabled(settings.maskEnabled);
         painter.setBlurSelectionIsolation(settings.isolateBlur);
       }
@@ -584,6 +679,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     getModelFile: () => modelFile,
     getModelSource: () => ({ ...modelSource }),
     getTexturePreview: painter.getCompositePreview,
+    getExportTextures: painter.getExportTextures,
     canFilter: painter.canFilter,
     beginFilter: painter.beginFilter,
     previewFilter: painter.previewFilter,

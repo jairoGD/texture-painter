@@ -6,6 +6,7 @@ import eyedropperIcon from '../ui/icons/eyedropper.svg';
 import blurIcon from '../ui/icons/blur.svg';
 import lassoIcon from '../ui/icons/lasso.svg';
 import magicIcon from '../ui/icons/magic.svg';
+import wireIcon from '../ui/icons/wire.svg';
 
 const size = { type: 'slider', key: 'size', label: 'Size', min: 2, max: 128, step: 1, unit: ' px' };
 const hardness = { type: 'slider', key: 'hardness', label: 'Hardness', min: 0, max: 100, step: 1, unit: '%' };
@@ -32,7 +33,6 @@ export const TOOL_DEFINITIONS = [
   { id: 'lasso', label: 'Lasso', iconUrl: lassoIcon,
     defaults: { maskEnabled: true, isolateBlur: true },
     controls: [
-      { type: 'notice', text: 'Hold and drag on the model to draw a freehand selection. Release to close it; drag inside to move pixels. Click outside the selection to clear it.' },
       { type: 'checkbox', key: 'maskEnabled', label: 'Mask painting to selection' },
       { type: 'checkbox', key: 'isolateBlur', label: 'Keep blur inside selection' },
       { type: 'button', action: 'clearSelection', label: 'Clear Selection' }
@@ -48,6 +48,13 @@ export const TOOL_DEFINITIONS = [
       { type: 'checkbox', key: 'isolateBlur', label: 'Keep blur inside selection' },
       { type: 'button', action: 'clearSelection', label: 'Clear Selection' }
     ] },
+  { id: 'faces', label: 'Face Select', iconUrl: wireIcon,
+    defaults: { maskEnabled: true, isolateBlur: true },
+    controls: [
+      { type: 'checkbox', key: 'maskEnabled', label: 'Mask painting to selection' },
+      { type: 'checkbox', key: 'isolateBlur', label: 'Keep blur inside selection' },
+      { type: 'button', action: 'clearSelection', label: 'Clear Selection' }
+    ] },
   { id: 'eyedropper', label: 'Eyedropper', iconUrl: eyedropperIcon,
-    defaults: {}, controls: [{ type: 'notice', text: 'Click the model to sample its painted color.' }] }
+    defaults: {}, controls: [] }
 ];

@@ -8,10 +8,12 @@ import { createNodeEditor } from './ui/node-editor.js';
 import { createProjectHome } from './ui/project-home.js';
 import { createLayersPanel } from './ui/layers-panel.js';
 import { createTexturePreview } from './ui/texture-preview.js';
+import { createTextureExportDialog } from './ui/texture-export-dialog.js';
 import { createModelRelinkDialog, GLB_PICKER } from './ui/model-relink.js';
 import { createSelectionSizeDialog } from './ui/selection-size-dialog.js';
 import { createFilterDialog } from './ui/filter-dialog.js';
 import { FILTER_CATEGORIES } from './editor/filter-definitions.js';
+import { writeTexturePngs } from './editor/texture-export.js';
 import { dropdown, element, notice, panel, renderControl, renderPanel, toggleButton, toolbar } from './ui/index.js';
 import mirrorIcon from './ui/icons/mirror.svg';
 import samplingIcon from './ui/icons/sampling.svg';
@@ -65,6 +67,17 @@ layersPanel = createLayersPanel({ nodeEditor,
 });
 texturePreview = createTexturePreview({ getTexture: (id) => scene.getTexturePreview(id),
   onClose: () => displayMenu.refresh() });
+const textureExportDialog = createTextureExportDialog({
+  getTextures: () => scene.getExportTextures(),
+  chooseDirectory: () => {
+    if (!window.showDirectoryPicker)
+      throw new Error('Folder export requires a browser with the File System Access API.');
+    return window.showDirectoryPicker({ mode: 'readwrite', id: 'texture-export' });
+  },
+  onExport: writeTexturePngs,
+  onComplete: (count, folder) => setStatus(`${count} texture${count === 1 ? '' : 's'} exported to ${folder}`),
+  onError: (message) => setStatus(message, true)
+});
 const initialTarget = nodeEditor.getState();
 texturePreview.setTarget(initialTarget.targetId,
   initialTarget.targets.find((target) => target.id === initialTarget.targetId)?.label);
@@ -132,7 +145,9 @@ const fileMenu = dropdown({ label: 'File', items: [
   { label: 'Save Project', shortcut: 'Ctrl+S', getDisabled: () => !projectId, onSelect: saveProject },
   { label: 'Save Project As', getDisabled: () => !projectId, onSelect: () => saveProject(true) },
   { type: 'separator' },
-  { label: 'Import Model', onSelect: chooseModelFile }
+  { label: 'Import Model', onSelect: chooseModelFile },
+  { label: 'Export Texture', getDisabled: () => !projectId,
+    onSelect: () => textureExportDialog.open() }
 ] });
 
 function undo() {
@@ -654,5 +669,6 @@ window.addEventListener('beforeunload', (event) => {
 });
 
 app.append(header, workspace, footer, fileInput, projectInput, texturePreview.element,
-  projectHome.element, modelRelink.element, selectionSizeDialog.element, filterDialog.element);
+  projectHome.element, modelRelink.element, selectionSizeDialog.element, filterDialog.element,
+  textureExportDialog.element);
 refreshRecent();

@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { executePaintCommand, samplePaintColor } from './paint-operations.js';
-import { combineSelectionParts, containsSelection, invertSelectionAlpha, moveSelectionInView, selectionFromAlpha,
+import { combineSelectionAlpha, combineSelectionParts, containsSelection, invertSelectionAlpha, moveSelectionInView, selectionFromAlpha,
   selectionFromMask, visibleSelectionSamples } from './lasso-selection.js';
+import { faceUvMask } from './face-uv-mask.js';
 import { addTextureNode, blendCanvases, cloneTextureGraph, connectTextureNodes,
   createTextureGraph, evaluateTextureNode, removeTextureNode, renderTextureGraph } from './texture-graph.js';
 import { addGraphLayer, readLayerStack, removeGraphLayer, syncLayerMasks } from './layer-graph.js';
@@ -328,25 +329,61 @@ export function createTexturePainter(renderer) {
     renderOverlay();
   }
 
-  function beginLasso(hit) {
+  function beginLasso(hit, mode = 'replace') {
     const surface = surfaceAt(hit);
     if (!surface) return false;
     if (lassoDraft) return surface === lassoDraft.surface;
-    lassoDraft = { surface, before: selection };
-    selection = null;
-    renderOverlay();
+    lassoDraft = { surface, before: selection, mode };
+    if (mode === 'replace') {
+      selection = null;
+      renderOverlay();
+    }
     return true;
   }
 
   function endLasso(maskCanvas, mirrorMask = null) {
     if (!lassoDraft) return false;
-    const { surface, before } = lassoDraft;
+    const { surface, before, mode } = lassoDraft;
     lassoDraft = null;
     const primary = maskCanvas ? selectionFromMask(surface, maskCanvas) : null;
     const mirrored = mirrorMask ? selectionFromMask(surface, mirrorMask) : null;
-    const next = primary && mirrored ? combineSelectionParts(surface, [primary, mirrored]) : primary;
-    if (!next) { selection = before; renderOverlay(); return false; }
+    const picked = primary && mirrored ? combineSelectionParts(surface, [primary, mirrored]) : primary;
     selection = before;
+    if (!picked || (mode === 'subtract' && before?.surface !== surface)) {
+      renderOverlay();
+      return false;
+    }
+    let next = picked;
+    if (mode !== 'replace' && before?.surface === surface) {
+      if (before.parts?.length === 2 &&
+          (mode === 'subtract' || picked.parts?.length === 2)) {
+        const distance = (first, second) => {
+          const center = (bounds) => ({ x: (bounds.left + bounds.right) / 2,
+            y: (bounds.top + bounds.bottom) / 2 });
+          const a = center(first.bounds);
+          const b = center(second.bounds);
+          return (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
+        };
+        const masks = mode === 'subtract' ? [picked, picked] :
+          distance(before.parts[0], picked.parts[0]) +
+          distance(before.parts[1], picked.parts[1]) <=
+          distance(before.parts[0], picked.parts[1]) +
+          distance(before.parts[1], picked.parts[0]) ? picked.parts :
+            [picked.parts[1], picked.parts[0]];
+        let changed = false;
+        const parts = before.parts.map((part, index) => {
+          const merged = combineSelectionAlpha(part, masks[index], mode);
+          changed ||= merged.changed;
+          return selectionFromAlpha(surface, merged.alpha, null, merged.indices);
+        }).filter(Boolean);
+        if (!changed) { renderOverlay(); return false; }
+        next = parts.length > 1 ? combineSelectionParts(surface, parts) : parts[0] ?? null;
+      } else {
+        const { alpha, indices, changed } = combineSelectionAlpha(before, picked, mode);
+        if (!changed) { renderOverlay(); return false; }
+        next = selectionFromAlpha(surface, alpha, null, indices);
+      }
+    }
     recordSelection(next);
     return true;
   }
@@ -396,6 +433,31 @@ export function createTexturePainter(renderer) {
     }
     recordSelection(next);
     return !!next;
+  }
+
+  function selectFaces(targetId, faceIds, mode = 'replace') {
+    const parent = findSurface(targetId);
+    const surface = parent?.activePaint;
+    if (!surface || lassoDraft || movePreview || activeStroke || linePreview || filterSession)
+      return false;
+    if (!faceIds.size) {
+      if (mode === 'replace') clearSelection();
+      return false;
+    }
+    const old = selection?.surface === surface ? selection : null;
+    if (mode === 'subtract' && !old) return false;
+    commitFloatingSelection();
+    const picked = selectionFromMask(surface,
+      faceUvMask(parent.geometry, faceIds, SIZE));
+    if (!picked) return false;
+    if (mode === 'replace' || !old) {
+      recordSelection(picked);
+    } else {
+      const { alpha, indices, changed } = combineSelectionAlpha(old, picked, mode);
+      if (!changed) return false;
+      recordSelection(selectionFromAlpha(surface, alpha, null, indices));
+    }
+    return true;
   }
 
   function selectionFromPixels(surface, alpha, indices) {
@@ -812,6 +874,14 @@ export function createTexturePainter(renderer) {
       .find((item) => item.id === targetId);
   }
 
+  function getFaceTarget(targetId) {
+    for (const record of surfaces.values()) {
+      const slot = record.slots.find((item) => item.id === targetId);
+      if (slot) return { mesh: record.mesh, materialIndex: slot.slotIndex };
+    }
+    return null;
+  }
+
   function getLayerImage(targetId, imageKey) {
     return findSurface(targetId)?.imageAssets.get(imageKey)?.canvas ?? null;
   }
@@ -820,6 +890,14 @@ export function createTexturePainter(renderer) {
     const surface = findSurface(targetId);
     return surface ? { canvas: surface.compositeCanvas, revision: surface.compositeRevision,
       regions: surface.compositeLastDirty } : null;
+  }
+
+  function getExportTextures() {
+    return [...surfaces.values()].flatMap((record) => record.slots.map((surface) => {
+      if (surface.compositeFrame !== null) surface.refreshComposite();
+      return { id: surface.id, label: surface.label,
+        canvas: surface.compositeCanvas };
+    }));
   }
 
   function canFilter(targetId) {
@@ -1078,19 +1156,20 @@ export function createTexturePainter(renderer) {
 
   return { prepare, clear, paint, fill, sample, beginLine, updateLine, commitLine, cancelLine,
     beginLasso, endLasso, cancelLasso, selectedAt, beginMove, updateMove, endMove,
-    cancelMove, clearSelection, selectWand, invertSelection, resizeSelection,
+    cancelMove, clearSelection, selectWand, selectFaces, invertSelection, resizeSelection,
     copySelection, cutSelection, pasteSelection,
     canInvertSelection: () => !!selection && !lassoDraft && !movePreview,
     canResizeSelection: () => !!selection?.indices.length && !lassoDraft && !movePreview,
     canCopySelection: () => !!selection?.indices.length && !lassoDraft && !movePreview,
     canPasteSelection: () => !!clipboard, getLayerImage, getCompositePreview,
+    getExportTextures,
     canFilter, beginFilter, previewFilter, applyFilter, cancelFilter,
     setMaskEnabled: (enabled) => { maskEnabled = enabled; },
     setBlurSelectionIsolation: (enabled) => { isolateBlur = enabled; },
     beginStroke, endStroke, undo, redo, canUndo: () => undoStack.length > 0 && !filterSession,
     canRedo: () => redoStack.length > 0 && !filterSession, setLightingMode,
     setWireframeEnabled, setAntialiasEnabled,
-    getMeshes: () => [...surfaces.keys()],
+    getMeshes: () => [...surfaces.keys()], getFaceTarget,
     getGraphTargets: graphTargets, setGraph, createImage, setPaintSource, mergeLayerDown,
     exportProjectTextures, restoreProjectTextures,
     targetIdAt: (hit) => surfaceAt(hit)?.id ?? null };

@@ -61,6 +61,23 @@ export function combineSelectionParts(surface, parts, includeMaskCanvas = true) 
   return combined;
 }
 
+export function combineSelectionAlpha(old, picked, mode) {
+  const alpha = old.alpha.slice();
+  const indices = Array.from(old.indices);
+  let changed = false;
+  for (const index of picked.indices) {
+    const previous = alpha[index];
+    const value = mode === 'subtract' ?
+      Math.max(0, previous - picked.alpha[index]) :
+      Math.max(previous, picked.alpha[index]);
+    if (previous !== value) changed = true;
+    if (mode === 'add' && !previous && value) indices.push(index);
+    alpha[index] = value;
+  }
+  return { alpha, changed,
+    indices: mode === 'subtract' ? indices.filter((index) => alpha[index]) : indices };
+}
+
 export function invertSelectionAlpha(source) {
   const alpha = new Uint8Array(source.length);
   const indices = [];

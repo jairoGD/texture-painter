@@ -1,0 +1,34 @@
+.texture-export { position: fixed; inset: 0; z-index: 95; display: grid; place-items: center; padding: 18px; background: transparent; }
+.texture-export[hidden] { display: none; }
+.texture-export__card { display: flex; flex-direction: column; width: min(760px, 100%); max-height: min(700px, 100%); overflow: hidden; border: 1px solid var(--border-control); border-radius: 10px; background: var(--surface-panel); box-shadow: 0 22px 65px #000b; }
+.texture-export__header { display: flex; align-items: center; justify-content: space-between; min-height: 45px; padding: 5px 9px 5px 16px; border-bottom: 1px solid var(--border-panel); }
+.texture-export__header h2 { margin: 0; color: var(--text-primary); font-size: 13px; }
+.texture-export__header .ui-button { width: 29px; min-width: 29px; min-height: 29px; padding: 0; font-size: 18px; }
+.texture-export__content { display: grid; grid-template-columns: minmax(190px, 240px) minmax(0, 1fr); min-height: 0; flex: 1; }
+.texture-export__list { display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow: auto; padding: 10px; border-right: 1px solid var(--border-panel); }
+.texture-export__row { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; width: 100%; padding: 9px 10px; border: 1px solid transparent; border-radius: 6px; color: var(--text-primary); background: transparent; text-align: left; cursor: pointer; }
+.texture-export__row:hover { background: var(--surface-hover); }
+.texture-export__row[aria-selected="true"] { border-color: var(--accent); background: var(--accent-surface); }
+.texture-export__row:focus-visible { outline: 2px solid var(--accent); }
+.texture-export__row-name { max-width: 100%; overflow: hidden; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.texture-export__row-size { color: var(--text-subtle); font-size: 10px; }
+.texture-export__detail { display: flex; flex-direction: column; align-items: stretch; gap: 9px; min-width: 0; min-height: 0; padding: 14px; }
+.texture-export__preview-shell { display: grid; place-items: center; flex: 1; min-height: 150px; overflow: hidden; border: 1px solid var(--border-panel); border-radius: 6px; background: var(--surface-sidebar); }
+.texture-export__preview { display: block; max-width: 100%; max-height: min(46vh, 430px); aspect-ratio: 1; background-color: #b5bdc6; background-image: linear-gradient(45deg, #75808b 25%, transparent 25%), linear-gradient(-45deg, #75808b 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #75808b 75%), linear-gradient(-45deg, transparent 75%, #75808b 75%); background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0; image-rendering: pixelated; }
+.texture-export__name-field { display: grid; gap: 5px; color: var(--text-muted); font-size: 11px; }
+.texture-export__name { width: 100%; height: 32px; padding: 5px 8px; border: 1px solid var(--border-control); border-radius: 5px; color: var(--text-primary); background: var(--surface-control); }
+.texture-export__name:focus-visible { outline: 2px solid var(--accent); }
+.texture-export__filename { min-height: 15px; color: var(--text-subtle); font-size: 10px; }
+.texture-export__footer { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border-panel); }
+.texture-export__folder { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.texture-export__folder-name { max-width: 145px; overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.texture-export__message { flex: 1; min-width: 0; margin: 0; color: var(--text-muted); font-size: 11px; text-align: right; }
+.texture-export__message.is-error { color: #ff9ca3; }
+@media (max-width: 600px) {
+  .texture-export__content { grid-template-columns: 1fr; }
+  .texture-export__list { flex-direction: row; max-height: 85px; overflow: auto; border-right: 0; border-bottom: 1px solid var(--border-panel); }
+  .texture-export__row { flex: 0 0 160px; }
+  .texture-export__footer { flex-wrap: wrap; }
+  .texture-export__message { order: 3; flex: 1 0 100%; text-align: left; }
+  .texture-export__preview { max-height: 34vh; }
+}
