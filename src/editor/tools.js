@@ -2,6 +2,7 @@ import brushIcon from '../ui/icons/brush.svg';
 import eraserIcon from '../ui/icons/eraser.svg';
 import bucketIcon from '../ui/icons/bucket.svg';
 import lineIcon from '../ui/icons/line.svg';
+import curveIcon from '../ui/icons/curve.svg';
 import eyedropperIcon from '../ui/icons/eyedropper.svg';
 import blurIcon from '../ui/icons/blur.svg';
 import lassoIcon from '../ui/icons/lasso.svg';
@@ -24,6 +25,9 @@ export const TOOL_DEFINITIONS = [
     usesColor: true, defaults: { tolerance: 0, opacity: 100 },
     controls: [{ type: 'slider', key: 'tolerance', label: 'Tolerance', min: 0, max: 100, step: 1, unit: '%' }, opacity] },
   { id: 'line', label: 'Line', iconUrl: lineIcon,
+    usesColor: true, defaults: { size: 2, hardness: 100, opacity: 100, antialias: true },
+    controls: [fineSize, hardness, opacity, antialias] },
+  { id: 'curve', label: 'Curve', iconUrl: curveIcon,
     usesColor: true, defaults: { size: 2, hardness: 100, opacity: 100, antialias: true },
     controls: [fineSize, hardness, opacity, antialias] },
   { id: 'blur', label: 'Blur', iconUrl: blurIcon,

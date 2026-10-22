@@ -739,11 +739,11 @@ export function createTexturePainter(initialRenderer) {
     return surface ? samplePaintColor(surface, toPixel(hit.uv)) : null;
   }
 
-  function beginLine(hit, options, mirroredHit = null, mode = 'surface') {
+  function beginLine(hit, options, mirroredHit = null, mode = 'surface', preservePath = false) {
     const surface = surfaceAt(hit);
     if (!surface || (selection && maskEnabled && surface !== selection.surface)) return false;
     commitFloatingSelection();
-    linePreview = { options: { ...options }, mode, before: new Map(),
+    linePreview = { options: { ...options }, mode, preservePath, before: new Map(),
       lastDirty: new Map(), commands: [] };
     updateLine([[hit], mirroredHit ? [mirroredHit] : []]);
     return true;
@@ -751,7 +751,7 @@ export function createTexturePainter(initialRenderer) {
 
   function updateLine(paths) {
     if (!linePreview) return false;
-    const { before, options, mode, lastDirty } = linePreview;
+    const { before, options, mode, preservePath, lastDirty } = linePreview;
     for (const [surface, regions] of lastDirty) {
       const image = before.get(surface);
       for (const region of regions) {
@@ -762,10 +762,10 @@ export function createTexturePainter(initialRenderer) {
     }
     const commands = [];
     for (const rawHits of paths) {
-      if (mode === 'uv' && (!rawHits[0] || !rawHits.at(-1))) continue;
-      if (mode === 'uv' && rawHits.length > 1 &&
+      if (mode === 'uv' && !preservePath && (!rawHits[0] || !rawHits.at(-1))) continue;
+      if (mode === 'uv' && !preservePath && rawHits.length > 1 &&
           surfaceAt(rawHits[0]) !== surfaceAt(rawHits.at(-1))) continue;
-      const hits = mode === 'uv' ? [rawHits[0], rawHits.at(-1)] : rawHits;
+      const hits = mode === 'uv' && !preservePath ? [rawHits[0], rawHits.at(-1)] : rawHits;
       let previousHit = null;
       let previousPoint = null;
       let segment = null;
@@ -777,8 +777,18 @@ export function createTexturePainter(initialRenderer) {
         }
         if (!before.has(surface)) before.set(surface, surface.context.getImageData(0, 0, SIZE, SIZE));
         const point = toPixel(hit.uv);
-        if (segment && surface === segment.surface &&
-            (mode === 'uv' || canConnectSurfaceHits(previousHit, hit, previousPoint, point, SIZE * 0.2))) {
+        const connected = segment && surface === segment.surface &&
+          (mode === 'uv' || canConnectSurfaceHits(previousHit, hit, previousPoint, point, SIZE * 0.2));
+        if (preservePath) {
+          // A curve must retain each short sampled segment. Extending one command to
+          // the last hit would replace the curve with a straight stroke on commit.
+          if (!connected || Math.hypot(point.x - previousPoint.x, point.y - previousPoint.y) > 0.01) {
+            segment = { kind: 'line', surface, point,
+              previous: connected ? previousPoint : point, options,
+              mask: maskEnabled ? selection : null };
+            commands.push(segment);
+          }
+        } else if (connected) {
           segment.point = point;
         } else {
           segment = { kind: 'line', surface, point, previous: point, options,
@@ -1153,6 +1163,10 @@ export function createTexturePainter(initialRenderer) {
   }
 
   return { prepare, clear, paint, fill, sample, beginLine, updateLine, commitLine, cancelLine,
+    canPaintAt: (hit) => {
+      const surface = surfaceAt(hit);
+      return !!surface && (!selection || !maskEnabled || surface === selection.surface);
+    },
     beginLasso, endLasso, cancelLasso, selectedAt, beginMove, updateMove, endMove,
     cancelMove, clearSelection, selectWand, selectFaces, invertSelection, resizeSelection,
     copySelection, cutSelection, pasteSelection,

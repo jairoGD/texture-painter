@@ -5,6 +5,7 @@ import { createTexturePainter } from './texture-painter.js';
 import { captureVisibleUv, projectLassoToUv } from './screen-lasso.js';
 import { captureVisibleFaces } from './screen-face-selection.js';
 import { sampleScreenStroke } from './surface-stroke.js';
+import { curveScreenPoints } from './curve-path.js';
 import { createModelMirror, reflectedCamera } from './model-mirror.js';
 import { setTextureResolution, textureResolution } from './texture-resolution.js';
 
@@ -30,6 +31,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   lassoCanvas.className = 'lasso-overlay';
   lassoCanvas.setAttribute('aria-hidden', 'true');
   host.append(lassoCanvas);
+  const curveCanvas = document.createElement('canvas');
+  curveCanvas.className = 'curve-overlay';
+  curveCanvas.setAttribute('aria-hidden', 'true');
+  host.append(curveCanvas);
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = false;
@@ -117,6 +122,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   let lineStartScreen = null;
   let lineStartHit = null;
   let lineStartMirrorHit = null;
+  let curveStep = 0;
+  let curvePoints = [];
+  let curveStartHit = null;
+  let curveMode = 'surface';
   let pendingDraw = null;
   let drawFrame = null;
   let activeTool = 'brush';
@@ -206,6 +215,69 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     painter.updateLine([hits, mirrorEnabled ? hits.map(mirrorHitAt) : []]);
   }
 
+  function resetCurve(cancel = false) {
+    if (cancel) {
+      painter.cancelLine();
+      if (pointerAction === 'curve' && activePointer !== null) {
+        const pointerId = activePointer;
+        activePointer = null; pointerAction = null; strokeRect = null;
+        if (renderer.domElement.hasPointerCapture(pointerId))
+          renderer.domElement.releasePointerCapture(pointerId);
+      }
+    }
+    curveStep = 0;
+    curvePoints = [];
+    curveStartHit = null;
+    curveCanvas.getContext('2d').clearRect(0, 0, curveCanvas.width, curveCanvas.height);
+  }
+
+  function previewCurveAt(event) {
+    if (curvePoints.length < 2) return;
+    curvePoints[curveStep === 0 ? 1 : curveStep + 1] =
+      { x: event.clientX, y: event.clientY };
+    renderCurvePreview();
+  }
+
+  function renderCurvePreview() {
+    const context = curveCanvas.getContext('2d');
+    context.clearRect(0, 0, curveCanvas.width, curveCanvas.height);
+    if (curvePoints.length < 2) return;
+    const rect = renderer.domElement.getBoundingClientRect();
+    const points = curveScreenPoints(curvePoints, curveStep);
+    context.save();
+    context.beginPath();
+    context.moveTo(points[0].x - rect.left, points[0].y - rect.top);
+    for (const point of points.slice(1)) context.lineTo(point.x - rect.left, point.y - rect.top);
+    context.lineCap = 'round';
+    context.lineJoin = 'round';
+    context.lineWidth = Math.max(1, toolSettings.curve?.size ?? 2);
+    context.strokeStyle = toolSettings.curve?.color ?? '#ffffff';
+    context.shadowColor = '#000000';
+    context.shadowBlur = 3;
+    context.stroke();
+    context.shadowBlur = 0;
+    context.fillStyle = '#70bfff';
+    for (const point of curvePoints) {
+      context.beginPath();
+      context.arc(point.x - rect.left, point.y - rect.top, 3, 0, Math.PI * 2);
+      context.fill();
+    }
+    context.restore();
+  }
+
+  function commitCurve() {
+    if (!curveStartHit || !painter.beginLine(curveStartHit, toolSettings.curve,
+      mirrorHitAt(curveStartHit), curveMode, true)) return false;
+    const points = curveScreenPoints(curvePoints, 2);
+    const hits = [];
+    for (let index = 1; index < points.length; index++) {
+      const segment = sampleScreenStroke(points[index - 1], points[index], hitTestAt, 2);
+      hits.push(...(index === 1 ? segment : segment.slice(1)));
+    }
+    painter.updateLine([hits, mirrorEnabled ? hits.map(mirrorHitAt) : []]);
+    return painter.commitLine();
+  }
+
   function queueDraw(event) {
     pendingDraw = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY };
     if (drawFrame !== null) return;
@@ -219,6 +291,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         painter.updateMove(hit ?? (gestureSamplingMode === 'uv' ? null : viewportPoint(next)),
           hit ? mirrorHitAt(hit) : null);
       }
+      else if (pointerAction === 'curve') previewCurveAt(next);
       else if (activeTool === 'line') previewLineAt(next);
       else paintAt(next);
     });
@@ -381,6 +454,20 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         if (!hit && wandMode === 'replace') painter.clearSelection();
         onSelectionChanged?.(created ? 'Selection created' : 'Selection cleared');
       }
+    } else if (activeTool === 'curve') {
+      if (curveStep === 0) {
+        if (painter.canPaintAt(hit)) {
+          const start = { x: event.clientX, y: event.clientY };
+          curvePoints = [start, { ...start }];
+          curveStartHit = hit;
+          curveMode = gestureSamplingMode;
+          pointerAction = 'curve';
+          renderCurvePreview();
+        }
+      } else {
+        pointerAction = 'curve';
+        previewCurveAt(event);
+      }
     } else if (activeTool === 'line') {
       const mirrored = mirrorHitAt(hit);
       if (painter.beginLine(hit, toolSettings.line, mirrored, gestureSamplingMode)) {
@@ -415,7 +502,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         event.clientY - lassoStartScreen.y) > 4) lassoDragged = true;
       traceLassoTo(event);
     }
-    else if (pointerAction === 'moveSelection') queueDraw(event);
+    else if (pointerAction === 'moveSelection' || pointerAction === 'curve') queueDraw(event);
     else if (activeTool === 'line' || activeTool === 'brush' ||
         activeTool === 'eraser' || activeTool === 'blur') queueDraw(event);
   }
@@ -428,6 +515,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     if (drawFrame !== null) cancelAnimationFrame(drawFrame);
     drawFrame = null;
     pendingDraw = null;
+    let curveCommitted = false;
     if (event.type === 'pointerup') {
       if (pointerAction === 'moveSelection') {
         const hit = gestureSamplingMode === 'uv' ? hitTest(event) : null;
@@ -470,6 +558,21 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       else {
         if (painter.endMove()) onSelectionChanged?.('Selection moved');
       }
+    } else if (pointerAction === 'curve') {
+      if (event.type === 'pointercancel') resetCurve(true);
+      else {
+        previewCurveAt(event);
+        if (curveStep === 2) {
+          curveCommitted = commitCurve();
+          resetCurve();
+          onSelectionChanged?.(curveCommitted ? 'Curve painted' : 'Curve unchanged');
+        } else {
+          curveStep++;
+          onSelectionChanged?.(curveStep === 1 ?
+            'Curve: drag to place the first handle' :
+            'Curve: drag to place the second handle');
+        }
+      }
     } else if (activeTool === 'line') {
       if (event.type === 'pointercancel') painter.cancelLine();
       else { previewLineAt(event); painter.commitLine(); }
@@ -484,7 +587,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     lassoDragged = false;
     lassoMode = 'replace';
     if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
-    if (movedSelection || (activeTool !== 'eyedropper' && activeTool !== 'wand'))
+    if (movedSelection || curveCommitted ||
+        (activeTool !== 'eyedropper' && activeTool !== 'wand' && activeTool !== 'curve'))
       onContentChanged?.();
   }
   function bindRendererCanvas(canvas) {
@@ -496,6 +600,15 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   bindRendererCanvas(renderer.domElement);
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
+    if (pointerAction === 'curve' || curveStep > 0) {
+      const pointerId = activePointer;
+      activePointer = null; pointerAction = null; strokeRect = null;
+      resetCurve(true);
+      if (pointerId !== null && renderer.domElement.hasPointerCapture(pointerId))
+        renderer.domElement.releasePointerCapture(pointerId);
+      onSelectionChanged?.('Curve cancelled');
+      return;
+    }
     if (pointerAction === 'lasso') {
       const pointerId = activePointer;
       painter.cancelLasso();
@@ -549,6 +662,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
           const next = gltf.scene;
           if (!next.children.length) return reject(new Error('The GLB contains no visible scene.'));
           let paintableMeshes;
+          resetCurve(true);
           try { paintableMeshes = painter.prepare(next); }
           catch (error) { return reject(error); }
           scene.remove(model);
@@ -570,6 +684,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   }
 
   function newProject(resolution = 1024) {
+    resetCurve(true);
     setTextureResolution(resolution);
     setLightRotation(0, 0);
     const next = starterModel();
@@ -628,6 +743,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     camera.updateProjectionMatrix();
     renderer.setSize(width, height, false);
     lassoCanvas.width = width; lassoCanvas.height = height;
+    curveCanvas.width = width; curveCanvas.height = height;
+    renderCurvePreview();
     if (pointerAction === 'faces') renderFaceRectangle();
     else renderLassoPath();
   }
@@ -674,6 +791,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     getSamplingMode: () => samplingMode,
     setLightingMode: (mode) => { currentLightingMode = mode; painter.setLightingMode(mode); },
     setTool: (tool) => {
+      if (activeTool === 'curve' && tool !== 'curve') resetCurve(true);
       if (tool !== 'faces' && pointerAction === 'faces') {
         const pointerId = activePointer;
         activePointer = null; pointerAction = null; strokeRect = null;
@@ -694,6 +812,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     },
     setToolSettings: (tool, settings) => {
       toolSettings[tool] = { ...settings };
+      if (tool === 'curve' && curvePoints.length) renderCurvePreview();
       if (tool === activeTool && (tool === 'lasso' || tool === 'wand' || tool === 'faces')) {
         painter.setMaskEnabled(settings.maskEnabled);
         painter.setBlurSelectionIsolation(settings.isolateBlur);
@@ -727,11 +846,14 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     applyFilter: painter.applyFilter,
     cancelFilter: painter.cancelFilter,
     getGraphTargets: painter.getGraphTargets,
-    setPaintTarget: (id) => { selectedTargetId = id; },
-    setGraph: painter.setGraph,
+    setPaintTarget: (id) => {
+      if (id !== selectedTargetId) resetCurve(true);
+      selectedTargetId = id;
+    },
+    setGraph: (...args) => { resetCurve(true); return painter.setGraph(...args); },
     mergeLayerDown: painter.mergeLayerDown,
     createImage: painter.createImage,
-    setPaintSource: painter.setPaintSource,
+    setPaintSource: (...args) => { resetCurve(true); return painter.setPaintSource(...args); },
     importImage: async (targetId, nodeId, file) => {
       if (!file?.type.startsWith('image/')) throw new Error('Select an image file.');
       const bitmap = await createImageBitmap(file);
