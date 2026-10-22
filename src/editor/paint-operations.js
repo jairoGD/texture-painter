@@ -1,3 +1,5 @@
+import { strokeTouchesSelection } from './selection-coverage.js';
+
 const WHITE = '#ffffff';
 
 let markCanvas = null;
@@ -44,15 +46,13 @@ function drawMark({ surface, kind, point, previous, options, mask }) {
   const spacing = Math.max(1, settings.size * 0.16);
   const steps = Math.max(1, Math.ceil(distance / spacing));
   const radius = Math.max(1, settings.size / 2);
+  if (mask && !strokeTouchesSelection(mask, from, point, radius + 1,
+    surface.canvas.width, surface.canvas.height)) return false;
   const left = Math.floor(Math.min(from.x, point.x) - radius - 1);
   const top = Math.floor(Math.min(from.y, point.y) - radius - 1);
-  if (mask && (left >= mask.bounds.right || top >= mask.bounds.bottom ||
-      Math.ceil(Math.max(from.x, point.x) + radius + 1) <= mask.bounds.left ||
-      Math.ceil(Math.max(from.y, point.y) + radius + 1) <= mask.bounds.top)) return false;
   const layerWidth = Math.ceil(Math.max(from.x, point.x) + radius + 1) - left;
   const layerHeight = Math.ceil(Math.max(from.y, point.y) + radius + 1) - top;
   const layerContext = markBuffer(layerWidth, layerHeight);
-  context.save();
   for (let step = previous ? 0 : steps; step <= steps; step++) {
     const t = step / steps;
     dab(layerContext, from.x + (point.x - from.x) * t - left, from.y + (point.y - from.y) * t - top, settings);
@@ -60,13 +60,8 @@ function drawMark({ surface, kind, point, previous, options, mask }) {
   if (mask) {
     layerContext.globalCompositeOperation = 'destination-in';
     layerContext.drawImage(mask.canvas, -left, -top);
-    const pixels = layerContext.getImageData(0, 0, layerWidth, layerHeight).data;
-    let visible = false;
-    for (let index = 3; index < pixels.length; index += 4) {
-      if (pixels[index]) { visible = true; break; }
-    }
-    if (!visible) { context.restore(); return false; }
   }
+  context.save();
   context.globalAlpha = settings.opacity / 100;
   if (kind === 'eraser' && surface.imageLayer) context.globalCompositeOperation = 'destination-out';
   context.drawImage(markCanvas, 0, 0, layerWidth, layerHeight,

@@ -1,6 +1,7 @@
 const SIZE = 1024;
 import { decodeVisibleUv } from './screen-lasso.js';
 import { blendSelectedPixel } from './selection-clipboard.js';
+import { indexSelectionTiles } from './selection-coverage.js';
 
 function drawSelectionOutline(context, alpha, indices) {
   const stride = SIZE + 1;
@@ -87,7 +88,9 @@ export function selectionFromAlpha(surface, alpha, canvas = null, activeIndices 
   overlayCanvas.width = overlayCanvas.height = SIZE;
   const overlayContext = overlayCanvas.getContext('2d');
   drawSelectionOutline(overlayContext, alpha, indices);
-  return { surface, canvas, alpha, bounds, overlayCanvas, indices: Uint32Array.from(indices) };
+  return { surface, canvas, alpha, bounds, overlayCanvas,
+    indices: Uint32Array.from(indices),
+    occupiedTiles: includeMaskCanvas ? indexSelectionTiles(indices, SIZE, SIZE) : null };
 }
 
 export function containsSelection(selection, point) {
