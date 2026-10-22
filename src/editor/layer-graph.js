@@ -17,6 +17,14 @@ function incoming(graph, nodeId, socket) {
   return graph.links.find((link) => link.to === nodeId && link.toSocket === socket) ?? null;
 }
 
+function linkSource(link) {
+  return link ? { from: link.from, fromSocket: link.fromSocket } : null;
+}
+
+function sameSource(link, source) {
+  return !!link && !!source && link.from === source.from && link.fromSocket === source.fromSocket;
+}
+
 export function readLayerStack(graph) {
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   const layers = [];
@@ -36,6 +44,69 @@ export function readLayerStack(graph) {
   return { layers, base: current };
 }
 
+export function layerAncestors(layers, layer) {
+  const byId = new Map(layers.map((item) => [item.id, item]));
+  const ancestors = [];
+  const seen = new Set([layer.id]);
+  let parent = byId.get(layer.mix.layerParentId);
+  while (parent && !seen.has(parent.id)) {
+    ancestors.push(parent);
+    seen.add(parent.id);
+    parent = byId.get(parent.mix.layerParentId);
+  }
+  return ancestors;
+}
+
+function positionGeneratedMasks(graph, layers) {
+  for (const [index, layer] of layers.entries()) {
+    const generated = graph.nodes.filter((node) => node.layerGeneratedFor === layer.id);
+    generated.forEach((node, maskIndex) => {
+      node.x = layer.mix.x - 210 - maskIndex * 190;
+      node.y = 475 + index * 60;
+    });
+  }
+}
+
+export function syncLayerMasks(graph) {
+  const { layers } = readLayerStack(graph);
+  const generatedIds = new Set(graph.nodes.filter((node) => node.layerGeneratedFor)
+    .map((node) => node.id));
+  // Keep a user's Factor connection when the layer hierarchy supplies its own mask link.
+  for (const layer of layers) {
+    const factor = incoming(graph, layer.id, 'Factor');
+    if (factor && !generatedIds.has(factor.from) &&
+        !sameSource(factor, layer.mix.layerAutoFactor))
+      layer.mix.layerManualFactor = linkSource(factor);
+    else if (!factor && !layer.mix.layerAutoFactor) layer.mix.layerManualFactor = null;
+  }
+  graph.nodes = graph.nodes.filter((node) => !generatedIds.has(node.id));
+  graph.links = graph.links.filter((link) => !generatedIds.has(link.from) &&
+    !generatedIds.has(link.to) &&
+    !(layers.some((layer) => layer.id === link.to) && link.toSocket === 'Factor'));
+
+  const nodeIds = new Set(graph.nodes.map((node) => node.id));
+  for (const layer of layers) {
+    let factor = layer.mix.layerManualFactor;
+    if (factor && !nodeIds.has(factor.from)) factor = null;
+    const masks = layer.mix.layerIsMask ? [] : layerAncestors(layers, layer)
+      .filter((ancestor) => ancestor.mix.layerIsMask && ancestor.mix.layerVisible !== false)
+      .reverse();
+    for (const mask of masks) {
+      const source = { from: mask.source.id, fromSocket: layerSources.get(mask.type).output };
+      if (!factor) { factor = source; continue; }
+      const combined = addTextureNode(graph, 'layerMask', { x: 0, y: 0 });
+      combined.layerGeneratedFor = layer.id;
+      combined.layerMaskOwner = mask.id;
+      connectTextureNodes(graph, factor.from, factor.fromSocket, combined.id, 'Base');
+      connectTextureNodes(graph, source.from, source.fromSocket, combined.id, 'Mask');
+      factor = { from: combined.id, fromSocket: 'Factor' };
+    }
+    if (factor) connectTextureNodes(graph, factor.from, factor.fromSocket, layer.id, 'Factor');
+    layer.mix.layerAutoFactor = masks.length ? factor : null;
+  }
+  positionGeneratedMasks(graph, layers);
+}
+
 function reconnect(graph, layers, base) {
   graph.links = graph.links.filter((link) =>
     !(link.to === 'output' && link.toSocket === 'Color') &&
@@ -50,6 +121,7 @@ function reconnect(graph, layers, base) {
 
 function arrange(graph, layers) {
   const managed = new Set(layers.flatMap((layer) => [layer.mix.id, layer.source.id]));
+  for (const node of graph.nodes) if (node.layerGeneratedFor) managed.add(node.id);
   const other = graph.nodes.filter((node) => node.id !== 'output' && !managed.has(node.id));
   const startX = Math.max(340, ...other.map((node) => node.x + 210));
   [...layers].reverse().forEach((layer, index) => {
@@ -63,6 +135,7 @@ function arrange(graph, layers) {
     output.x = startX + layers.length * 270;
     output.y = 75;
   }
+  positionGeneratedMasks(graph, layers);
 }
 
 export function addGraphLayer(graph, type) {
@@ -81,6 +154,7 @@ export function addGraphLayer(graph, type) {
   connectTextureNodes(graph, source.id, definition.output, mix.id, 'B');
   const next = [{ id: mix.id, mix, source, type }, ...layers];
   reconnect(graph, next, base);
+  syncLayerMasks(graph);
   arrange(graph, next);
   return { mix, source };
 }
@@ -89,22 +163,56 @@ export function removeGraphLayer(graph, layerId) {
   const { layers, base } = readLayerStack(graph);
   const selected = layers.find((layer) => layer.id === layerId);
   if (!selected) return false;
+  for (const layer of layers) if (layer.mix.layerParentId === selected.id)
+    layer.mix.layerParentId = selected.mix.layerParentId ?? null;
   const next = layers.filter((layer) => layer.id !== layerId);
   removeTextureNode(graph, selected.mix.id);
+  reconnect(graph, next, base);
+  syncLayerMasks(graph);
   if (!graph.links.some((link) => link.from === selected.source.id))
     removeTextureNode(graph, selected.source.id);
-  reconnect(graph, next, base);
   arrange(graph, next);
   return true;
 }
 
 export function moveGraphLayer(graph, layerId, direction) {
+  const { layers } = readLayerStack(graph);
+  const selected = layers.find((layer) => layer.id === layerId);
+  if (!selected) return false;
+  const siblings = layers.filter((layer) =>
+    (layer.mix.layerParentId ?? null) === (selected.mix.layerParentId ?? null));
+  const index = siblings.findIndex((layer) => layer.id === layerId);
+  const target = siblings[index + direction];
+  return target ? moveGraphLayerTo(graph, layerId, target.id,
+    direction < 0 ? 'before' : 'after') : false;
+}
+
+export function moveGraphLayerTo(graph, layerId, targetId, placement) {
   const { layers, base } = readLayerStack(graph);
-  const index = layers.findIndex((layer) => layer.id === layerId);
-  const nextIndex = index + direction;
-  if (index < 0 || nextIndex < 0 || nextIndex >= layers.length) return false;
-  [layers[index], layers[nextIndex]] = [layers[nextIndex], layers[index]];
-  reconnect(graph, layers, base);
-  arrange(graph, layers);
+  const moving = layers.find((layer) => layer.id === layerId);
+  const target = layers.find((layer) => layer.id === targetId);
+  if (!moving || (placement !== 'root' && !target) ||
+      (placement === 'inside' && targetId === layerId)) return false;
+  const movingIds = new Set(layers.filter((layer) => layer.id === layerId ||
+    layerAncestors(layers, layer).some((ancestor) => ancestor.id === layerId))
+    .map((layer) => layer.id));
+  if (target && movingIds.has(target.id)) return false;
+  const block = layers.filter((layer) => movingIds.has(layer.id));
+  const remaining = layers.filter((layer) => !movingIds.has(layer.id));
+  let insertAt = remaining.length;
+  if (placement === 'before') insertAt = remaining.findIndex((layer) => layer.id === targetId);
+  else if (placement === 'inside') insertAt = remaining.findIndex((layer) => layer.id === targetId) + 1;
+  else if (placement === 'after') {
+    const targetTree = new Set(remaining.filter((layer) => layer.id === targetId ||
+      layerAncestors(remaining, layer).some((ancestor) => ancestor.id === targetId))
+      .map((layer) => layer.id));
+    insertAt = remaining.findLastIndex((layer) => targetTree.has(layer.id)) + 1;
+  } else if (placement !== 'root') return false;
+  moving.mix.layerParentId = placement === 'inside' ? targetId :
+    placement === 'root' ? null : target.mix.layerParentId ?? null;
+  remaining.splice(insertAt, 0, ...block);
+  reconnect(graph, remaining, base);
+  syncLayerMasks(graph);
+  arrange(graph, remaining);
   return true;
 }

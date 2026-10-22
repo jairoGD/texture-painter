@@ -1,5 +1,5 @@
 import { addTextureNode, BLEND_MODES, cloneTextureGraph, connectTextureNodes, NODE_TYPES, removeTextureNode } from '../editor/texture-graph.js';
-import { readLayerStack } from '../editor/layer-graph.js';
+import { readLayerStack, syncLayerMasks } from '../editor/layer-graph.js';
 import { button, dropdown, element } from './index.js';
 import './node-editor.css';
 
@@ -92,6 +92,11 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
 
   function changed(before) {
     if (!graph || JSON.stringify(before) === JSON.stringify(graph)) return;
+    if (JSON.stringify(before.links) !== JSON.stringify(graph.links) &&
+        graph.nodes.some((node) => node.layerIsMask || node.layerGeneratedFor)) {
+      syncLayerMasks(graph);
+      renderGraph();
+    }
     const target = activeTarget();
     target.history.push(before);
     target.future = [];
@@ -353,7 +358,11 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
       attributes: { 'data-node-id': node.id } });
     rootNode.style.left = `${node.x}px`;
     rootNode.style.top = `${node.y}px`;
-    const title = element('div', { className: 'node-editor__node-title', text: definition.title });
+    const owner = graph.nodes.find((item) => item.id === node.layerMaskOwner);
+    if (node.layerIsMask) rootNode.classList.add('is-mask-layer');
+    const title = element('div', { className: 'node-editor__node-title',
+      text: node.type === 'layerMask' ? `Apply Mask · ${owner?.layerName || 'Layer'}` :
+        node.layerIsMask ? `Mask Layer · ${node.layerName || 'Layer'}` : definition.title });
     title.addEventListener('pointerdown', (event) => startNodeDrag(event, node, rootNode));
     rootNode.append(title);
     rootNode.addEventListener('pointerdown', (event) => {

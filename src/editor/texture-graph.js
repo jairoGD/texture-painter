@@ -3,6 +3,7 @@ import { bakeImageToUv } from './image-projection.js';
 export const NODE_TYPES = {
   color: { title: 'Solid Color', inputs: [], outputs: ['Color'] },
   blend: { title: 'Mix', inputs: ['A', 'B', 'Factor'], outputs: ['Result'] },
+  layerMask: { title: 'Layer Mask', inputs: ['Base', 'Mask'], outputs: ['Factor'] },
   image: { title: 'Image', inputs: [], outputs: ['Color', 'Alpha'] },
   output: { title: 'Texture Output', inputs: ['Color'], outputs: [], fixed: true }
 };
@@ -159,6 +160,27 @@ function factorMask(mask, size) {
   return mask.getContext('2d').getImageData(0, 0, size, size).data;
 }
 
+function multiplyFactorCanvases(base, mask, size) {
+  const basePixels = factorMask(base, size);
+  const maskPixels = factorMask(mask, size);
+  const result = newCanvas(size);
+  const context = result.getContext('2d');
+  const image = context.createImageData(size, size);
+  for (let offset = 0; offset < image.data.length; offset += 4) {
+    const baseValue = basePixels ? (basePixels[offset] * .2126 +
+      basePixels[offset + 1] * .7152 + basePixels[offset + 2] * .0722) / 255 *
+      basePixels[offset + 3] / 255 : 1;
+    const maskValue = maskPixels ? (maskPixels[offset] * .2126 +
+      maskPixels[offset + 1] * .7152 + maskPixels[offset + 2] * .0722) / 255 *
+      maskPixels[offset + 3] / 255 : 1;
+    const value = Math.round(baseValue * maskValue * 255);
+    image.data[offset] = image.data[offset + 1] = image.data[offset + 2] = value;
+    image.data[offset + 3] = 255;
+  }
+  context.putImageData(image, 0, 0);
+  return result;
+}
+
 export function blendCanvases(base, top, mode, factor, size, mask = null) {
   const result = newCanvas(size);
   const context = result.getContext('2d');
@@ -259,9 +281,12 @@ export function evaluateTextureNode(surface, nodeId, socket = 'Color', graph = s
       const base = input(node, 'A') ?? solidCanvas(size, node.colorA);
       const top = input(node, 'B') ?? solidCanvas(size, node.colorB);
       const mask = input(node, 'Factor');
-      const factor = node.layerVisible === false ? 0 : Math.max(0, Math.min(1, Number(node.factor) || 0));
+      const factor = node.layerVisible === false || node.layerIsMask ? 0 :
+        Math.max(0, Math.min(1, Number(node.factor) || 0));
       result = blendCanvases(base, top, node.mode, factor, size, mask);
-    } else if (node.type === 'output') result = input(node, 'Color');
+    } else if (node.type === 'layerMask')
+      result = multiplyFactorCanvases(input(node, 'Base'), input(node, 'Mask'), size);
+    else if (node.type === 'output') result = input(node, 'Color');
     visiting.delete(id);
     cache.set(cacheKey, result);
     return result;
@@ -294,7 +319,7 @@ function renderSimpleLayerStack(surface) {
   }
   compositeContext.save();
   for (const { blend, canvas } of layers.reverse()) {
-    if (blend.layerVisible === false) continue;
+    if (blend.layerVisible === false || blend.layerIsMask) continue;
     compositeContext.globalAlpha = Math.max(0, Math.min(1, Number(blend.factor) || 0));
     compositeContext.drawImage(canvas, 0, 0);
   }

@@ -27,6 +27,8 @@
 .node-editor__node-title:active { cursor: grabbing; }
 .node-editor__node--output .node-editor__node-title { background: #30506c; }
 .node-editor__node--image .node-editor__node-title { background: #5d4233; }
+.node-editor__node--layerMask .node-editor__node-title { background: #36546b; }
+.node-editor__node.is-mask-layer .node-editor__node-title { background: #2d5872; }
 .node-editor__row { position: relative; display: flex; align-items: center; height: 30px; padding: 0 13px; color: #becbd8; }
 .node-editor__row--out { justify-content: flex-end; }
 .node-editor__row .node-editor__color { margin-left: auto; }

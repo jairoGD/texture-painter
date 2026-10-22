@@ -608,6 +608,10 @@ export function createTexturePainter() {
     if (index < 0 || index >= stack.length - 1) return null;
     const upper = stack[index];
     const lower = stack[index + 1];
+    if (upper.mix.layerIsMask || lower.mix.layerIsMask ||
+        upper.mix.layerParentId || lower.mix.layerParentId ||
+        stack.some((layer) => layer.mix.layerParentId === upper.id ||
+          layer.mix.layerParentId === lower.id)) return null;
     const blank = document.createElement('canvas');
     blank.width = blank.height = SIZE;
     const apply = (base, layer) => {

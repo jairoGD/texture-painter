@@ -1,6 +1,7 @@
-import { addGraphLayer, moveGraphLayer, readLayerStack, removeGraphLayer } from '../editor/layer-graph.js';
+import { addGraphLayer, layerAncestors, moveGraphLayer, moveGraphLayerTo,
+  readLayerStack, removeGraphLayer, syncLayerMasks } from '../editor/layer-graph.js';
 import { BLEND_MODES, cloneTextureGraph } from '../editor/texture-graph.js';
-import { button, element } from './index.js';
+import { button, checkbox, element } from './index.js';
 import upIcon from './icons/layer-up.svg';
 import downIcon from './icons/layer-down.svg';
 import addIcon from './icons/layer-add.svg';
@@ -14,6 +15,7 @@ import './layers-panel.css';
 export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, onMergeLayer,
   getImageCanvas, onError }) {
   const selectedByTarget = new Map();
+  let draggingId = null;
   const material = element('select', { className: 'layers-panel__select',
     attributes: { 'aria-label': 'Texture material' } });
   const list = element('div', { className: 'layers-panel__list', attributes: { role: 'listbox', 'aria-label': 'Layers' } });
@@ -31,12 +33,47 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     title: 'Open image as layer', onClick: () => newImageInput.click() });
   const removeButton = button({ label: 'Remove layer', iconUrl: removeIcon, variant: 'ghost', iconOnly: true,
     title: 'Remove layer', onClick: remove });
+  const optionsPanel = element('div', { className: 'layers-panel__options' });
+  const rootDrop = element('div', { className: 'layers-panel__root-drop',
+    text: 'Drop here to move out of group' });
   const root = element('aside', { className: 'layers-sidebar', attributes: { 'aria-label': 'Layers sidebar' } }, [
     element('div', { className: 'layers-panel__header' }, [element('h2', { text: 'LAYERS' }), material]),
     element('div', { className: 'layers-panel__toolbar' }, [upButton, downButton, addButton, mergeButton, openButton, removeButton]),
-    list,
+    optionsPanel, list,
     newImageInput, replaceImageInput
   ]);
+
+  function dropLayer(targetId, placement) {
+    if (!draggingId) return;
+    const state = current();
+    const graph = cloneTextureGraph(state.graph);
+    if (!moveGraphLayerTo(graph, draggingId, targetId, placement)) return;
+    const moved = readLayerStack(graph).layers.find((layer) => layer.id === draggingId);
+    selectedByTarget.set(state.targetId, draggingId);
+    clearDragState();
+    nodeEditor.replaceGraph(graph);
+    if (moved?.source.type === 'image' && moved.source.imageKey)
+      nodeEditor.choosePaintSource(moved.source.id);
+  }
+  function clearDragState() {
+    draggingId = null;
+    root.classList.remove('is-dragging-layer');
+    rootDrop.classList.remove('is-drop-target');
+    list.querySelectorAll('.is-drop-before, .is-drop-after, .is-drop-inside, .is-drag-source')
+      .forEach((item) => item.classList.remove('is-drop-before', 'is-drop-after',
+        'is-drop-inside', 'is-drag-source'));
+  }
+  rootDrop.addEventListener('dragover', (event) => {
+    if (!draggingId) return;
+    event.preventDefault();
+    rootDrop.classList.add('is-drop-target');
+  });
+  rootDrop.addEventListener('dragleave', () => rootDrop.classList.remove('is-drop-target'));
+  rootDrop.addEventListener('drop', (event) => {
+    event.preventDefault();
+    dropLayer(null, 'root');
+    rootDrop.classList.remove('is-drop-target');
+  });
 
   material.addEventListener('change', () => nodeEditor.selectTarget(material.value));
   function current() { return nodeEditor.getState(); }
@@ -164,13 +201,19 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     input.focus(); input.select();
   }
 
-  function createRow({ state, id, node, source, label, selected }) {
+  function createRow({ state, id, node, source, label, selected, depth, layers }) {
     const row = element('div', { className: 'layers-panel__row', attributes: {
-      role: 'option', 'aria-selected': String(selected), tabindex: '0'
+      role: 'option', 'aria-selected': String(selected), tabindex: '0', draggable: 'true'
     } });
-    const visible = button({ label: node.layerVisible === false ? 'Show layer' : 'Hide layer',
+    row.style.setProperty('--layer-depth', Math.min(depth, 8));
+    if (depth) row.classList.add('is-child');
+    if (node.layerIsMask) row.classList.add('is-mask');
+    const visibilityLabel = node.layerIsMask ?
+      node.layerVisible === false ? 'Enable mask' : 'Disable mask' :
+      node.layerVisible === false ? 'Show layer' : 'Hide layer';
+    const visible = button({ label: visibilityLabel,
       iconUrl: node.layerVisible === false ? hiddenIcon : eyeIcon, variant: 'ghost', iconOnly: true,
-      title: node.layerVisible === false ? 'Show layer' : 'Hide layer',
+      title: visibilityLabel,
       onClick: () => editSpecificLayer(id, (target) => { target.layerVisible = target.layerVisible === false; }) });
     visible.classList.add('layers-panel__visibility');
     const swatch = element('span', { className: 'layers-panel__swatch',
@@ -184,6 +227,8 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     }
     const name = element('span', { className: 'layers-panel__name', text: label,
       attributes: { title: 'Double-click to rename layer' } });
+    const maskBadge = node.layerIsMask ? element('span', { className: 'layers-panel__mask-badge',
+      text: 'MASK', attributes: { title: 'Masks child layers' } }) : null;
     const blend = element('select', { className: 'layers-panel__blend',
       attributes: { 'aria-label': `Blend mode for ${label}`, title: 'Blend mode' } },
       BLEND_MODES.map(([value, modeLabel]) => element('option', { text: modeLabel, attributes: { value } })));
@@ -200,7 +245,22 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     const opacityText = element('output', { className: 'layers-panel__opacity-value', text: `${opacityValue}%` });
     const opacityWrap = element('div', { className: 'layers-panel__opacity-wrap' }, [opacity, opacityText]);
     let before = null;
-    opacity.addEventListener('pointerdown', (event) => event.stopPropagation());
+    let adjustingOpacity = false;
+    const restoreLayerDrag = () => {
+      adjustingOpacity = false;
+      row.draggable = true;
+      window.removeEventListener('pointerup', restoreLayerDrag, true);
+      window.removeEventListener('pointercancel', restoreLayerDrag, true);
+      window.removeEventListener('blur', restoreLayerDrag);
+    };
+    opacity.addEventListener('pointerdown', (event) => {
+      event.stopPropagation();
+      adjustingOpacity = true;
+      row.draggable = false;
+      window.addEventListener('pointerup', restoreLayerDrag, true);
+      window.addEventListener('pointercancel', restoreLayerDrag, true);
+      window.addEventListener('blur', restoreLayerDrag);
+    });
     opacity.addEventListener('click', (event) => event.stopPropagation());
     opacity.addEventListener('input', (event) => {
       event.stopPropagation();
@@ -216,8 +276,9 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
       if (before) nodeEditor.finishGraphChange(before);
       before = null;
     });
-    row.append(visible, swatch, name,
-      element('div', { className: 'layers-panel__controls' }, [blend, opacityWrap]));
+    row.append(...[visible, swatch, name, maskBadge,
+      node.layerIsMask ? null : element('div', { className: 'layers-panel__controls' }, [blend, opacityWrap])]
+      .filter(Boolean));
     row.addEventListener('click', (event) => {
       if (visible.contains(event.target) || blend.contains(event.target) || opacityWrap.contains(event.target)) return;
       if (event.detail >= 2 && name.contains(event.target)) { beginRename(row, id, label); return; }
@@ -234,7 +295,45 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
       }
       if (event.key === 'F2') { event.preventDefault(); beginRename(row, id, label); }
     });
+    row.addEventListener('dragstart', (event) => {
+      if (adjustingOpacity || event.target.closest('button, input, select')) { event.preventDefault(); return; }
+      draggingId = id;
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', id);
+      root.classList.add('is-dragging-layer');
+      row.classList.add('is-drag-source');
+    });
+    row.addEventListener('dragend', clearDragState);
+    row.addEventListener('dragover', (event) => {
+      if (!draggingId || draggingId === id ||
+          layerAncestors(layers, { id, mix: node }).some((ancestor) => ancestor.id === draggingId)) return;
+      event.preventDefault();
+      const relativeY = (event.clientY - row.getBoundingClientRect().top) / row.offsetHeight;
+      const placement = relativeY < .25 ? 'before' : relativeY > .75 ? 'after' : 'inside';
+      row.dataset.dropPlacement = placement;
+      row.classList.remove('is-drop-before', 'is-drop-after', 'is-drop-inside');
+      row.classList.add(`is-drop-${placement}`);
+    });
+    row.addEventListener('dragleave', () => {
+      row.classList.remove('is-drop-before', 'is-drop-after', 'is-drop-inside');
+    });
+    row.addEventListener('drop', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      dropLayer(id, row.dataset.dropPlacement || 'inside');
+    });
     return row;
+  }
+
+  function renderOptions(selected) {
+    optionsPanel.hidden = !selected;
+    if (!selected) { optionsPanel.replaceChildren(); return; }
+    optionsPanel.replaceChildren(
+      element('span', { className: 'layers-panel__options-title', text: selected.label }),
+      checkbox({ label: 'Mask', checked: Boolean(selected.mix.layerIsMask), onChange: (checked) => {
+        editSpecificLayer(selected.id, (node) => { node.layerIsMask = checked; });
+      } })
+    );
   }
 
   function render(state) {
@@ -247,6 +346,7 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     addButton.disabled = !hasGraph;
     openButton.disabled = !hasGraph;
     if (!hasGraph) {
+      renderOptions(null);
       list.replaceChildren(element('p', { className: 'layers-panel__empty', text: 'Import a GLB model to start painting.' }));
       upButton.disabled = downButton.disabled = mergeButton.disabled = removeButton.disabled = true;
       return;
@@ -259,13 +359,22 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     else if (!chosen || !layers.some((layer) => layer.id === chosen))
       selectedByTarget.set(state.targetId, layers[0]?.id ?? null);
     const selected = selectedLayer(state);
+    renderOptions(selected);
     list.replaceChildren(...layers.map((layer) => createRow({ state, id: layer.id, node: layer.mix,
-      source: layer.source, label: layer.label, selected: selected?.id === layer.id })));
+      source: layer.source, label: layer.label, selected: selected?.id === layer.id,
+      depth: layerAncestors(layers, layer).length, layers })), rootDrop);
     refreshThumbnails();
+    const siblings = layers.filter((layer) =>
+      (layer.mix.layerParentId ?? null) === (selected?.mix.layerParentId ?? null));
+    const siblingIndex = siblings.findIndex((layer) => layer.id === selected?.id);
+    upButton.disabled = siblingIndex <= 0;
+    downButton.disabled = siblingIndex < 0 || siblingIndex >= siblings.length - 1;
     const index = layers.findIndex((layer) => layer.id === selected?.id);
-    upButton.disabled = index <= 0;
-    downButton.disabled = index < 0 || index >= layers.length - 1;
-    mergeButton.disabled = index < 0 || index >= layers.length - 1;
+    const below = layers[index + 1];
+    mergeButton.disabled = !selected || selected.mix.layerIsMask ||
+      selected.mix.layerParentId || layers.some((layer) => layer.mix.layerParentId === selected.id) ||
+      !below || below.mix.layerIsMask || below.mix.layerParentId ||
+      layers.some((layer) => layer.mix.layerParentId === below.id);
     removeButton.disabled = !selected;
   }
 
@@ -275,6 +384,7 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     const mix = graph.nodes.find((node) => node.id === id);
     if (!mix) return;
     mutator(mix);
+    syncLayerMasks(graph);
     nodeEditor.replaceGraph(graph);
   }
 
