@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { executePaintCommand, samplePaintColor } from './paint-operations.js';
-import { combineSelectionParts, containsSelection, moveSelectionInView, selectionFromAlpha,
+import { combineSelectionParts, containsSelection, invertSelectionAlpha, moveSelectionInView, selectionFromAlpha,
   selectionFromMask, visibleSelectionSamples } from './lasso-selection.js';
 import { addTextureNode, blendCanvases, cloneTextureGraph, connectTextureNodes,
   createTextureGraph, evaluateTextureNode, removeTextureNode, renderTextureGraph } from './texture-graph.js';
@@ -11,6 +11,8 @@ import { moveSelectionInUv, shiftedUvSelection, shiftedUvSelectionParts } from '
 import { copySelectedPixels, cutSelectedPixels, pasteSelectedPixels } from './selection-clipboard.js';
 import { textureResolution as SIZE } from './texture-resolution.js';
 import { addDirtyRegion, dirtyArea } from './dirty-regions.js';
+import { resizeSelectionAlpha } from './selection-morphology.js';
+import { selectionOnPaintSurface } from './selection-layer.js';
 
 function configureTextureSampling(texture, antialiasEnabled) {
   texture.magFilter = antialiasEnabled ? THREE.LinearFilter : THREE.NearestFilter;
@@ -324,6 +326,36 @@ export function createTexturePainter(renderer) {
     if (lassoDraft) cancelLasso();
     if (!selection) return false;
     recordSelection(null);
+    return true;
+  }
+
+  function selectionFromPixels(surface, alpha, indices) {
+    return indices.length ? selectionFromAlpha(surface, alpha, null, indices) :
+      { surface, alpha, indices: new Uint32Array(0),
+        bounds: { left: 0, top: 0, right: 0, bottom: 0 }, overlayCanvas: null };
+  }
+
+  function invertSelection() {
+    if (!selection || lassoDraft || movePreview) return false;
+    commitFloatingSelection();
+    const { alpha, indices } = invertSelectionAlpha(selection.alpha);
+    recordSelection(selectionFromPixels(selection.surface, alpha, indices));
+    return true;
+  }
+
+  function resizeSelection(amount, expand) {
+    if (!selection?.indices.length || lassoDraft || movePreview ||
+      !Number.isInteger(amount) || amount < 1 || amount > 100) return false;
+    const alpha = resizeSelectionAlpha(selection.alpha, SIZE, SIZE, amount, expand);
+    const indices = [];
+    let changed = false;
+    for (let index = 0; index < alpha.length; index++) {
+      if (alpha[index]) indices.push(index);
+      if (alpha[index] !== selection.alpha[index]) changed = true;
+    }
+    if (!changed) return false;
+    commitFloatingSelection();
+    recordSelection(selectionFromPixels(selection.surface, alpha, indices));
     return true;
   }
 
@@ -680,7 +712,11 @@ export function createTexturePainter(renderer) {
     if (!undoStack.length || activeStroke || linePreview) return false;
     const entry = undoStack.pop(); redoStack.push(entry);
     applyPaintPatches(entry.patches, 'before');
-    if ('selectionBefore' in entry) { selection = entry.selectionBefore; renderOverlay(); }
+    if ('selectionBefore' in entry) {
+      const previous = entry.selectionBefore;
+      selection = selectionOnPaintSurface(previous, findSurface(previous?.surface.id)?.activePaint);
+      renderOverlay();
+    }
     return true;
   }
 
@@ -688,7 +724,11 @@ export function createTexturePainter(renderer) {
     if (!redoStack.length || activeStroke || linePreview) return false;
     const entry = redoStack.pop(); undoStack.push(entry);
     applyPaintPatches(entry.patches, 'after');
-    if ('selectionAfter' in entry) { selection = entry.selectionAfter; renderOverlay(); }
+    if ('selectionAfter' in entry) {
+      const next = entry.selectionAfter;
+      selection = selectionOnPaintSurface(next, findSurface(next?.surface.id)?.activePaint);
+      renderOverlay();
+    }
     return true;
   }
 
@@ -750,7 +790,12 @@ export function createTexturePainter(renderer) {
     const node = parent.graph.nodes.find((item) => item.id === nodeId && item.type === 'image');
     const next = nodeId === null ? null : node && parent.imageAssets.get(node.imageKey)?.paintSurface;
     if (nodeId !== null && !next) return false;
-    if (selection) { selection = null; renderOverlay(null); }
+    if (selection) {
+      if (selection.surface.id === parent.id) {
+        const rebound = selectionOnPaintSurface(selection, next);
+        if (rebound !== selection) { selection = rebound; renderOverlay(); }
+      } else { selection = null; renderOverlay(null); }
+    }
     parent.activePaint = next;
     return true;
   }
@@ -762,9 +807,12 @@ export function createTexturePainter(renderer) {
     surface.imageCache.clear();
     if (surface.activePaint && !surface.graph.nodes.some((node) =>
       node.type === 'image' && surface.imageAssets.get(node.imageKey)?.paintSurface === surface.activePaint)) {
-      if (selection?.surface === surface.activePaint) { selection = null; renderOverlay(null); }
       const next = readLayerStack(surface.graph).layers[0]?.source;
       surface.activePaint = next ? surface.imageAssets.get(next.imageKey)?.paintSurface ?? null : null;
+      if (selection?.surface.id === surface.id) {
+        const rebound = selectionOnPaintSurface(selection, surface.activePaint);
+        if (rebound !== selection) { selection = rebound; renderOverlay(); }
+      }
     }
     surface.refreshComposite();
     return true;
@@ -854,8 +902,11 @@ export function createTexturePainter(renderer) {
 
   return { prepare, clear, paint, fill, sample, beginLine, updateLine, commitLine, cancelLine,
     beginLasso, endLasso, cancelLasso, selectedAt, beginMove, updateMove, endMove,
-    cancelMove, clearSelection, copySelection, cutSelection, pasteSelection,
-    canCopySelection: () => !!selection && !lassoDraft && !movePreview,
+    cancelMove, clearSelection, invertSelection, resizeSelection,
+    copySelection, cutSelection, pasteSelection,
+    canInvertSelection: () => !!selection && !lassoDraft && !movePreview,
+    canResizeSelection: () => !!selection?.indices.length && !lassoDraft && !movePreview,
+    canCopySelection: () => !!selection?.indices.length && !lassoDraft && !movePreview,
     canPasteSelection: () => !!clipboard, getLayerImage, getCompositePreview,
     setMaskEnabled: (enabled) => { maskEnabled = enabled; },
     setBlurSelectionIsolation: (enabled) => { isolateBlur = enabled; },

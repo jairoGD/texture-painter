@@ -529,6 +529,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       lassoSourceHit = null; lassoPath = []; renderLassoPath();
       return painter.clearSelection();
     },
+    invertSelection: painter.invertSelection,
+    canInvertSelection: painter.canInvertSelection,
+    resizeSelection: painter.resizeSelection,
+    canResizeSelection: painter.canResizeSelection,
     undo: painter.undo,
     redo: painter.redo,
     canUndo: painter.canUndo,

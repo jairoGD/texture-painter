@@ -9,6 +9,7 @@ import { createProjectHome } from './ui/project-home.js';
 import { createLayersPanel } from './ui/layers-panel.js';
 import { createTexturePreview } from './ui/texture-preview.js';
 import { createModelRelinkDialog, GLB_PICKER } from './ui/model-relink.js';
+import { createSelectionSizeDialog } from './ui/selection-size-dialog.js';
 import { dropdown, element, notice, panel, renderControl, renderPanel, toggleButton, toolbar } from './ui/index.js';
 import mirrorIcon from './ui/icons/mirror.svg';
 import samplingIcon from './ui/icons/sampling.svg';
@@ -36,7 +37,7 @@ let loadingProject = false;
 function markDirty() { if (projectId && !loadingProject) dirty = true; }
 const scene = createScene(viewport, {
   onGraphTargetsChanged: (targets) => nodeEditor?.setTargets(targets),
-  onSelectionChanged: (message) => { setStatus(message); editMenu.refresh(); },
+  onSelectionChanged: (message) => { setStatus(message); editMenu.refresh(); selectMenu.refresh(); },
   onContentChanged: () => { layersPanel?.refreshThumbnails(); markDirty(); }, onColorPicked: (color) => {
   palette.setColor(color);
   setStatus(`Sampled ${color.toUpperCase()}`);
@@ -136,11 +137,13 @@ const fileMenu = dropdown({ label: 'File', items: [
 function undo() {
   if (scene.undo()) { setStatus('Undid action'); layersPanel.refreshThumbnails(); markDirty(); }
   editMenu.refresh();
+  selectMenu.refresh();
 }
 
 function redo() {
   if (scene.redo()) { setStatus('Redid action'); layersPanel.refreshThumbnails(); markDirty(); }
   editMenu.refresh();
+  selectMenu.refresh();
 }
 
 function copySelection() {
@@ -153,6 +156,7 @@ function cutSelection() {
     setStatus('Selection cut'); layersPanel.refreshThumbnails(); markDirty();
   }
   editMenu.refresh();
+  selectMenu.refresh();
 }
 
 function pasteSelection() {
@@ -162,6 +166,7 @@ function pasteSelection() {
     layersPanel.refreshThumbnails(); markDirty();
   }
   editMenu.refresh();
+  selectMenu.refresh();
 }
 
 const editMenu = dropdown({ label: 'Edit', items: [
@@ -172,6 +177,29 @@ const editMenu = dropdown({ label: 'Edit', items: [
   { label: 'Cut', shortcut: 'Ctrl+X', getDisabled: () => !scene.canCopySelection(), onSelect: cutSelection },
   { label: 'Paste', shortcut: 'Ctrl+V', getDisabled: () => !scene.canPasteSelection(), onSelect: pasteSelection }
 ] });
+
+function invertSelection() {
+  if (scene.invertSelection()) setStatus('Selection inverted');
+  editMenu.refresh();
+  selectMenu.refresh();
+}
+
+const selectMenu = dropdown({ label: 'Select', items: [
+  { label: 'Select more', getDisabled: () => !scene.canResizeSelection(),
+    onSelect: () => selectionSizeDialog.open('expand') },
+  { label: 'Select less', getDisabled: () => !scene.canResizeSelection(),
+    onSelect: () => selectionSizeDialog.open('contract') },
+  { label: 'Invert Selection', getDisabled: () => !scene.canInvertSelection(),
+    onSelect: invertSelection }
+] });
+
+const selectionSizeDialog = createSelectionSizeDialog({ onApply: (mode, pixels) => {
+  if (scene.resizeSelection(pixels, mode === 'expand'))
+    setStatus(mode === 'expand' ? `Selection expanded by ${pixels} px` :
+      `Selection contracted by ${pixels} px`);
+  editMenu.refresh();
+  selectMenu.refresh();
+} });
 
 document.addEventListener('keydown', (event) => {
   const key = event.key.toLowerCase();
@@ -256,7 +284,7 @@ const header = element('header', { className: 'app-header' }, [
     element('span', { className: 'brand__mark', text: '◈', attributes: { 'aria-hidden': 'true' } }),
     element('span', { className: 'brand__name', text: 'TEXTURE PAINTER' })
   ]),
-  toolbar({ items: [fileMenu, editMenu, displayMenu, renderingMenu], className: 'app-header__menu' }),
+  toolbar({ items: [fileMenu, editMenu, selectMenu, displayMenu, renderingMenu], className: 'app-header__menu' }),
   element('div', { className: 'app-header__right' }, [samplingButton, mirrorButton, projectTag])
 ]);
 
@@ -594,5 +622,5 @@ window.addEventListener('beforeunload', (event) => {
 });
 
 app.append(header, workspace, footer, fileInput, projectInput, texturePreview.element,
-  projectHome.element, modelRelink.element);
+  projectHome.element, modelRelink.element, selectionSizeDialog.element);
 refreshRecent();

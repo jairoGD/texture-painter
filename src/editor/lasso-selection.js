@@ -61,6 +61,17 @@ export function combineSelectionParts(surface, parts, includeMaskCanvas = true) 
   return combined;
 }
 
+export function invertSelectionAlpha(source) {
+  const alpha = new Uint8Array(source.length);
+  const indices = [];
+  for (let index = 0; index < source.length; index++) {
+    const value = 255 - source[index];
+    alpha[index] = value;
+    if (value) indices.push(index);
+  }
+  return { alpha, indices };
+}
+
 export function selectionFromAlpha(surface, alpha, canvas = null, activeIndices = null,
   includeMaskCanvas = true) {
   const indices = activeIndices ?? [];
