@@ -13,6 +13,8 @@ import { textureResolution as SIZE } from './texture-resolution.js';
 import { addDirtyRegion, dirtyArea } from './dirty-regions.js';
 import { resizeSelectionAlpha } from './selection-morphology.js';
 import { selectionOnPaintSurface } from './selection-layer.js';
+import { FILTER_CATEGORIES } from './filter-definitions.js';
+import { renderFilterRegion } from './filter-effects.js';
 
 function configureTextureSampling(texture, antialiasEnabled) {
   texture.magFilter = antialiasEnabled ? THREE.LinearFilter : THREE.NearestFilter;
@@ -30,6 +32,7 @@ export function createTexturePainter(renderer) {
   let redoStack = [];
   let activeStroke = null;
   let linePreview = null;
+  let filterSession = null;
   let selection = null;
   let clipboard = null;
   let lassoDraft = null;
@@ -146,7 +149,7 @@ export function createTexturePainter(renderer) {
       }
     }
     surfaces.clear(); undoStack = []; redoStack = []; activeStroke = null; linePreview = null;
-    selection = null; lassoDraft = null; movePreview = null;
+    selection = null; lassoDraft = null; movePreview = null; filterSession = null;
     overlaySurface = null; overlayRegions = [];
   }
 
@@ -709,7 +712,7 @@ export function createTexturePainter(renderer) {
   }
 
   function undo() {
-    if (!undoStack.length || activeStroke || linePreview) return false;
+    if (!undoStack.length || activeStroke || linePreview || filterSession) return false;
     const entry = undoStack.pop(); redoStack.push(entry);
     applyPaintPatches(entry.patches, 'before');
     if ('selectionBefore' in entry) {
@@ -721,7 +724,7 @@ export function createTexturePainter(renderer) {
   }
 
   function redo() {
-    if (!redoStack.length || activeStroke || linePreview) return false;
+    if (!redoStack.length || activeStroke || linePreview || filterSession) return false;
     const entry = redoStack.pop(); undoStack.push(entry);
     applyPaintPatches(entry.patches, 'after');
     if ('selectionAfter' in entry) {
@@ -751,6 +754,113 @@ export function createTexturePainter(renderer) {
     const surface = findSurface(targetId);
     return surface ? { canvas: surface.compositeCanvas, revision: surface.compositeRevision,
       regions: surface.compositeLastDirty } : null;
+  }
+
+  function canFilter(targetId) {
+    const parent = findSurface(targetId);
+    return !!parent?.activePaint && !lassoDraft && !movePreview && !activeStroke && !linePreview &&
+      (selection?.surface.id !== targetId || !!selection.indices.length);
+  }
+
+  function beginFilter(targetId) {
+    if (filterSession || !canFilter(targetId)) return false;
+    const parent = findSurface(targetId);
+    const mask = selection?.surface.id === targetId ? selection.alpha : null;
+    const rect = mask ? { ...selection.bounds } :
+      { left: 0, top: 0, right: SIZE, bottom: SIZE };
+    filterSession = { parent, mask, rect, snapshots: new Map() };
+    return true;
+  }
+
+  function filterTargets(session, allLayers) {
+    if (!allLayers) return [session.parent.activePaint];
+    const keys = readLayerStack(session.parent.graph).layers
+      .map((layer) => layer.source?.imageKey).filter(Boolean);
+    return [...new Set([session.parent.activePaint,
+      ...keys.map((key) => session.parent.imageAssets.get(key)?.paintSurface).filter(Boolean)])];
+  }
+
+  function filterSnapshot(session, surface) {
+    let snapshot = session.snapshots.get(surface);
+    if (snapshot) return snapshot;
+    const { rect } = session;
+    const sourceRect = { left: Math.max(0, rect.left - 100),
+      top: Math.max(0, rect.top - 100), right: Math.min(SIZE, rect.right + 100),
+      bottom: Math.min(SIZE, rect.bottom + 100) };
+    const before = surface.context.getImageData(rect.left, rect.top,
+      rect.right - rect.left, rect.bottom - rect.top);
+    const sameRect = sourceRect.left === rect.left && sourceRect.top === rect.top &&
+      sourceRect.right === rect.right && sourceRect.bottom === rect.bottom;
+    snapshot = { rect, sourceRect, before,
+      source: sameRect ? before : surface.context.getImageData(sourceRect.left, sourceRect.top,
+        sourceRect.right - sourceRect.left, sourceRect.bottom - sourceRect.top),
+      previewed: false };
+    session.snapshots.set(surface, snapshot);
+    return snapshot;
+  }
+
+  function restoreFilterSurface(surface, snapshot) {
+    if (!snapshot.previewed) return;
+    surface.context.putImageData(snapshot.before, snapshot.rect.left, snapshot.rect.top);
+    surface.requestComposite(snapshot.rect);
+    snapshot.previewed = false;
+  }
+
+  function filterIsIdentity(category, settings) {
+    return category === 'color' ? !settings.hue && settings.saturation === 100 && !settings.invert :
+      category === 'tone' ? !settings.luminance && settings.brightness === 100 &&
+        settings.contrast === 100 :
+        category === 'blur' ? !settings.depth && settings.mosaic === 1 :
+          category === 'palette' ? settings.posterize === 256 && !settings.colorCount :
+            category !== 'ramp';
+  }
+
+  function previewFilter(category, settings) {
+    const session = filterSession;
+    if (!session || !FILTER_CATEGORIES.some((item) => item.id === category)) return false;
+    const targets = filterIsIdentity(category, settings) ? [] :
+      filterTargets(session, settings.allLayers);
+    const targetSet = new Set(targets);
+    for (const [surface, snapshot] of session.snapshots)
+      if (!targetSet.has(surface)) restoreFilterSurface(surface, snapshot);
+    for (const surface of targets) {
+      const snapshot = filterSnapshot(session, surface);
+      const result = renderFilterRegion({ source: snapshot.source,
+        sourceRect: snapshot.sourceRect, dirtyRect: snapshot.rect,
+        textureWidth: SIZE, mask: session.mask, category, settings, isolateBlur });
+      surface.context.putImageData(new ImageData(result.data, result.width, result.height),
+        snapshot.rect.left, snapshot.rect.top);
+      surface.requestComposite(snapshot.rect);
+      snapshot.previewed = true;
+    }
+    return true;
+  }
+
+  function cancelFilter() {
+    if (!filterSession) return false;
+    for (const [surface, snapshot] of filterSession.snapshots)
+      restoreFilterSurface(surface, snapshot);
+    filterSession = null;
+    return true;
+  }
+
+  function applyFilter(category, settings) {
+    if (!previewFilter(category, settings)) return false;
+    const patches = [];
+    for (const [surface, snapshot] of filterSession.snapshots) {
+      if (!snapshot.previewed) continue;
+      const after = surface.context.getImageData(snapshot.rect.left, snapshot.rect.top,
+        snapshot.before.width, snapshot.before.height);
+      if (after.data.some((value, index) => value !== snapshot.before.data[index]))
+        patches.push({ surface, x: snapshot.rect.left, y: snapshot.rect.top,
+          before: snapshot.before, after });
+    }
+    filterSession = null;
+    if (!patches.length) return false;
+    commitFloatingSelection();
+    undoStack.push({ patches });
+    redoStack = [];
+    return true;
   }
 
   function createImage(targetId, nodeId, source = null, name = 'Untitled image', savedKey = null) {
@@ -908,10 +1018,11 @@ export function createTexturePainter(renderer) {
     canResizeSelection: () => !!selection?.indices.length && !lassoDraft && !movePreview,
     canCopySelection: () => !!selection?.indices.length && !lassoDraft && !movePreview,
     canPasteSelection: () => !!clipboard, getLayerImage, getCompositePreview,
+    canFilter, beginFilter, previewFilter, applyFilter, cancelFilter,
     setMaskEnabled: (enabled) => { maskEnabled = enabled; },
     setBlurSelectionIsolation: (enabled) => { isolateBlur = enabled; },
-    beginStroke, endStroke, undo, redo, canUndo: () => undoStack.length > 0,
-    canRedo: () => redoStack.length > 0, setLightingMode, setAntialiasEnabled,
+    beginStroke, endStroke, undo, redo, canUndo: () => undoStack.length > 0 && !filterSession,
+    canRedo: () => redoStack.length > 0 && !filterSession, setLightingMode, setAntialiasEnabled,
     getMeshes: () => [...surfaces.keys()],
     getGraphTargets: graphTargets, setGraph, createImage, setPaintSource, mergeLayerDown,
     exportProjectTextures, restoreProjectTextures,

@@ -65,6 +65,7 @@ export function capturePaintPatches(commands, beforeImages) {
 export function applyPaintPatches(patches, state) {
   for (const patch of patches) {
     patch.surface.context.putImageData(patch[state], patch.x, patch.y);
-    patch.surface.requestComposite();
+    patch.surface.requestComposite({ left: patch.x, top: patch.y,
+      right: patch.x + patch[state].width, bottom: patch.y + patch[state].height });
   }
 }

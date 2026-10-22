@@ -10,6 +10,8 @@ import { createLayersPanel } from './ui/layers-panel.js';
 import { createTexturePreview } from './ui/texture-preview.js';
 import { createModelRelinkDialog, GLB_PICKER } from './ui/model-relink.js';
 import { createSelectionSizeDialog } from './ui/selection-size-dialog.js';
+import { createFilterDialog } from './ui/filter-dialog.js';
+import { FILTER_CATEGORIES } from './editor/filter-definitions.js';
 import { dropdown, element, notice, panel, renderControl, renderPanel, toggleButton, toolbar } from './ui/index.js';
 import mirrorIcon from './ui/icons/mirror.svg';
 import samplingIcon from './ui/icons/sampling.svg';
@@ -193,6 +195,26 @@ const selectMenu = dropdown({ label: 'Select', items: [
     onSelect: invertSelection }
 ] });
 
+const filterDialog = createFilterDialog({
+  onBegin: () => scene.beginFilter(nodeEditor.getState().targetId),
+  onPreview: (category, settings) => scene.previewFilter(category, settings),
+  onApply: (category, settings) => {
+    const changed = scene.applyFilter(category, settings);
+    if (changed) {
+      layersPanel.refreshThumbnails();
+      markDirty();
+      setStatus(`${FILTER_CATEGORIES.find((item) => item.id === category)?.label} filter applied`);
+    }
+    editMenu.refresh();
+  },
+  onCancel: () => scene.cancelFilter(),
+  onError: (message) => setStatus(message, true)
+});
+const filterMenu = dropdown({ label: 'Filter', items: FILTER_CATEGORIES.map((category) => ({
+  label: category.label, getDisabled: () => !scene.canFilter(nodeEditor.getState().targetId),
+  onSelect: () => filterDialog.open(category.id)
+})) });
+
 const selectionSizeDialog = createSelectionSizeDialog({ onApply: (mode, pixels) => {
   if (scene.resizeSelection(pixels, mode === 'expand'))
     setStatus(mode === 'expand' ? `Selection expanded by ${pixels} px` :
@@ -284,7 +306,7 @@ const header = element('header', { className: 'app-header' }, [
     element('span', { className: 'brand__mark', text: '◈', attributes: { 'aria-hidden': 'true' } }),
     element('span', { className: 'brand__name', text: 'TEXTURE PAINTER' })
   ]),
-  toolbar({ items: [fileMenu, editMenu, selectMenu, displayMenu, renderingMenu], className: 'app-header__menu' }),
+  toolbar({ items: [fileMenu, editMenu, selectMenu, filterMenu, displayMenu, renderingMenu], className: 'app-header__menu' }),
   element('div', { className: 'app-header__right' }, [samplingButton, mirrorButton, projectTag])
 ]);
 
@@ -528,6 +550,10 @@ async function openProject(project, handle = null) {
 
 async function saveProject(saveAs = false) {
   if (!projectId || loadingProject) return;
+  if (filterDialog.isOpen()) {
+    setStatus('Apply or cancel the filter before saving.', true);
+    return;
+  }
   let handle = saveAs ? null : projectHandle;
   if (handle) {
     try {
@@ -622,5 +648,5 @@ window.addEventListener('beforeunload', (event) => {
 });
 
 app.append(header, workspace, footer, fileInput, projectInput, texturePreview.element,
-  projectHome.element, modelRelink.element, selectionSizeDialog.element);
+  projectHome.element, modelRelink.element, selectionSizeDialog.element, filterDialog.element);
 refreshRecent();
