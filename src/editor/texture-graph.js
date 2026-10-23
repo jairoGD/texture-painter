@@ -1,4 +1,4 @@
-import { bakeImageToUv } from './image-projection.js';
+import { bakeImageToUv, drawFlatImageRegion } from './image-projection.js';
 
 export const NODE_TYPES = {
   color: { title: 'Solid Color', inputs: [], outputs: ['Color'] },
@@ -92,20 +92,20 @@ function newCanvas(size, height = size) {
   return canvas;
 }
 
-function solidCanvas(size, color) {
-  const canvas = newCanvas(size);
+function solidCanvas(size, color, height = size) {
+  const canvas = newCanvas(size, height);
   const context = canvas.getContext('2d');
   context.fillStyle = /^#[0-9a-f]{6}$/i.test(color) ? color : '#ffffff';
-  context.fillRect(0, 0, size, size);
+  context.fillRect(0, 0, size, height);
   return canvas;
 }
 
-export function invertCanvas(source, size) {
+export function invertCanvas(source, size, height = size) {
   if (!source) return null;
-  const canvas = newCanvas(size);
+  const canvas = newCanvas(size, height);
   const context = canvas.getContext('2d');
   context.drawImage(source, 0, 0);
-  const pixels = context.getImageData(0, 0, size, size);
+  const pixels = context.getImageData(0, 0, size, height);
   for (let offset = 0; offset < pixels.data.length; offset += 4) {
     pixels.data[offset] = 255 - pixels.data[offset];
     pixels.data[offset + 1] = 255 - pixels.data[offset + 1];
@@ -172,17 +172,17 @@ export function blendRgb(a, b, mode) {
   });
 }
 
-function factorMask(mask, size) {
+function factorMask(mask, size, height = size) {
   if (!mask) return null;
-  return mask.getContext('2d').getImageData(0, 0, size, size).data;
+  return mask.getContext('2d').getImageData(0, 0, size, height).data;
 }
 
-function multiplyFactorCanvases(base, mask, size) {
-  const basePixels = factorMask(base, size);
-  const maskPixels = factorMask(mask, size);
-  const result = newCanvas(size);
+function multiplyFactorCanvases(base, mask, size, height = size) {
+  const basePixels = factorMask(base, size, height);
+  const maskPixels = factorMask(mask, size, height);
+  const result = newCanvas(size, height);
   const context = result.getContext('2d');
-  const image = context.createImageData(size, size);
+  const image = context.createImageData(size, height);
   for (let offset = 0; offset < image.data.length; offset += 4) {
     const baseValue = basePixels ? (basePixels[offset] * .2126 +
       basePixels[offset + 1] * .7152 + basePixels[offset + 2] * .0722) / 255 *
@@ -198,19 +198,19 @@ function multiplyFactorCanvases(base, mask, size) {
   return result;
 }
 
-export function blendCanvases(base, top, mode, factor, size, mask = null) {
-  const result = newCanvas(size);
+export function blendCanvases(base, top, mode, factor, size, mask = null, height = size) {
+  const result = newCanvas(size, height);
   const context = result.getContext('2d');
   context.drawImage(base, 0, 0);
   if (factor <= 0) return result;
-  const maskPixels = factorMask(mask, size);
+  const maskPixels = factorMask(mask, size, height);
   let source = top;
   if (factor < 1 || maskPixels) {
-    source = newCanvas(size);
+    source = newCanvas(size, height);
     const sourceContext = source.getContext('2d');
     sourceContext.drawImage(top, 0, 0);
-    const image = sourceContext.getImageData(0, 0, size, size);
-    for (let index = 0; index < size * size; index++) {
+    const image = sourceContext.getImageData(0, 0, size, height);
+    for (let index = 0; index < size * height; index++) {
       const offset = index * 4;
       const maskValue = maskPixels ? (maskPixels[offset] * .2126 +
         maskPixels[offset + 1] * .7152 + maskPixels[offset + 2] * .0722) / 255 *
@@ -228,8 +228,8 @@ export function blendCanvases(base, top, mode, factor, size, mask = null) {
     context.drawImage(source, 0, 0);
     return result;
   }
-  const basePixels = context.getImageData(0, 0, size, size);
-  const topPixels = source.getContext('2d').getImageData(0, 0, size, size).data;
+  const basePixels = context.getImageData(0, 0, size, height);
+  const topPixels = source.getContext('2d').getImageData(0, 0, size, height).data;
   const pixels = basePixels.data;
   for (let offset = 0; offset < pixels.length; offset += 4) {
     const baseAlpha = pixels[offset + 3] / 255;
@@ -274,12 +274,15 @@ export function evaluateTextureNode(surface, nodeId, socket = 'Color', graph = s
       const asset = surface.imageAssets?.get(node.imageKey);
       if (asset) {
         const settings = [node.interpolation, node.projection, node.extension, node.scale,
-          node.offsetU, node.offsetV].join(':');
+          node.offsetU, node.offsetV, JSON.stringify(node.warp ?? null)].join(':');
         const imageKey = `${node.id}:${node.imageKey}:${asset.revision}:${settings}`;
         let image = surface.imageCache.get(imageKey);
         if (!image) {
           image = bakeImageToUv(surface, node, asset.canvas, size);
-          if (surface.imageCache.size >= 8) surface.imageCache.delete(surface.imageCache.keys().next().value);
+          for (const key of surface.imageCache.keys())
+            if (key.startsWith(`${node.id}:`)) surface.imageCache.delete(key);
+          if (surface.imageCache.size >= 3)
+            surface.imageCache.delete(surface.imageCache.keys().next().value);
           surface.imageCache.set(imageKey, image);
         }
         if (socket === 'Alpha') {
@@ -296,7 +299,8 @@ export function evaluateTextureNode(surface, nodeId, socket = 'Color', graph = s
       }
     }
     else if (node.type === 'blend') {
-      const base = input(node, 'A') ?? solidCanvas(size, node.colorA);
+      const base = input(node, 'A') ?? (surface.transparentBase && node.layerSourceId &&
+        node.colorA === '#ffffff' ? newCanvas(size) : solidCanvas(size, node.colorA));
       const top = input(node, 'B') ?? solidCanvas(size, node.colorB);
       const mask = input(node, 'Factor');
       const factor = node.layerVisible === false || node.layerIsMask ? 0 :
@@ -310,6 +314,85 @@ export function evaluateTextureNode(surface, nodeId, socket = 'Color', graph = s
     return result;
   };
   return evaluate(nodeId, socket);
+}
+
+// The graph can be evaluated in UV-space tiles while painting. Every intermediate
+// canvas has the dirty rectangle's dimensions, so a mask no longer forces a
+// full-resolution graph render for each brush dab.
+function renderGraphRegion(surface, region) {
+  const width = region.right - region.left;
+  const height = region.bottom - region.top;
+  if (width <= 0 || height <= 0) return true;
+  const { graph } = surface;
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const links = new Map(graph.links.map((link) => [`${link.to}:${link.toSocket}`, link]));
+  const cache = new Map();
+  const visiting = new Set();
+  let supported = true;
+  const input = (node, socket) => {
+    const link = links.get(`${node.id}:${socket}`);
+    return link ? evaluate(link.from, link.fromSocket) : null;
+  };
+  const evaluate = (id, socket = 'Color') => {
+    const key = `${id}:${socket}`;
+    if (cache.has(key)) return cache.get(key);
+    if (visiting.has(id)) { supported = false; return null; }
+    const node = nodes.get(id);
+    if (!node) return null;
+    visiting.add(id);
+    let result = null;
+    if (node.type === 'color') result = solidCanvas(width, node.color, height);
+    else if (node.type === 'invert') result = invertCanvas(input(node, 'Color'), width, height);
+    else if (node.type === 'image') {
+      const asset = surface.imageAssets?.get(node.imageKey);
+      if (asset) {
+        if ((node.projection ?? 'flat') !== 'flat') supported = false;
+        else {
+          const image = newCanvas(width, height);
+          const context = image.getContext('2d');
+          if (!drawFlatImageRegion(context, asset.canvas, node, region, surface.canvas.width))
+            supported = false;
+          else if (socket === 'Alpha') {
+            const pixels = context.getImageData(0, 0, width, height);
+            for (let offset = 0; offset < pixels.data.length; offset += 4) {
+              const alpha = pixels.data[offset + 3];
+              pixels.data[offset] = pixels.data[offset + 1] = pixels.data[offset + 2] = alpha;
+              pixels.data[offset + 3] = 255;
+            }
+            context.putImageData(pixels, 0, 0);
+          }
+          result = image;
+        }
+      }
+    } else if (node.type === 'blend') {
+      const base = input(node, 'A') ?? solidCanvas(width, node.colorA, height);
+      const top = input(node, 'B') ?? solidCanvas(width, node.colorB, height);
+      const mask = input(node, 'Factor');
+      const factor = node.layerVisible === false || node.layerIsMask ? 0 :
+        Math.max(0, Math.min(1, Number(node.factor) || 0));
+      result = blendCanvases(base, top, node.mode, factor, width, mask, height);
+    } else if (node.type === 'layerMask')
+      result = multiplyFactorCanvases(input(node, 'Base'), input(node, 'Mask'), width, height);
+    else if (node.type === 'output') result = input(node, 'Color');
+    else supported = false;
+    visiting.delete(id);
+    cache.set(key, result);
+    return result;
+  };
+  const result = evaluate('output');
+  if (!supported) return false;
+  const context = surface.compositeContext;
+  context.save();
+  context.globalCompositeOperation = 'source-over';
+  context.globalAlpha = 1;
+  if (surface.transparentBase) context.clearRect(region.left, region.top, width, height);
+  else {
+    context.fillStyle = '#ffffff';
+    context.fillRect(region.left, region.top, width, height);
+  }
+  if (result) context.drawImage(result, region.left, region.top);
+  context.restore();
+  return true;
 }
 
 function renderSimpleLayerStack(surface, region = null) {
@@ -328,31 +411,64 @@ function renderSimpleLayerStack(surface, region = null) {
     const source = nodes.get(sourceLink?.from);
     if (sourceLink?.fromSocket !== 'Color' || source?.type !== 'image' ||
         source.id !== blend.layerSourceId || !imageAssets.has(source.imageKey) ||
-        (source.projection ?? 'flat') !== 'flat' || (Number(source.scale) || 1) !== 1 ||
-        Number(source.offsetU) || Number(source.offsetV)) return false;
+        (source.projection ?? 'flat') !== 'flat') return false;
+    const transformed = (Number(source.scale) || 1) !== 1 ||
+      Number(source.offsetU) || Number(source.offsetV);
+    if (transformed && !['clip', 'repeat'].includes(source.extension ?? 'repeat')) return false;
+    if (transformed && (source.extension ?? 'repeat') === 'repeat' &&
+        typeof DOMMatrix === 'undefined') return false;
     visited.add(blend.id);
-    layers.push({ blend, canvas: imageAssets.get(source.imageKey).canvas });
+    layers.push({ blend, source, asset: imageAssets.get(source.imageKey) });
     link = incoming(blend.id, 'A');
     if (!link && blend.colorA !== '#ffffff') return false;
   }
+  if (surface.transparentBase && layers.some(({ blend }) =>
+    (blend.mode || 'mix') !== 'mix' && !CANVAS_BLEND_MODES[blend.mode])) return false;
   compositeContext.save();
   compositeContext.globalCompositeOperation = 'source-over';
   compositeContext.globalAlpha = 1;
-  compositeContext.fillStyle = '#ffffff';
-  compositeContext.fillRect(region?.left ?? 0, region?.top ?? 0,
-    region ? region.right - region.left : surface.canvas.width,
-    region ? region.bottom - region.top : surface.canvas.height);
-  for (const { blend, canvas } of layers.reverse()) {
+  const left = region?.left ?? 0;
+  const top = region?.top ?? 0;
+  const width = region ? region.right - left : surface.canvas.width;
+  const height = region ? region.bottom - top : surface.canvas.height;
+  if (surface.transparentBase) compositeContext.clearRect(left, top, width, height);
+  else {
+    compositeContext.fillStyle = '#ffffff';
+    compositeContext.fillRect(left, top, width, height);
+  }
+  for (const { blend, source, asset } of layers.reverse()) {
     if (blend.layerVisible === false || blend.layerIsMask) continue;
     const factor = Math.max(0, Math.min(1, Number(blend.factor) || 0));
     if (!factor) continue;
+    let canvas = asset.canvas;
+    let sourceRegion = region;
+    const transformed = (Number(source.scale) || 1) !== 1 ||
+      Number(source.offsetU) || Number(source.offsetV) ||
+      asset.canvas.width !== surface.canvas.width ||
+      asset.canvas.height !== surface.canvas.height;
+    if (transformed) {
+      const left = region?.left ?? 0;
+      const top = region?.top ?? 0;
+      const width = region ? region.right - left : surface.canvas.width;
+      const height = region ? region.bottom - top : surface.canvas.height;
+      let scratch = asset.layerScratch;
+      if (!scratch) asset.layerScratch = scratch = newCanvas(width, height);
+      if (scratch.width < width) scratch.width = width;
+      if (scratch.height < height) scratch.height = height;
+      const context = scratch.getContext('2d');
+      context.clearRect(0, 0, width, height);
+      drawFlatImageRegion(context, asset.canvas, source,
+        { left, top, right: left + width, bottom: top + height }, surface.canvas.width);
+      canvas = scratch;
+      sourceRegion = { left: 0, top: 0, right: width, bottom: height };
+    }
     const mode = blend.mode || 'mix';
     const operation = mode === 'mix' ? 'source-over' : CANVAS_BLEND_MODES[mode];
     if (operation) {
       compositeContext.globalCompositeOperation = operation;
       compositeContext.globalAlpha = factor;
-      if (region) compositeContext.drawImage(canvas, region.left, region.top,
-        region.right - region.left, region.bottom - region.top,
+      if (region) compositeContext.drawImage(canvas, sourceRegion.left, sourceRegion.top,
+        sourceRegion.right - sourceRegion.left, sourceRegion.bottom - sourceRegion.top,
         region.left, region.top, region.right - region.left, region.bottom - region.top);
       else compositeContext.drawImage(canvas, 0, 0);
       continue;
@@ -368,7 +484,8 @@ function renderSimpleLayerStack(surface, region = null) {
     if (scratch.height < height) scratch.height = height;
     const scratchContext = scratch.getContext('2d');
     scratchContext.clearRect(0, 0, width, height);
-    scratchContext.drawImage(canvas, left, top, width, height, 0, 0, width, height);
+    scratchContext.drawImage(canvas, sourceRegion?.left ?? left, sourceRegion?.top ?? top,
+      width, height, 0, 0, width, height);
     const topPixels = scratchContext.getImageData(0, 0, width, height).data;
     const pixels = basePixels.data;
     for (let offset = 0; offset < pixels.length; offset += 4) {
@@ -394,8 +511,12 @@ export function renderTextureGraph(surface, region = null) {
     if (!region) surface.texture.needsUpdate = true;
     return Boolean(region);
   }
-  compositeContext.fillStyle = '#ffffff';
-  compositeContext.fillRect(0, 0, size, size);
+  if (region && renderGraphRegion(surface, region)) return true;
+  if (surface.transparentBase) compositeContext.clearRect(0, 0, size, size);
+  else {
+    compositeContext.fillStyle = '#ffffff';
+    compositeContext.fillRect(0, 0, size, size);
+  }
   const result = evaluateTextureNode(surface, 'output');
   if (result && result !== compositeCanvas) compositeContext.drawImage(result, 0, 0);
   surface.texture.needsUpdate = true;

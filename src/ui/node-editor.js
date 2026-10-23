@@ -1,11 +1,13 @@
 import { addTextureNode, BLEND_MODES, cloneTextureGraph, connectTextureNodes, NODE_TYPES, removeTextureNode } from '../editor/texture-graph.js';
 import { readLayerStack, syncLayerMasks } from '../editor/layer-graph.js';
 import { button, dropdown, element } from './index.js';
+import { IMAGE_NUMBER_OPTIONS, IMAGE_SELECT_OPTIONS, imageNumberValue } from './image-node-options.js';
 import './node-editor.css';
 
 const NODE_WIDTH = 180;
-export function createNodeEditor({ targets = [], onChange, onCreateImage, onImportImage,
-  onPaintSourceChange, onError, onStateChange } = {}) {
+export function createNodeEditor({ targets = [], onChange, onPreviewChange, onCreateImage, onImportImage,
+  onPaintSourceChange, onError, onStateChange, onRecordGraphChange,
+  onUndo, onRedo, onCanUndo, onCanRedo } = {}) {
   let targetMap = new Map();
   let activeId = null;
   let graph = null;
@@ -13,6 +15,8 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
   let selectedNode = null;
   let selectedLink = -1;
   let pendingLink = null;
+  let externalWarpBefore = null;
+  let externalWarpTarget = null;
   const view = { x: 0, y: 0, scale: 1 };
 
   const toggle = button({ label: 'Texture Nodes', icon: '▰', variant: 'ghost' });
@@ -87,8 +91,8 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
   }
 
   function updateHistoryButtons() {
-    undoButton.disabled = !activeTarget()?.history.length;
-    redoButton.disabled = !activeTarget()?.future.length;
+    undoButton.disabled = onCanUndo ? !onCanUndo() : !activeTarget()?.history.length;
+    redoButton.disabled = onCanRedo ? !onCanRedo() : !activeTarget()?.future.length;
   }
 
   function changed(before) {
@@ -99,17 +103,47 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
       renderGraph();
     }
     const target = activeTarget();
-    target.history.push(before);
-    target.future = [];
+    const after = cloneTextureGraph(graph);
+    if (!onRecordGraphChange) {
+      target.history.push(before);
+      target.future = [];
+    }
+    onChange?.(activeId, after);
+    onRecordGraphChange?.(activeId, before, after);
     updateHistoryButtons();
-    onChange?.(activeId, cloneTextureGraph(graph));
     if (ensurePaintSource(target)) renderGraph();
     notifyState();
   }
 
   function previewChange() { onChange?.(activeId, cloneTextureGraph(graph)); }
 
+  function beginWarpTransform(targetId, nodeId) {
+    const target = targetMap.get(targetId);
+    if (!target?.graph.nodes.some((node) => node.id === nodeId && node.type === 'image')) return;
+    externalWarpBefore = cloneTextureGraph(target.graph);
+    externalWarpTarget = { targetId, nodeId };
+  }
+
+  function previewWarpTransform(targetId, nodeId, warp) {
+    if (externalWarpTarget?.targetId !== targetId || externalWarpTarget.nodeId !== nodeId) return;
+    const target = targetMap.get(targetId);
+    const node = target?.graph.nodes.find((item) => item.id === nodeId);
+    if (!node) return;
+    node.warp = warp;
+    onPreviewChange?.(targetId, cloneTextureGraph(target.graph));
+  }
+
+  function finishWarpTransform(targetId, nodeId, warp) {
+    if (externalWarpTarget?.targetId !== targetId || externalWarpTarget.nodeId !== nodeId) return;
+    previewWarpTransform(targetId, nodeId, warp);
+    const before = externalWarpBefore;
+    externalWarpBefore = null;
+    externalWarpTarget = null;
+    if (before && targetId === activeId) changed(before);
+  }
+
   function undo() {
+    if (onUndo) { onUndo(); return; }
     const target = activeTarget();
     if (!target?.history.length) return;
     target.future.push(cloneTextureGraph(graph));
@@ -121,6 +155,7 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
   }
 
   function redo() {
+    if (onRedo) { onRedo(); return; }
     const target = activeTarget();
     if (!target?.future.length) return;
     target.history.push(cloneTextureGraph(graph));
@@ -140,6 +175,21 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
     renderGraph();
     if (expanded) requestAnimationFrame(frameGraph);
     notifyState();
+  }
+
+  function applyHistoryGraph(targetId, restoredGraph) {
+    const target = targetMap.get(targetId);
+    if (!target) return;
+    target.graph = cloneTextureGraph(restoredGraph);
+    if (activeId === targetId) {
+      graph = target.graph;
+      if (!graph.nodes.some((node) => node.id === selectedNode)) selectedNode = null;
+      selectedLink = -1;
+      renderGraph();
+      if (ensurePaintSource(target)) renderGraph();
+      notifyState();
+    }
+    updateHistoryButtons();
   }
 
   function setTargets(next) {
@@ -349,6 +399,7 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
     const before = cloneTextureGraph(graph);
     node.imageKey = asset.key;
     node.imageName = asset.name;
+    node.extension = asset.imported ? 'clip' : 'repeat';
     changed(before);
     choosePaintSource(node.id);
   }
@@ -455,12 +506,7 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
       });
       rootNode.append(element('div', { className: 'node-editor__image-actions' },
         [newButton, openButton, fileInput]), error);
-      const options = [
-        ['interpolation', 'Interpolation', [['linear', 'Linear'], ['closest', 'Closest']]],
-        ['projection', 'Projection', [['flat', 'Flat (UV)'], ['box', 'Box'], ['sphere', 'Sphere'], ['tube', 'Tube']]],
-        ['extension', 'Extension', [['repeat', 'Repeat'], ['extend', 'Extend'], ['clip', 'Clip'], ['mirror', 'Mirror']]]
-      ];
-      for (const [key, label, choices] of options) {
+      for (const [key, label, choices] of IMAGE_SELECT_OPTIONS) {
         const field = element('select', { className: 'node-editor__mode',
           attributes: { 'aria-label': `Image ${label.toLowerCase()}` } },
           choices.map(([value, text]) => element('option', { text, attributes: { value } })));
@@ -473,15 +519,13 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
         rootNode.append(element('label', { className: 'node-editor__control' },
           [element('span', { text: label }), field]));
       }
-      for (const [key, label, min, max] of [
-        ['scale', 'Scale', 0.01, 16], ['offsetU', 'Offset U', -8, 8], ['offsetV', 'Offset V', -8, 8]
-      ]) {
+      for (const [key, label, min, max] of IMAGE_NUMBER_OPTIONS) {
         const field = element('input', { className: 'node-editor__number',
           attributes: { type: 'number', min, max, step: 0.1, value: node[key],
             'aria-label': `Image ${label.toLowerCase()}` } });
         field.addEventListener('change', () => {
           const before = cloneTextureGraph(graph);
-          node[key] = Math.max(min, Math.min(max, Number(field.value) || (key === 'scale' ? 1 : 0)));
+          node[key] = imageNumberValue(key, field.value, min, max);
           field.value = node[key];
           changed(before);
         });
@@ -559,5 +603,7 @@ export function createNodeEditor({ targets = [], onChange, onCreateImage, onImpo
   });
   setTargets(targets);
   return { element: root, setTargets, selectTarget, setExpanded, getState, getProjectState, restoreProjectState,
-    replaceGraph, previewGraph, finishGraphChange, choosePaintSource };
+    replaceGraph, previewGraph, finishGraphChange, choosePaintSource,
+    applyHistoryGraph, refreshHistoryButtons: updateHistoryButtons,
+    beginWarpTransform, previewWarpTransform, finishWarpTransform };
 }

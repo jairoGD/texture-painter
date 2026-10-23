@@ -3,6 +3,7 @@ import { addGraphLayer, layerAncestors, moveGraphLayer, moveGraphLayerTo,
 import { BLEND_MODES, cloneTextureGraph } from '../editor/texture-graph.js';
 import { button, element, toggleButton } from './index.js';
 import { createMaterialsPanel } from './materials-panel.js';
+import { createLayerImageProperties } from './layer-image-properties.js';
 import upIcon from './icons/layer-up.svg';
 import downIcon from './icons/layer-down.svg';
 import addIcon from './icons/layer-add.svg';
@@ -16,7 +17,7 @@ import invertIcon from './icons/invert_color.svg';
 import './layers-panel.css';
 
 export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, onMergeLayer,
-  getImageCanvas, onError }) {
+  getImageCanvas, getImageInfo, onError }) {
   const selectedByTarget = new Map();
   let draggingId = null;
   const materialsPanel = createMaterialsPanel({ onSelect: (id) => nodeEditor.selectTarget(id) });
@@ -48,11 +49,19 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
   const optionsPanel = element('div', { className: 'layers-panel__options' }, [maskToggle, invertToggle]);
   const rootDrop = element('div', { className: 'layers-panel__root-drop',
     text: 'Drop here to move out of group' });
+  const imageProperties = createLayerImageProperties({
+    getImageInfo,
+    onEdit: (nodeId, key, value) => editImageNode(nodeId, (node) => { node[key] = value; }),
+    onNew: (nodeId) => newImageForLayer(nodeId),
+    onOpen: () => replaceImageInput.click(),
+    onPaint: (nodeId) => nodeEditor.choosePaintSource(nodeId)
+  });
   const root = element('aside', { className: 'layers-sidebar', attributes: { 'aria-label': 'Layers sidebar' } }, [
     materialsPanel.element,
     element('div', { className: 'ui-section-header' }, [element('h2', { text: 'LAYERS' }), optionsPanel]),
     element('div', { className: 'layers-panel__toolbar' }, [upButton, downButton, addButton, mergeButton, openButton, removeButton]),
     list,
+    imageProperties.element,
     newImageInput, replaceImageInput
   ]);
 
@@ -108,7 +117,10 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
       if (!asset) throw new Error('Unable to create image layer');
       created.source.imageKey = asset.key;
       created.source.imageName = asset.name;
-      if (file) created.mix.layerName = file.name;
+      if (file) {
+        created.source.extension = 'clip';
+        created.mix.layerName = file.name;
+      }
       if (current().targetId !== state.targetId) return;
       selectedByTarget.set(state.targetId, created.mix.id);
       nodeEditor.replaceGraph(graph);
@@ -160,9 +172,37 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
       const source = graph.nodes.find((node) => node.id === selected.source.id);
       source.imageKey = asset.key;
       source.imageName = asset.name;
+      source.extension = 'clip';
       nodeEditor.replaceGraph(graph);
       nodeEditor.choosePaintSource(source.id);
     } catch (error) { fail(error); }
+  }
+
+  function newImageForLayer(nodeId) {
+    const state = current();
+    if (!state.graph?.nodes.some((node) => node.id === nodeId)) return;
+    try {
+      const asset = onCreateImage?.(state.targetId, nodeId);
+      if (!asset) throw new Error('Unable to create image');
+      editImageNode(nodeId, (node) => {
+        node.imageKey = asset.key;
+        node.imageName = asset.name;
+        node.extension = 'repeat';
+        node.scale = 1;
+        node.offsetU = node.offsetV = 0;
+      });
+      nodeEditor.choosePaintSource(nodeId);
+    } catch (error) { fail(error); }
+  }
+
+  function editImageNode(nodeId, mutator) {
+    const state = current();
+    if (!state.graph) return;
+    const graph = cloneTextureGraph(state.graph);
+    const node = graph.nodes.find((item) => item.id === nodeId && item.type === 'image');
+    if (!node) return;
+    mutator(node);
+    nodeEditor.replaceGraph(graph);
   }
 
   newImageInput.addEventListener('change', async () => {
@@ -351,6 +391,7 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     openButton.disabled = !hasGraph;
     if (!hasGraph) {
       renderOptions(null);
+      imageProperties.render(null);
       list.replaceChildren(element('p', { className: 'layers-panel__empty', text: 'Import a GLB model to start painting.' }));
       upButton.disabled = downButton.disabled = mergeButton.disabled = removeButton.disabled = true;
       return;
@@ -364,6 +405,7 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
       selectedByTarget.set(state.targetId, layers[0]?.id ?? null);
     const selected = selectedLayer(state);
     renderOptions(selected);
+    imageProperties.render(selected, state.targetId, state.paintSource);
     list.replaceChildren(...layers.map((layer) => createRow({ state, id: layer.id, node: layer.mix,
       source: layer.source, label: layer.label, selected: selected?.id === layer.id,
       depth: layerAncestors(layers, layer).length, layers })), rootDrop);

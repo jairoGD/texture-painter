@@ -1,3 +1,52 @@
+import { Euler, Matrix4, Quaternion, Vector3 } from 'three';
+
+export function warpProjectionTransform(node, geometry) {
+  if (!geometry.boundingBox) geometry.computeBoundingBox();
+  const bounds = geometry.boundingBox;
+  const center = bounds.getCenter(new Vector3());
+  const extent = bounds.getSize(new Vector3());
+  const longest = Math.max(extent.x, extent.y, extent.z, 0.001);
+  const saved = node.warp ?? {};
+  const values = (input, fallback) => Array.isArray(input) && input.length === 3 &&
+    input.every(Number.isFinite) ? input : fallback;
+  return {
+    position: values(saved.position, center.toArray()),
+    rotation: values(saved.rotation, [0, 0, 0]),
+    scale: values(saved.scale, [Math.max(extent.x, longest * 0.25),
+      Math.max(extent.y, longest * 0.25), longest])
+  };
+}
+
+export function warpProjectionInverse(transform) {
+  const position = new Vector3(...transform.position);
+  const rotation = new Quaternion().setFromEuler(new Euler(...transform.rotation, 'XYZ'));
+  const scale = new Vector3(...transform.scale.map((value) => Math.max(Math.abs(value), 0.0001)));
+  return new Matrix4().compose(position, rotation, scale).invert();
+}
+
+export function resizeWarpProjection(transform, signs, factor) {
+  const scale = transform.scale.map((value, axis) =>
+    signs[axis] ? Math.max(0.001, value * factor) : value);
+  const offset = new Vector3(...scale.map((value, axis) =>
+    signs[axis] * (value - transform.scale[axis]) / 2));
+  offset.applyQuaternion(new Quaternion().setFromEuler(new Euler(...transform.rotation, 'XYZ')));
+  const position = new Vector3(...transform.position).add(offset);
+  return { ...transform, position: position.toArray(), scale };
+}
+
+export function warpProjectedUv(position, inverse) {
+  const elements = inverse.elements;
+  const x = position[0] * elements[0] + position[1] * elements[4] +
+    position[2] * elements[8] + elements[12];
+  const y = position[0] * elements[1] + position[1] * elements[5] +
+    position[2] * elements[9] + elements[13];
+  const z = position[0] * elements[2] + position[1] * elements[6] +
+    position[2] * elements[10] + elements[14];
+  if (Math.abs(x) > 0.5 || Math.abs(y) > 0.5 || Math.abs(z) > 0.5)
+    return null;
+  return [x + 0.5, y + 0.5];
+}
+
 function wrap(value, extension) {
   if (extension === 'clip' && (value < 0 || value > 1)) return null;
   if (extension === 'repeat') return ((value % 1) + 1) % 1;
@@ -59,6 +108,40 @@ function triangleMaterial(geometry, triangle) {
   return geometry.groups.find((group) => start >= group.start && start < group.start + group.count)?.materialIndex ?? 0;
 }
 
+export function drawFlatImageRegion(context, imageCanvas, node, region, size) {
+  const scale = Number(node.scale) || 1;
+  const scaleU = scale;
+  const scaleV = scale;
+  const offsetU = Number(node.offsetU) || 0;
+  const offsetV = Number(node.offsetV) || 0;
+  const width = region.right - region.left;
+  const height = region.bottom - region.top;
+  context.imageSmoothingEnabled = node.interpolation !== 'closest';
+  if (scaleU === 1 && scaleV === 1 && !offsetU && !offsetV) {
+    context.drawImage(imageCanvas, -region.left, -region.top, size, size);
+    return true;
+  }
+  const tileWidth = size / scaleU;
+  const tileHeight = size / scaleV;
+  const x = -offsetU * tileWidth - region.left;
+  const y = -(1 - scaleV - offsetV) * tileHeight - region.top;
+  if (node.extension === 'clip') {
+    context.drawImage(imageCanvas, x, y, tileWidth, tileHeight);
+    return true;
+  }
+  if ((node.extension ?? 'repeat') === 'repeat' && typeof DOMMatrix !== 'undefined') {
+    const pattern = context.createPattern(imageCanvas, 'repeat');
+    if (!pattern?.setTransform) return false;
+    pattern.setTransform(new DOMMatrix([
+      tileWidth / imageCanvas.width, 0, 0, tileHeight / imageCanvas.height, x, y
+    ]));
+    context.fillStyle = pattern;
+    context.fillRect(0, 0, width, height);
+    return true;
+  }
+  return false;
+}
+
 export function bakeImageToUv(surface, node, imageCanvas, size) {
   const result = document.createElement('canvas');
   result.width = result.height = size;
@@ -68,19 +151,20 @@ export function bakeImageToUv(surface, node, imageCanvas, size) {
   const offsetU = Number(node.offsetU) || 0;
   const offsetV = Number(node.offsetV) || 0;
   const scale = Number(node.scale) || 1;
-  if ((node.projection ?? 'flat') === 'flat' && scale === 1 && !offsetU && !offsetV) {
-    context.imageSmoothingEnabled = interpolation !== 'closest';
-    context.imageSmoothingQuality = 'high';
-    context.drawImage(imageCanvas, 0, 0, size, size);
-    return result;
-  }
+  const scaleU = scale;
+  const scaleV = scale;
+  const mappedOffsetU = offsetU;
+  const mappedOffsetV = offsetV;
+  const flat = (node.projection ?? 'flat') === 'flat';
+  if (flat && drawFlatImageRegion(context, imageCanvas, node,
+    { left: 0, top: 0, right: size, bottom: size }, size)) return result;
   const sourceContext = imageCanvas.getContext('2d', { willReadFrequently: true });
   const source = sourceContext.getImageData(0, 0, imageCanvas.width, imageCanvas.height).data;
   const output = context.createImageData(size, size);
   const target = output.data;
   const write = (index, u, v) => {
     const rgba = sampleImage(source, imageCanvas.width, imageCanvas.height,
-      u * scale + offsetU, v * scale + offsetV, interpolation, extension);
+      u * scaleU + mappedOffsetU, v * scaleV + mappedOffsetV, interpolation, extension);
     const pixel = index * 4;
     for (let channel = 0; channel < 4; channel++) target[pixel + channel] = rgba[channel];
   };
@@ -96,6 +180,8 @@ export function bakeImageToUv(surface, node, imageCanvas, size) {
     const bounds = geometry.boundingBox ?? (geometry.computeBoundingBox(), geometry.boundingBox);
     const min = bounds.min;
     const extent = bounds.max.clone().sub(min);
+    const warpInverse = node.projection === 'warp' ?
+      warpProjectionInverse(warpProjectionTransform(node, geometry)) : null;
     const index = geometry.index;
     const count = index ? index.count : position.count;
     for (let triangle = 0; triangle < count / 3; triangle++) {
@@ -106,7 +192,8 @@ export function bakeImageToUv(surface, node, imageCanvas, size) {
       const denominator = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
       if (Math.abs(denominator) < 1e-8) continue;
       const positions = ids.map((id) => [position.getX(id), position.getY(id), position.getZ(id)]);
-      const normals = ids.map((id) => normal ? [normal.getX(id), normal.getY(id), normal.getZ(id)] : [0, 0, 1]);
+      const normals = warpInverse ? null : ids.map((id) => normal ?
+        [normal.getX(id), normal.getY(id), normal.getZ(id)] : [0, 0, 1]);
       const minX = Math.max(0, Math.floor(Math.min(a[0], b[0], c[0])));
       const maxX = Math.min(size - 1, Math.ceil(Math.max(a[0], b[0], c[0])));
       const minY = Math.max(0, Math.floor(Math.min(a[1], b[1], c[1])));
@@ -118,12 +205,15 @@ export function bakeImageToUv(surface, node, imageCanvas, size) {
           ((c[1] - a[1]) * (px - c[0]) + (a[0] - c[0]) * (py - c[1])) / denominator];
         weights.push(1 - weights[0] - weights[1]);
         if (weights.some((weight) => weight < -0.00001)) continue;
-        const point = [0, 1, 2].map((axis) =>
-          (positions.reduce((sum, vertex, corner) => sum + vertex[axis] * weights[corner], 0) - min.getComponent(axis)) /
-          (extent.getComponent(axis) || 1));
-        const facing = [0, 1, 2].map((axis) =>
-          normals.reduce((sum, vertex, corner) => sum + vertex[axis] * weights[corner], 0));
-        const [u, v] = projectedUv(point, facing, node.projection);
+        const localPoint = [0, 1, 2].map((axis) =>
+          positions.reduce((sum, vertex, corner) => sum + vertex[axis] * weights[corner], 0));
+        const coordinates = warpInverse ? warpProjectedUv(localPoint, warpInverse) :
+          projectedUv(localPoint.map((value, axis) =>
+            (value - min.getComponent(axis)) / (extent.getComponent(axis) || 1)),
+          [0, 1, 2].map((axis) => normals.reduce((sum, vertex, corner) =>
+            sum + vertex[axis] * weights[corner], 0)), node.projection);
+        if (!coordinates) continue;
+        const [u, v] = coordinates;
         write(y * size + x, u, v);
       }
     }

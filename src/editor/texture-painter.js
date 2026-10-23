@@ -17,6 +17,7 @@ import { selectionOnPaintSurface } from './selection-layer.js';
 import { FILTER_CATEGORIES } from './filter-definitions.js';
 import { renderFilterRegion } from './filter-effects.js';
 import { combineWandMasks, wandSelectionMask } from './wand-selection.js';
+import { scaleLayerRegion, selectionMaskForLayer, uvToLayerPixel } from './layer-space.js';
 
 function configureTextureSampling(texture, antialiasEnabled) {
   texture.magFilter = antialiasEnabled ? THREE.LinearFilter : THREE.NearestFilter;
@@ -26,7 +27,7 @@ function configureTextureSampling(texture, antialiasEnabled) {
   texture.needsUpdate = true;
 }
 
-export function createTexturePainter(initialRenderer) {
+export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
   let renderer = initialRenderer;
   const surfaces = new Map();
   let lightingMode = 'shaded';
@@ -45,6 +46,17 @@ export function createTexturePainter(initialRenderer) {
   let overlayRegions = [];
   let maskEnabled = true;
   let isolateBlur = true;
+  let projectionPreview = null;
+
+  function endProjectionPreview() {
+    if (!projectionPreview) return;
+    const { surface, texture, frame } = projectionPreview;
+    if (frame !== null) cancelAnimationFrame(frame);
+    surface.shaded.map = surface.unlit.map = surface.texture;
+    surface.shaded.needsUpdate = surface.unlit.needsUpdate = true;
+    texture.dispose();
+    projectionPreview = null;
+  }
 
   function makeSurface(original) {
     const canvas = document.createElement('canvas');
@@ -139,6 +151,7 @@ export function createTexturePainter(initialRenderer) {
   }
 
   function clear() {
+    endProjectionPreview();
     for (const record of surfaces.values()) {
       record.mesh.remove(record.overlay);
       record.mesh.remove(record.wire);
@@ -255,12 +268,11 @@ export function createTexturePainter(initialRenderer) {
     for (const record of surfaces.values()) for (const surface of record.slots) {
       configureTextureSampling(surface.texture, antialiasEnabled);
     }
+    if (projectionPreview) configureTextureSampling(projectionPreview.texture, antialiasEnabled);
   }
 
-  function toPixel(uv) {
-    const u = ((uv.x % 1) + 1) % 1;
-    const v = ((uv.y % 1) + 1) % 1;
-    return { x: u * SIZE, y: (1 - v) * SIZE };
+  function toPixel(uv, canvas = { width: SIZE, height: SIZE }) {
+    return uvToLayerPixel(uv, canvas);
   }
 
   function surfaceAt(hit) {
@@ -407,7 +419,13 @@ export function createTexturePainter(initialRenderer) {
     commitFloatingSelection();
     const parent = findSurface(surface.id);
     if (options.allLayers) parent.refreshComposite();
-    const context = options.allLayers ? parent.compositeContext : surface.context;
+    let context = options.allLayers ? parent.compositeContext : surface.context;
+    if (!options.allLayers && (surface.canvas.width !== SIZE || surface.canvas.height !== SIZE)) {
+      const atlas = document.createElement('canvas');
+      atlas.width = atlas.height = SIZE;
+      context = atlas.getContext('2d', { willReadFrequently: true });
+      context.drawImage(surface.canvas, 0, 0, SIZE, SIZE);
+    }
     const image = context.getImageData(0, 0, SIZE, SIZE);
     const makeMask = (sourceHit) => {
       const point = toPixel(sourceHit.uv);
@@ -515,6 +533,12 @@ export function createTexturePainter(initialRenderer) {
 
   function writeMovePreview(preview, output, nextRegions) {
     const surface = preview.before.surface;
+    if (surface.canvas.width !== SIZE || surface.canvas.height !== SIZE) {
+      writeAtlasImage(surface, output);
+      surface.requestComposite();
+      preview.lastPaintRegions = nextRegions;
+      return;
+    }
     const regions = [];
     for (const region of [...selectionRegions(preview.before),
       ...(preview.lastPaintRegions ?? []), ...nextRegions])
@@ -527,24 +551,54 @@ export function createTexturePainter(initialRenderer) {
     preview.lastPaintRegions = nextRegions;
   }
 
+  function readAtlasImage(surface) {
+    if (surface.canvas.width === SIZE && surface.canvas.height === SIZE)
+      return surface.context.getImageData(0, 0, SIZE, SIZE);
+    const atlas = document.createElement('canvas');
+    atlas.width = atlas.height = SIZE;
+    const context = atlas.getContext('2d', { willReadFrequently: true });
+    context.imageSmoothingEnabled = false;
+    context.drawImage(surface.canvas, 0, 0, SIZE, SIZE);
+    return context.getImageData(0, 0, SIZE, SIZE);
+  }
+
+  function writeAtlasImage(surface, image) {
+    if (surface.canvas.width === SIZE && surface.canvas.height === SIZE) {
+      surface.context.putImageData(image, 0, 0);
+      return;
+    }
+    let atlas = surface.editAtlas;
+    if (!atlas) {
+      atlas = document.createElement('canvas');
+      atlas.width = atlas.height = SIZE;
+      surface.editAtlas = atlas;
+    }
+    atlas.getContext('2d').putImageData(image, 0, 0);
+    surface.context.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
+    surface.context.imageSmoothingEnabled = false;
+    surface.context.drawImage(atlas, 0, 0, surface.canvas.width, surface.canvas.height);
+  }
+
   function copySelection() {
     if (!selection || lassoDraft || movePreview) return false;
-    const image = selection.floatingSourceImage ?? selection.surface.context.getImageData(0, 0, SIZE, SIZE);
+    const image = selection.floatingSourceImage ?? readAtlasImage(selection.surface);
     clipboard = copySelectedPixels(image, selection);
     return true;
   }
 
   function cutSelection() {
     if (!copySelection()) return false;
-    const before = selection.surface.context.getImageData(0, 0, SIZE, SIZE);
+    const nativeBefore = selection.surface.context.getImageData(0, 0,
+      selection.surface.canvas.width, selection.surface.canvas.height);
+    const before = readAtlasImage(selection.surface);
     const after = selection.surface.context.createImageData(SIZE, SIZE);
     after.data.set(selection.floatingBase?.data ?? cutSelectedPixels(before, selection));
-    selection.surface.context.putImageData(after, 0, 0);
+    writeAtlasImage(selection.surface, after);
     selection.surface.requestComposite();
     const previous = selection;
     selection = null;
     undoStack.push({ patches: capturePaintPatches([{ kind: 'moveSelection', surface: previous.surface }],
-      new Map([[previous.surface, before]])), selectionBefore: previous, selectionAfter: null });
+      new Map([[previous.surface, nativeBefore]])), selectionBefore: previous, selectionAfter: null });
     redoStack = [];
     renderOverlay();
     return true;
@@ -553,10 +607,12 @@ export function createTexturePainter(initialRenderer) {
   function pasteSelection(targetId) {
     const surface = findSurface(targetId)?.activePaint;
     if (!clipboard || !surface || lassoDraft || movePreview) return false;
-    const before = surface.context.getImageData(0, 0, SIZE, SIZE);
+    const nativeBefore = surface.context.getImageData(0, 0,
+      surface.canvas.width, surface.canvas.height);
+    const before = readAtlasImage(surface);
     const after = surface.context.createImageData(SIZE, SIZE);
     after.data.set(pasteSelectedPixels(before, clipboard));
-    surface.context.putImageData(after, 0, 0);
+    writeAtlasImage(surface, after);
     surface.requestComposite();
     const next = selectionFromAlpha(surface, clipboard.alpha.slice(), null, clipboard.indices);
     if (!next) return false;
@@ -567,7 +623,7 @@ export function createTexturePainter(initialRenderer) {
     const previous = selection;
     selection = next;
     undoStack.push({ patches: capturePaintPatches([{ kind: 'moveSelection', surface }],
-      new Map([[surface, before]])), selectionBefore: previous, selectionAfter: next });
+      new Map([[surface, nativeBefore]])), selectionBefore: previous, selectionAfter: next });
     redoStack = [];
     renderOverlay();
     return true;
@@ -593,7 +649,9 @@ export function createTexturePainter(initialRenderer) {
       paired, branches, originPart, mirrorAnchor: mirrored?.hit ? toPixel(mirrored.hit.uv) : null,
       mirrorDx: 0, mirrorDy: 0,
       anchor: mode === 'uv' ? point : screen, dx: 0, dy: 0,
-      after: selection, image: selection.surface.context.getImageData(0, 0, SIZE, SIZE),
+      after: selection, image: readAtlasImage(selection.surface),
+      nativeBefore: selection.surface.context.getImageData(0, 0,
+        selection.surface.canvas.width, selection.surface.canvas.height),
       sourceImage: selection.floatingSourceImage ?? null, baseImage: selection.floatingBase ?? null,
       scratch: selection.surface.context.createImageData(SIZE, SIZE),
       destinationAlpha: mode === 'surface' ? new Uint8Array(SIZE * SIZE) : null,
@@ -660,7 +718,7 @@ export function createTexturePainter(initialRenderer) {
 
   function endMove() {
     if (!movePreview) return false;
-    const { before, after: previewAfter, image, sourceImage, baseImage,
+    const { before, after: previewAfter, image, nativeBefore, sourceImage, baseImage,
       projection, samples, dx, dy, mode, mirrorDx, mirrorDy, offsets, movedBranches } = movePreview;
     movePreview = null;
     if (!dx && !dy && !mirrorDx && !mirrorDy) { renderOverlay(); return false; }
@@ -677,7 +735,7 @@ export function createTexturePainter(initialRenderer) {
           samples, dx, dy, null, null, movedBranches, empty).image;
     }
     const command = { kind: 'moveSelection', surface: before.surface, selection: before, dx, dy };
-    undoStack.push({ patches: capturePaintPatches([command], new Map([[before.surface, image]])),
+    undoStack.push({ patches: capturePaintPatches([command], new Map([[before.surface, nativeBefore]])),
       selectionBefore: before, selectionAfter: after });
     redoStack = [];
     selection = after;
@@ -687,8 +745,11 @@ export function createTexturePainter(initialRenderer) {
 
   function cancelMove() {
     if (!movePreview) return false;
-    const { before, image } = movePreview;
-    writeMovePreview(movePreview, image, []);
+    const { before, image, nativeBefore } = movePreview;
+    if (before.surface.canvas.width !== SIZE || before.surface.canvas.height !== SIZE) {
+      before.surface.context.putImageData(nativeBefore, 0, 0);
+      before.surface.requestComposite();
+    } else writeMovePreview(movePreview, image, []);
     selection = before; movePreview = null; renderOverlay();
     return true;
   }
@@ -716,27 +777,28 @@ export function createTexturePainter(initialRenderer) {
     const surface = surfaceAt(hit);
     if (!surface) return null;
     if (selection && maskEnabled && surface !== selection.surface) return null;
-    const point = toPixel(hit.uv);
-    const previous = surfaceAt(previousHit) === surface ? toPixel(previousHit.uv) : null;
+    const point = toPixel(hit.uv, surface.canvas);
+    const previous = surfaceAt(previousHit) === surface ? toPixel(previousHit.uv, surface.canvas) : null;
     const continuous = previous && (mode === 'uv' ?
-      canConnectUvHits(previousHit, hit, previous, point, SIZE * 0.2) :
-      canConnectSurfaceHits(previousHit, hit, previous, point, SIZE * 0.2));
+      canConnectUvHits(previousHit, hit, previous, point, surface.canvas.width * 0.2) :
+      canConnectSurfaceHits(previousHit, hit, previous, point, surface.canvas.width * 0.2));
     apply({ kind, surface, point, previous: continuous ? previous : null,
-      options: { ...options }, mask: maskEnabled ? selection : null, isolateBlur });
+      options: { ...options }, mask: maskEnabled ? selectionMaskForLayer(selection, surface.canvas) : null, isolateBlur });
     return hit;
   }
 
   function fill(hit, options) {
     const surface = surfaceAt(hit);
     if (!surface || (selection && maskEnabled && surface !== selection.surface)) return false;
-    return apply({ kind: 'bucket', surface, point: toPixel(hit.uv), options: { ...options },
-      mask: maskEnabled ? selection : null });
+    return apply({ kind: 'bucket', surface, point: toPixel(hit.uv, surface.canvas), options: { ...options },
+      mask: maskEnabled ? selectionMaskForLayer(selection, surface.canvas) : null });
   }
 
   function sample(hit) {
     const surface = surfaceAt(hit);
     surface?.refreshComposite();
-    return surface ? samplePaintColor(surface, toPixel(hit.uv)) : null;
+    const composite = surface && findSurface(surface.id);
+    return composite ? samplePaintColor(composite, toPixel(hit.uv)) : null;
   }
 
   function beginLine(hit, options, mirroredHit = null, mode = 'surface', preservePath = false) {
@@ -775,24 +837,26 @@ export function createTexturePainter(initialRenderer) {
           previousHit = null; previousPoint = null; segment = null;
           continue;
         }
-        if (!before.has(surface)) before.set(surface, surface.context.getImageData(0, 0, SIZE, SIZE));
-        const point = toPixel(hit.uv);
+        if (!before.has(surface)) before.set(surface, surface.context.getImageData(0, 0,
+          surface.canvas.width, surface.canvas.height));
+        const point = toPixel(hit.uv, surface.canvas);
         const connected = segment && surface === segment.surface &&
-          (mode === 'uv' || canConnectSurfaceHits(previousHit, hit, previousPoint, point, SIZE * 0.2));
+          (mode === 'uv' || canConnectSurfaceHits(previousHit, hit, previousPoint, point,
+            surface.canvas.width * 0.2));
         if (preservePath) {
           // A curve must retain each short sampled segment. Extending one command to
           // the last hit would replace the curve with a straight stroke on commit.
           if (!connected || Math.hypot(point.x - previousPoint.x, point.y - previousPoint.y) > 0.01) {
             segment = { kind: 'line', surface, point,
               previous: connected ? previousPoint : point, options,
-              mask: maskEnabled ? selection : null };
+              mask: maskEnabled ? selectionMaskForLayer(selection, surface.canvas) : null };
             commands.push(segment);
           }
         } else if (connected) {
           segment.point = point;
         } else {
           segment = { kind: 'line', surface, point, previous: point, options,
-            mask: maskEnabled ? selection : null };
+            mask: maskEnabled ? selectionMaskForLayer(selection, surface.canvas) : null };
           commands.push(segment);
         }
         previousHit = hit;
@@ -850,7 +914,10 @@ export function createTexturePainter(initialRenderer) {
   function undo() {
     if (!undoStack.length || activeStroke || linePreview || filterSession) return false;
     const entry = undoStack.pop(); redoStack.push(entry);
-    applyPaintPatches(entry.patches, 'before');
+    if (entry.graph) {
+      setGraph(entry.graph.targetId, entry.graph.before);
+      onGraphHistoryApplied?.(entry.graph.targetId, entry.graph.before);
+    } else applyPaintPatches(entry.patches, 'before');
     if ('selectionBefore' in entry) {
       const previous = entry.selectionBefore;
       selection = selectionOnPaintSurface(previous, findSurface(previous?.surface.id)?.activePaint);
@@ -862,7 +929,10 @@ export function createTexturePainter(initialRenderer) {
   function redo() {
     if (!redoStack.length || activeStroke || linePreview || filterSession) return false;
     const entry = redoStack.pop(); undoStack.push(entry);
-    applyPaintPatches(entry.patches, 'after');
+    if (entry.graph) {
+      setGraph(entry.graph.targetId, entry.graph.after);
+      onGraphHistoryApplied?.(entry.graph.targetId, entry.graph.after);
+    } else applyPaintPatches(entry.patches, 'after');
     if ('selectionAfter' in entry) {
       const next = entry.selectionAfter;
       selection = selectionOnPaintSurface(next, findSurface(next?.surface.id)?.activePaint);
@@ -882,6 +952,59 @@ export function createTexturePainter(initialRenderer) {
       .find((item) => item.id === targetId);
   }
 
+  function recordGraphChange(targetId, before, after) {
+    if (!findSurface(targetId) || JSON.stringify(before) === JSON.stringify(after)) return false;
+    undoStack.push({ graph: { targetId, before: cloneTextureGraph(before),
+      after: cloneTextureGraph(after) } });
+    redoStack = [];
+    return true;
+  }
+
+  function beginProjectionPreview(targetId) {
+    endProjectionPreview();
+    const surface = findSurface(targetId);
+    if (!surface) return false;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = Math.min(256, surface.canvas.width);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+    configureTextureSampling(texture, antialiasEnabled);
+    const previewSurface = { canvas, compositeCanvas: canvas,
+      compositeContext: canvas.getContext('2d'), texture,
+      graph: surface.graph, imageAssets: surface.imageAssets,
+      imageCache: new Map(), geometry: surface.geometry, slotIndex: surface.slotIndex };
+    projectionPreview = { surface, canvas, texture, previewSurface,
+      frame: null, graph: null, visible: false, revision: 0, lastRender: 0 };
+    return true;
+  }
+
+  function previewProjectionGraph(targetId, graph) {
+    const preview = projectionPreview;
+    if (!preview || preview.surface.id !== targetId) return false;
+    preview.graph = graph;
+    if (preview.frame !== null) return true;
+    const draw = (time) => {
+      if (projectionPreview !== preview) return;
+      if (time - preview.lastRender < 50) {
+        preview.frame = requestAnimationFrame(draw);
+        return;
+      }
+      preview.frame = null;
+      preview.lastRender = time;
+      preview.previewSurface.graph = preview.graph;
+      renderTextureGraph(preview.previewSurface);
+      preview.revision++;
+      if (!preview.visible) {
+        preview.surface.shaded.map = preview.surface.unlit.map = preview.texture;
+        preview.surface.shaded.needsUpdate = preview.surface.unlit.needsUpdate = true;
+        preview.visible = true;
+      }
+    };
+    preview.frame = requestAnimationFrame(draw);
+    return true;
+  }
+
   function getFaceTarget(targetId) {
     for (const record of surfaces.values()) {
       const slot = record.slots.find((item) => item.id === targetId);
@@ -894,17 +1017,34 @@ export function createTexturePainter(initialRenderer) {
     return findSurface(targetId)?.imageAssets.get(imageKey)?.canvas ?? null;
   }
 
+  function getImageInfo(targetId, imageKey) {
+    const asset = findSurface(targetId)?.imageAssets.get(imageKey);
+    return asset ? { width: asset.canvas.width,
+      height: asset.canvas.height,
+      imported: asset.imported } : null;
+  }
+
   function getCompositePreview(targetId) {
     const surface = findSurface(targetId);
+    if (projectionPreview?.surface === surface && projectionPreview.visible)
+      return { canvas: projectionPreview.canvas, revision: projectionPreview.revision,
+        regions: null };
     return surface ? { canvas: surface.compositeCanvas, revision: surface.compositeRevision,
       regions: surface.compositeLastDirty } : null;
   }
 
   function getExportTextures() {
     return [...surfaces.values()].flatMap((record) => record.slots.map((surface) => {
-      if (surface.compositeFrame !== null) surface.refreshComposite();
+      const canvas = document.createElement('canvas');
+      canvas.width = surface.canvas.width;
+      canvas.height = surface.canvas.height;
+      renderTextureGraph({ canvas: surface.canvas, compositeCanvas: canvas,
+        compositeContext: canvas.getContext('2d'), texture: { needsUpdate: false },
+        transparentBase: true, graph: surface.graph,
+        imageAssets: surface.imageAssets, imageCache: surface.imageCache,
+        geometry: surface.geometry, slotIndex: surface.slotIndex });
       return { id: surface.id, label: surface.label,
-        canvas: surface.compositeCanvas };
+        canvas };
     }));
   }
 
@@ -935,15 +1075,19 @@ export function createTexturePainter(initialRenderer) {
   function filterSnapshot(session, surface) {
     let snapshot = session.snapshots.get(surface);
     if (snapshot) return snapshot;
-    const { rect } = session;
+    const rect = session.mask ? scaleLayerRegion(session.rect, session.parent.canvas,
+      surface.canvas) : { left: 0, top: 0, right: surface.canvas.width,
+      bottom: surface.canvas.height };
     const sourceRect = { left: Math.max(0, rect.left - 100),
-      top: Math.max(0, rect.top - 100), right: Math.min(SIZE, rect.right + 100),
-      bottom: Math.min(SIZE, rect.bottom + 100) };
+      top: Math.max(0, rect.top - 100),
+      right: Math.min(surface.canvas.width, rect.right + 100),
+      bottom: Math.min(surface.canvas.height, rect.bottom + 100) };
     const before = surface.context.getImageData(rect.left, rect.top,
       rect.right - rect.left, rect.bottom - rect.top);
     const sameRect = sourceRect.left === rect.left && sourceRect.top === rect.top &&
       sourceRect.right === rect.right && sourceRect.bottom === rect.bottom;
     snapshot = { rect, sourceRect, before,
+      mask: session.mask ? selectionMaskForLayer(selection, surface.canvas)?.alpha : null,
       source: sameRect ? before : surface.context.getImageData(sourceRect.left, sourceRect.top,
         sourceRect.right - sourceRect.left, sourceRect.bottom - sourceRect.top),
       previewed: false };
@@ -979,7 +1123,8 @@ export function createTexturePainter(initialRenderer) {
       const snapshot = filterSnapshot(session, surface);
       const result = renderFilterRegion({ source: snapshot.source,
         sourceRect: snapshot.sourceRect, dirtyRect: snapshot.rect,
-        textureWidth: SIZE, mask: session.mask, category, settings, isolateBlur });
+        textureWidth: surface.canvas.width, mask: snapshot.mask, category, settings,
+        isolateBlur });
       surface.context.putImageData(new ImageData(result.data, result.width, result.height),
         snapshot.rect.left, snapshot.rect.top);
       surface.requestComposite(snapshot.rect);
@@ -1015,35 +1160,37 @@ export function createTexturePainter(initialRenderer) {
     return true;
   }
 
-  function createImage(targetId, nodeId, source = null, name = 'Untitled image', savedKey = null) {
+  function createImage(targetId, nodeId, source = null, name = 'Untitled image', savedKey = null,
+    preserveResolution = false) {
     const parent = findSurface(targetId);
     if (!parent) return null;
     const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = SIZE;
+    canvas.width = preserveResolution && source ? source.width : SIZE;
+    canvas.height = preserveResolution && source ? source.height : SIZE;
     const context = canvas.getContext('2d');
-    if (source) context.drawImage(source, 0, 0, SIZE, SIZE);
+    if (source) context.drawImage(source, 0, 0, canvas.width, canvas.height);
     const initial = document.createElement('canvas');
-    initial.width = initial.height = SIZE;
+    initial.width = canvas.width;
+    initial.height = canvas.height;
     initial.getContext('2d').drawImage(canvas, 0, 0);
     const key = savedKey ?? `${nodeId}:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`;
-    const asset = { key, name, canvas, revision: 0 };
+    const asset = { key, name, canvas, imported: preserveResolution, revision: 0 };
     const paintSurface = { id: parent.id, label: parent.label, canvas, context,
       compositeContext: parent.compositeContext, overlayContext: parent.overlayContext,
       overlayTexture: parent.overlayTexture, imageLayer: true,
       refreshComposite: parent.refreshComposite,
       requestComposite: (region = null) => {
         asset.revision++;
-        parent.imageCache.clear();
-        parent.requestComposite(region);
+        parent.requestComposite(scaleLayerRegion(region, canvas, parent.canvas));
       },
       resetPaint: () => {
-        context.clearRect(0, 0, SIZE, SIZE);
+        context.clearRect(0, 0, canvas.width, canvas.height);
         context.drawImage(initial, 0, 0);
         paintSurface.requestComposite();
       } };
     asset.paintSurface = paintSurface;
     parent.imageAssets.set(key, asset);
-    return { key, name };
+    return { key, name, width: canvas.width, height: canvas.height, imported: preserveResolution };
   }
 
   function setPaintSource(targetId, nodeId) {
@@ -1066,7 +1213,6 @@ export function createTexturePainter(initialRenderer) {
     const surface = findSurface(targetId);
     if (!surface) return false;
     surface.graph = cloneTextureGraph(graph);
-    surface.imageCache.clear();
     if (surface.activePaint && !surface.graph.nodes.some((node) =>
       node.type === 'image' && surface.imageAssets.get(node.imageKey)?.paintSurface === surface.activePaint)) {
       const next = readLayerStack(surface.graph).layers[0]?.source;
@@ -1076,7 +1222,7 @@ export function createTexturePainter(initialRenderer) {
         if (rebound !== selection) { selection = rebound; renderOverlay(); }
       }
     }
-    surface.refreshComposite();
+    surface.requestComposite();
     return true;
   }
 
@@ -1133,7 +1279,8 @@ export function createTexturePainter(initialRenderer) {
         .map((node) => node.imageKey).filter(Boolean))].map((key) => {
         const asset = surface.imageAssets.get(key);
         if (!asset) throw new Error('A graph image is missing from the project.');
-        return { key, name: asset.name, data: asset.canvas.toDataURL('image/png') };
+        return { key, name: asset.name, data: asset.canvas.toDataURL('image/png'),
+          imported: asset.imported };
       })
     })));
   }
@@ -1156,7 +1303,8 @@ export function createTexturePainter(initialRenderer) {
       surface.activePaint = null;
       for (const asset of saved.images ?? []) {
         const image = await loadImage(asset.data);
-        createImage(surface.id, asset.key.split(':')[0], image, asset.name, asset.key);
+        createImage(surface.id, asset.key.split(':')[0], image, asset.name, asset.key,
+          asset.imported ?? (image.width !== SIZE || image.height !== SIZE));
       }
       setGraph(surface.id, saved.graph);
     }
@@ -1173,7 +1321,7 @@ export function createTexturePainter(initialRenderer) {
     canInvertSelection: () => !!selection && !lassoDraft && !movePreview,
     canResizeSelection: () => !!selection?.indices.length && !lassoDraft && !movePreview,
     canCopySelection: () => !!selection?.indices.length && !lassoDraft && !movePreview,
-    canPasteSelection: () => !!clipboard, getLayerImage, getCompositePreview,
+    canPasteSelection: () => !!clipboard, getLayerImage, getImageInfo, getCompositePreview,
     getExportTextures,
     canFilter, beginFilter, previewFilter, applyFilter, cancelFilter,
     setMaskEnabled: (enabled) => { maskEnabled = enabled; },
@@ -1183,7 +1331,9 @@ export function createTexturePainter(initialRenderer) {
     setWireframeEnabled, setAntialiasEnabled,
     setRenderer: (nextRenderer) => { renderer = nextRenderer; },
     getMeshes: () => [...surfaces.keys()], getFaceTarget,
-    getGraphTargets: graphTargets, setGraph, createImage, setPaintSource, mergeLayerDown,
+    getGraphTargets: graphTargets, setGraph, recordGraphChange,
+    createImage, setPaintSource, mergeLayerDown,
+    beginProjectionPreview, previewProjectionGraph, endProjectionPreview,
     exportProjectTextures, restoreProjectTextures,
     targetIdAt: (hit) => surfaceAt(hit)?.id ?? null };
 }

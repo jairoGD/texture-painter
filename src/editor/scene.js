@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createTexturePainter } from './texture-painter.js';
 import { captureVisibleUv, projectLassoToUv } from './screen-lasso.js';
@@ -8,9 +9,11 @@ import { sampleScreenStroke } from './surface-stroke.js';
 import { curveScreenPoints } from './curve-path.js';
 import { createModelMirror, reflectedCamera } from './model-mirror.js';
 import { setTextureResolution, textureResolution } from './texture-resolution.js';
+import { resizeWarpProjection, warpProjectionTransform } from './image-projection.js';
 
 export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTargetsChanged,
-  onContentChanged, onLightViewChanged } = {}) {
+  onContentChanged, onLightViewChanged, onProjectionStart, onProjectionPreview,
+  onProjectionEnd, onGraphHistoryApplied } = {}) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color('#252b34');
 
@@ -43,6 +46,119 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   controls.mouseButtons.RIGHT = null;
   controls.target.set(0, 0.65, 0);
   controls.update();
+
+  const warpControls = new TransformControls(camera, renderer.domElement);
+  warpControls.setSize(0.8);
+  scene.add(warpControls.getHelper());
+  let warpAnchor = null;
+  let warpTarget = null;
+  let warpHandles = [];
+  let warpHandleDrag = null;
+  const warpHandleRaycaster = new THREE.Raycaster();
+  const warpHint = document.createElement('div');
+  warpHint.className = 'warp-projection-hint';
+  warpHint.textContent = 'W  Move   ·   E  Rotate   ·   R  Scale box handles';
+  warpHint.hidden = true;
+  host.append(warpHint);
+  function clearWarpTarget() {
+    if (!warpTarget && !warpAnchor) return;
+    painter.endProjectionPreview();
+    warpHandleDrag = null;
+    controls.enabled = true;
+    warpControls.detach();
+    if (warpAnchor) {
+      warpAnchor.traverse((object) => {
+        object.geometry?.dispose();
+        if (Array.isArray(object.material)) object.material.forEach((material) => material.dispose());
+        else object.material?.dispose();
+      });
+      warpAnchor.removeFromParent();
+    }
+    warpAnchor = null;
+    warpTarget = null;
+    warpHandles = [];
+    warpHint.hidden = true;
+  }
+  function setWarpMode(mode) {
+    warpControls.setMode(mode);
+    for (const handle of warpHandles) handle.visible = mode === 'scale';
+  }
+  function readWarpTransform() {
+    return { position: warpAnchor.position.toArray(), rotation: [warpAnchor.rotation.x,
+      warpAnchor.rotation.y, warpAnchor.rotation.z],
+      scale: warpAnchor.scale.toArray().map((value) => Math.max(0.001, Math.abs(value))) };
+  }
+  warpControls.addEventListener('mouseDown', () => {
+    controls.enabled = false;
+    if (warpTarget) onProjectionStart?.(warpTarget.targetId, warpTarget.nodeId);
+  });
+  warpControls.addEventListener('objectChange', () => {
+    if (!warpTarget || !warpAnchor) return;
+    warpAnchor.scale.set(...readWarpTransform().scale);
+    onProjectionPreview?.(warpTarget.targetId, warpTarget.nodeId, readWarpTransform());
+  });
+  warpControls.addEventListener('mouseUp', () => {
+    controls.enabled = true;
+    if (warpTarget) onProjectionEnd?.(warpTarget.targetId, warpTarget.nodeId,
+      readWarpTransform());
+  });
+  document.addEventListener('keydown', (event) => {
+    if (!warpTarget || warpHandleDrag || event.ctrlKey || event.metaKey || event.altKey ||
+        event.target.closest?.('input, textarea, select, [contenteditable]')) return;
+    const mode = { KeyW: 'translate', KeyE: 'rotate', KeyR: 'scale' }[event.code];
+    if (!mode) return;
+    event.preventDefault();
+    setWarpMode(mode);
+  });
+
+  function setProjectionTarget(targetId, graph, nodeId) {
+    const node = graph?.nodes.find((item) => item.id === nodeId && item.type === 'image');
+    const face = node?.projection === 'warp' && painter.getFaceTarget(targetId);
+    if (!face || !node.imageKey) { clearWarpTarget(); return; }
+    if (warpControls.dragging || warpHandleDrag) return;
+    const same = warpTarget?.targetId === targetId && warpTarget.nodeId === nodeId &&
+      warpTarget.imageKey === node.imageKey;
+    if (!same) {
+      clearWarpTarget();
+      warpAnchor = new THREE.Object3D();
+      face.mesh.add(warpAnchor);
+      const bounds = new THREE.BoxGeometry(1, 1, 1);
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(bounds),
+        new THREE.LineBasicMaterial({ color: '#70bfff', depthTest: false,
+          transparent: true, opacity: 0.8 }));
+      edges.renderOrder = 20;
+      warpAnchor.add(edges);
+      bounds.dispose();
+      const positions = [];
+      for (let axis = 0; axis < 3; axis++) for (const sign of [-1, 1]) {
+        const signs = [0, 0, 0];
+        signs[axis] = sign;
+        positions.push(signs);
+      }
+      for (const x of [-1, 1]) for (const y of [-1, 1])
+        for (const z of [-1, 1]) positions.push([x, y, z]);
+      warpHandles = positions.map((signs) => {
+        const corner = signs.every(Boolean);
+        const handle = new THREE.Mesh(new THREE.SphereGeometry(corner ? 0.047 : 0.058, 10, 8),
+          new THREE.MeshBasicMaterial({ color: corner ? '#d7edff' : '#70bfff',
+            depthTest: false, depthWrite: false, toneMapped: false }));
+        handle.position.set(...signs.map((sign) => sign * 0.5));
+        handle.userData.warpSigns = signs;
+        handle.renderOrder = 21;
+        handle.visible = false;
+        warpAnchor.add(handle);
+        return handle;
+      });
+      warpControls.attach(warpAnchor);
+      setWarpMode('translate');
+      warpHint.hidden = false;
+      warpTarget = { targetId, nodeId, imageKey: node.imageKey };
+    }
+    const transform = warpProjectionTransform(node, face.mesh.geometry);
+    warpAnchor.position.set(...transform.position);
+    warpAnchor.rotation.set(...transform.rotation);
+    warpAnchor.scale.set(...transform.scale);
+  }
 
   scene.add(new THREE.HemisphereLight('#dbe9ff', '#525667', 2.1));
   const lightRig = new THREE.Group();
@@ -103,7 +219,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   let modelFile = null;
   scene.add(model);
   const loader = new GLTFLoader();
-  const painter = createTexturePainter(renderer);
+  const painter = createTexturePainter(renderer, onGraphHistoryApplied);
   painter.prepare(model);
   let selectedTargetId = painter.getGraphTargets()[0]?.id ?? null;
   let paintMeshes = painter.getMeshes();
@@ -390,7 +506,67 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       lassoMode === 'replace' ? 'Selection needs a larger visible area' : 'Selection unchanged');
   }
 
+  function onWarpHandleDown(event) {
+    if (event.button !== 0 || !warpTarget || !warpAnchor ||
+        warpControls.getMode() !== 'scale') return;
+    const rect = renderer.domElement.getBoundingClientRect();
+    warpHandleRaycaster.setFromCamera({
+      x: ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      y: 1 - ((event.clientY - rect.top) / rect.height) * 2
+    }, camera);
+    warpAnchor.updateWorldMatrix(true, true);
+    const handle = warpHandleRaycaster.intersectObjects(warpHandles, false)[0]?.object;
+    if (!handle) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const signs = handle.userData.warpSigns;
+    const project = (direction) => warpAnchor.localToWorld(
+      new THREE.Vector3(...direction.map((sign) => sign * 0.5))).project(camera);
+    const start = project(signs);
+    const opposite = project(signs.map((sign) => -sign));
+    warpHandleDrag = { pointerId: event.pointerId, signs,
+      transform: readWarpTransform(), x: event.clientX, y: event.clientY,
+      axisX: (start.x - opposite.x) * rect.width / 2,
+      axisY: -(start.y - opposite.y) * rect.height / 2 };
+    controls.enabled = false;
+    renderer.domElement.setPointerCapture(event.pointerId);
+    onProjectionStart?.(warpTarget.targetId, warpTarget.nodeId);
+  }
+
+  function onWarpHandleMove(event) {
+    const drag = warpHandleDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const lengthSquared = drag.axisX ** 2 + drag.axisY ** 2;
+    const factor = Math.max(0.01, lengthSquared < 144 ?
+      1 + (drag.y - event.clientY) / 120 :
+      1 + ((event.clientX - drag.x) * drag.axisX +
+        (event.clientY - drag.y) * drag.axisY) / lengthSquared);
+    const transform = resizeWarpProjection(drag.transform, drag.signs, factor);
+    warpAnchor.position.set(...transform.position);
+    warpAnchor.scale.set(...transform.scale);
+    onProjectionPreview?.(warpTarget.targetId, warpTarget.nodeId, transform);
+  }
+
+  function onWarpHandleEnd(event) {
+    const drag = warpHandleDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (event.type === 'pointercancel') {
+      warpAnchor.position.set(...drag.transform.position);
+      warpAnchor.scale.set(...drag.transform.scale);
+    } else onWarpHandleMove(event);
+    warpHandleDrag = null;
+    controls.enabled = true;
+    if (renderer.domElement.hasPointerCapture(event.pointerId))
+      renderer.domElement.releasePointerCapture(event.pointerId);
+    onProjectionEnd?.(warpTarget.targetId, warpTarget.nodeId, readWarpTransform());
+  }
+
   function onPointerDown(event) {
+    if (warpTarget && (warpControls.axis || warpControls.dragging)) return;
     if (event.button === 0 && spacePressed) {
       controls.mouseButtons.LEFT = THREE.MOUSE.PAN;
       event.preventDefault();
@@ -588,10 +764,15 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     lassoMode = 'replace';
     if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
     if (movedSelection || curveCommitted ||
-        (activeTool !== 'eyedropper' && activeTool !== 'wand' && activeTool !== 'curve'))
+        (activeTool !== 'eyedropper' && activeTool !== 'wand' && activeTool !== 'curve')) {
       onContentChanged?.();
+    }
   }
   function bindRendererCanvas(canvas) {
+    canvas.addEventListener('pointerdown', onWarpHandleDown, true);
+    canvas.addEventListener('pointermove', onWarpHandleMove, true);
+    canvas.addEventListener('pointerup', onWarpHandleEnd, true);
+    canvas.addEventListener('pointercancel', onWarpHandleEnd, true);
     canvas.addEventListener('pointerdown', onPointerDown, true);
     canvas.addEventListener('pointermove', onPointerMove, true);
     canvas.addEventListener('pointerup', endStroke, true);
@@ -665,6 +846,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
           resetCurve(true);
           try { paintableMeshes = painter.prepare(next); }
           catch (error) { return reject(error); }
+          clearWarpTarget();
           scene.remove(model);
           lassoSourceHit = null; lassoPath = []; renderLassoPath();
           model = next;
@@ -685,6 +867,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
 
   function newProject(resolution = 1024) {
     resetCurve(true);
+    clearWarpTarget();
     setTextureResolution(resolution);
     setLightRotation(0, 0);
     const next = starterModel();
@@ -762,6 +945,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     renderer = nextRenderer;
     painter.setRenderer(nextRenderer);
     controls.connect(nextRenderer.domElement);
+    warpControls.disconnect();
+    warpControls.connect(nextRenderer.domElement);
     bindRendererCanvas(nextRenderer.domElement);
     oldRenderer.setAnimationLoop(null);
     oldRenderer.domElement.remove();
@@ -783,6 +968,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       painter.setWireframeEnabled(wireframeVisible);
     },
     setAntialiasEnabled,
+    setProjectionTarget,
+    beginProjectionPreview: painter.beginProjectionPreview,
+    previewProjectionGraph: painter.previewProjectionGraph,
+    endProjectionPreview: painter.endProjectionPreview,
     setLightRotation,
     getLightViewState,
     setMirrorEnabled: (enabled) => { mirrorEnabled = Boolean(enabled); },
@@ -826,16 +1015,17 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     canInvertSelection: painter.canInvertSelection,
     resizeSelection: painter.resizeSelection,
     canResizeSelection: painter.canResizeSelection,
-    undo: painter.undo,
-    redo: painter.redo,
-    canUndo: painter.canUndo,
-    canRedo: painter.canRedo,
+    undo: () => warpControls.dragging || warpHandleDrag ? false : painter.undo(),
+    redo: () => warpControls.dragging || warpHandleDrag ? false : painter.redo(),
+    canUndo: () => !warpControls.dragging && !warpHandleDrag && painter.canUndo(),
+    canRedo: () => !warpControls.dragging && !warpHandleDrag && painter.canRedo(),
     copySelection: painter.copySelection,
     cutSelection: painter.cutSelection,
     pasteSelection: painter.pasteSelection,
     canCopySelection: painter.canCopySelection,
     canPasteSelection: painter.canPasteSelection,
     getLayerImage: painter.getLayerImage,
+    getImageInfo: painter.getImageInfo,
     getModelFile: () => modelFile,
     getModelSource: () => ({ ...modelSource }),
     getTexturePreview: painter.getCompositePreview,
@@ -851,13 +1041,14 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       selectedTargetId = id;
     },
     setGraph: (...args) => { resetCurve(true); return painter.setGraph(...args); },
+    recordGraphChange: painter.recordGraphChange,
     mergeLayerDown: painter.mergeLayerDown,
     createImage: painter.createImage,
     setPaintSource: (...args) => { resetCurve(true); return painter.setPaintSource(...args); },
     importImage: async (targetId, nodeId, file) => {
       if (!file?.type.startsWith('image/')) throw new Error('Select an image file.');
       const bitmap = await createImageBitmap(file);
-      try { return painter.createImage(targetId, nodeId, bitmap, file.name); }
+      try { return painter.createImage(targetId, nodeId, bitmap, file.name, null, true); }
       finally { bitmap.close(); }
     }
   };

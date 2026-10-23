@@ -42,19 +42,41 @@ let loadingProject = false;
 function markDirty() { if (projectId && !loadingProject) dirty = true; }
 const scene = createScene(viewport, {
   onGraphTargetsChanged: (targets) => nodeEditor?.setTargets(targets),
-  onSelectionChanged: (message) => { setStatus(message); editMenu.refresh(); selectMenu.refresh(); },
+  onGraphHistoryApplied: (targetId, graph) => nodeEditor?.applyHistoryGraph(targetId, graph),
+  onSelectionChanged: (message) => {
+    setStatus(message); editMenu.refresh(); selectMenu.refresh();
+    nodeEditor?.refreshHistoryButtons();
+  },
   onLightViewChanged: (state) => lightGizmo?.setState(state),
-  onContentChanged: () => { layersPanel?.refreshThumbnails(); markDirty(); }, onColorPicked: (color) => {
+  onProjectionStart: (targetId, nodeId) => {
+    nodeEditor?.beginWarpTransform(targetId, nodeId);
+    scene.beginProjectionPreview(targetId);
+  },
+  onProjectionPreview: (targetId, nodeId, transform) =>
+    nodeEditor?.previewWarpTransform(targetId, nodeId, transform),
+  onProjectionEnd: (targetId, nodeId, transform) => {
+    nodeEditor?.finishWarpTransform(targetId, nodeId, transform);
+    scene.endProjectionPreview();
+    markDirty();
+  },
+  onContentChanged: () => {
+    layersPanel?.refreshThumbnails(); nodeEditor?.refreshHistoryButtons(); markDirty();
+  }, onColorPicked: (color) => {
   palette.setColor(color);
   setStatus(`Sampled ${color.toUpperCase()}`);
 } });
 nodeEditor = createNodeEditor({ targets: scene.getGraphTargets(),
   onChange: (id, graph) => { scene.setGraph(id, graph); markDirty(); },
+  onRecordGraphChange: (id, before, after) => scene.recordGraphChange(id, before, after),
+  onUndo: undo, onRedo: redo, onCanUndo: () => scene.canUndo(),
+  onCanRedo: () => scene.canRedo(),
+  onPreviewChange: (id, graph) => scene.previewProjectionGraph(id, graph),
   onCreateImage: (id, nodeId) => scene.createImage(id, nodeId),
   onImportImage: (id, nodeId, file) => scene.importImage(id, nodeId, file),
   onPaintSourceChange: (id, nodeId) => { const changed = scene.setPaintSource(id, nodeId); if (changed) markDirty(); return changed; },
   onStateChange: (state) => {
     scene.setPaintTarget(state.targetId);
+    scene.setProjectionTarget(state.targetId, state.graph, state.paintSource);
     layersPanel?.setState(state);
     texturePreview?.setTarget(state.targetId,
       state.targets.find((target) => target.id === state.targetId)?.label);
@@ -66,6 +88,7 @@ layersPanel = createLayersPanel({ nodeEditor,
   onImportImage: (id, nodeId, file) => scene.importImage(id, nodeId, file),
   onMergeLayer: (id, layerId, graph) => scene.mergeLayerDown(id, layerId, graph),
   getImageCanvas: (id, key) => scene.getLayerImage(id, key),
+  getImageInfo: (id, key) => scene.getImageInfo(id, key),
   onError: (message) => setStatus(message, true)
 });
 texturePreview = createTexturePreview({ getTexture: (id) => scene.getTexturePreview(id),
@@ -166,12 +189,14 @@ const fileMenu = dropdown({ label: 'File', items: [
 
 function undo() {
   if (scene.undo()) { setStatus('Undid action'); layersPanel.refreshThumbnails(); markDirty(); }
+  nodeEditor?.refreshHistoryButtons();
   editMenu.refresh();
   selectMenu.refresh();
 }
 
 function redo() {
   if (scene.redo()) { setStatus('Redid action'); layersPanel.refreshThumbnails(); markDirty(); }
+  nodeEditor?.refreshHistoryButtons();
   editMenu.refresh();
   selectMenu.refresh();
 }
