@@ -85,9 +85,10 @@ export function removeTextureNode(graph, id) {
   return true;
 }
 
-function newCanvas(size) {
+function newCanvas(size, height = size) {
   const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = size;
+  canvas.width = size;
+  canvas.height = height;
   return canvas;
 }
 
@@ -321,7 +322,7 @@ function renderSimpleLayerStack(surface, region = null) {
   const visited = new Set();
   while (link) {
     const blend = nodes.get(link.from);
-    if (link.fromSocket !== 'Result' || blend?.type !== 'blend' || blend.mode !== 'mix' ||
+    if (link.fromSocket !== 'Result' || blend?.type !== 'blend' ||
         !blend.layerSourceId || visited.has(blend.id) || incoming(blend.id, 'Factor')) return false;
     const sourceLink = incoming(blend.id, 'B');
     const source = nodes.get(sourceLink?.from);
@@ -335,17 +336,52 @@ function renderSimpleLayerStack(surface, region = null) {
     if (!link && blend.colorA !== '#ffffff') return false;
   }
   compositeContext.save();
+  compositeContext.globalCompositeOperation = 'source-over';
+  compositeContext.globalAlpha = 1;
   compositeContext.fillStyle = '#ffffff';
   compositeContext.fillRect(region?.left ?? 0, region?.top ?? 0,
     region ? region.right - region.left : surface.canvas.width,
     region ? region.bottom - region.top : surface.canvas.height);
   for (const { blend, canvas } of layers.reverse()) {
     if (blend.layerVisible === false || blend.layerIsMask) continue;
-    compositeContext.globalAlpha = Math.max(0, Math.min(1, Number(blend.factor) || 0));
-    if (region) compositeContext.drawImage(canvas, region.left, region.top,
-      region.right - region.left, region.bottom - region.top,
-      region.left, region.top, region.right - region.left, region.bottom - region.top);
-    else compositeContext.drawImage(canvas, 0, 0);
+    const factor = Math.max(0, Math.min(1, Number(blend.factor) || 0));
+    if (!factor) continue;
+    const mode = blend.mode || 'mix';
+    const operation = mode === 'mix' ? 'source-over' : CANVAS_BLEND_MODES[mode];
+    if (operation) {
+      compositeContext.globalCompositeOperation = operation;
+      compositeContext.globalAlpha = factor;
+      if (region) compositeContext.drawImage(canvas, region.left, region.top,
+        region.right - region.left, region.bottom - region.top,
+        region.left, region.top, region.right - region.left, region.bottom - region.top);
+      else compositeContext.drawImage(canvas, 0, 0);
+      continue;
+    }
+    const left = region?.left ?? 0;
+    const top = region?.top ?? 0;
+    const width = region ? region.right - left : surface.canvas.width;
+    const height = region ? region.bottom - top : surface.canvas.height;
+    const basePixels = compositeContext.getImageData(left, top, width, height);
+    let scratch = surface.blendScratch;
+    if (!scratch) surface.blendScratch = scratch = newCanvas(width, height);
+    if (scratch.width < width) scratch.width = width;
+    if (scratch.height < height) scratch.height = height;
+    const scratchContext = scratch.getContext('2d');
+    scratchContext.clearRect(0, 0, width, height);
+    scratchContext.drawImage(canvas, left, top, width, height, 0, 0, width, height);
+    const topPixels = scratchContext.getImageData(0, 0, width, height).data;
+    const pixels = basePixels.data;
+    for (let offset = 0; offset < pixels.length; offset += 4) {
+      const alpha = topPixels[offset + 3] / 255 * factor;
+      if (!alpha) continue;
+      const base = [pixels[offset] / 255, pixels[offset + 1] / 255, pixels[offset + 2] / 255];
+      const topColor = [topPixels[offset] / 255, topPixels[offset + 1] / 255,
+        topPixels[offset + 2] / 255];
+      const blended = blendRgb(base, topColor, mode);
+      for (let channel = 0; channel < 3; channel++)
+        pixels[offset + channel] = (base[channel] * (1 - alpha) + blended[channel] * alpha) * 255;
+    }
+    compositeContext.putImageData(basePixels, left, top);
   }
   compositeContext.restore();
   return true;
