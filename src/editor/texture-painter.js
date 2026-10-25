@@ -20,7 +20,8 @@ import { combineWandMasks, wandSelectionMask } from './wand-selection.js';
 import { surfaceWandTopology } from './surface-wand-topology.js';
 import { lineStylePaths } from './line-style.js';
 import { scaleLayerRegion, selectionMaskForLayer, uvToLayerPixel } from './layer-space.js';
-import { projectGradient } from './gradient-projection.js';
+import { projectGradient, rasterizeProjectedUv } from './gradient-projection.js';
+import { createCurveTextureSampler, sampleCurveTexturePixel } from './curve-texture.js';
 
 function configureTextureSampling(texture, antialiasEnabled) {
   texture.magFilter = antialiasEnabled ? THREE.LinearFilter : THREE.NearestFilter;
@@ -952,6 +953,78 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
     return true;
   }
 
+  function applyCurveTexture(targetId, camera, viewport, points, image, options,
+    visibleUv, mirror = null) {
+    const parent = findSurface(targetId);
+    const surface = parent?.activePaint;
+    const face = getFaceTarget(targetId);
+    if (!surface || !face || !materialVisible(parent) || activeStroke || linePreview ||
+        filterSession || (selection && maskEnabled && selection.surface !== surface)) return false;
+    const sampler = createCurveTextureSampler(points, image, options);
+    if (!sampler) return false;
+    const { canvas, context } = surface;
+    const mask = selection && maskEnabled ? selectionMaskForLayer(selection, canvas)?.alpha : null;
+    const before = context.getImageData(0, 0, canvas.width, canvas.height);
+    const after = new ImageData(new Uint8ClampedArray(before.data), canvas.width, canvas.height);
+    const bounds = { left: canvas.width, top: canvas.height, right: 0, bottom: 0 };
+    const radius = Math.max(1, options.size) / 2 + (options.antialias ? 4 : 1);
+    const screenBounds = { left: Math.min(...points.map((point) => point.x)) - radius,
+      right: Math.max(...points.map((point) => point.x)) + radius,
+      top: Math.min(...points.map((point) => point.y)) - radius,
+      bottom: Math.max(...points.map((point) => point.y)) + radius };
+    let changed = false;
+    const project = (viewCamera, visibility, plane, side, includePlane, flipped) =>
+      rasterizeProjectedUv({ mesh: face.mesh, materialIndex: face.materialIndex,
+        camera: viewCamera, width: canvas.width, height: canvas.height,
+        viewportWidth: viewport.width, viewportHeight: viewport.height,
+        visibleUv: visibility, selection: mask, mirrorPlane: plane, side, includePlane,
+        screenDerivatives: Boolean(options.antialias),
+        screenBounds: flipped ? { ...screenBounds,
+          left: viewport.width - screenBounds.right,
+          right: viewport.width - screenBounds.left } : screenBounds },
+      (pixel, sx, sy, derivatives) => {
+        const footprint = flipped && derivatives ?
+          [-derivatives[0], derivatives[1], -derivatives[2], derivatives[3]] : derivatives;
+        const color = sampleCurveTexturePixel(sampler,
+          flipped ? viewport.width - sx : sx, sy, footprint);
+        if (!color) return;
+        const sourceAlpha = color[3] / 255 * (mask ? mask[pixel] / 255 : 1);
+        if (sourceAlpha <= 0) return;
+        const offset = pixel * 4;
+        const destAlpha = after.data[offset + 3] / 255;
+        const resultAlpha = sourceAlpha + destAlpha * (1 - sourceAlpha);
+        for (let channel = 0; channel < 3; channel++) {
+          after.data[offset + channel] = Math.round((color[channel] * sourceAlpha +
+            after.data[offset + channel] * destAlpha * (1 - sourceAlpha)) / resultAlpha);
+        }
+        after.data[offset + 3] = Math.round(resultAlpha * 255);
+        changed = true;
+        const x = pixel % canvas.width, y = (pixel / canvas.width) | 0;
+        bounds.left = Math.min(bounds.left, x);
+        bounds.top = Math.min(bounds.top, y);
+        bounds.right = Math.max(bounds.right, x + 1);
+        bounds.bottom = Math.max(bounds.bottom, y + 1);
+      });
+    project(camera, visibleUv, mirror?.plane ?? null, mirror?.side ?? null, true, false);
+    if (mirror) project(mirror.camera, mirror.visibleUv, mirror.plane, -mirror.side, false, true);
+    if (!changed) return false;
+    const width = bounds.right - bounds.left, height = bounds.bottom - bounds.top;
+    const beforePatch = context.createImageData(width, height);
+    const afterPatch = context.createImageData(width, height);
+    for (let row = 0; row < height; row++) {
+      const from = ((bounds.top + row) * canvas.width + bounds.left) * 4;
+      beforePatch.data.set(before.data.subarray(from, from + width * 4), row * width * 4);
+      afterPatch.data.set(after.data.subarray(from, from + width * 4), row * width * 4);
+    }
+    commitFloatingSelection();
+    context.putImageData(afterPatch, bounds.left, bounds.top);
+    surface.requestComposite(bounds);
+    undoStack.push({ patches: [{ surface, x: bounds.left, y: bounds.top,
+      before: beforePatch, after: afterPatch }] });
+    redoStack = [];
+    return true;
+  }
+
   function sample(hit) {
     const surface = hit?.uv ? surfaces.get(hit.object)?.slots[hit.face?.materialIndex ?? 0] : null;
     if (!surface) return null;
@@ -1498,7 +1571,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
     }
   }
 
-  return { prepare, clear, paint, fill, sample, applyGradient, beginLine, beginThroughLine,
+  return { prepare, clear, paint, fill, sample, applyGradient, applyCurveTexture, beginLine, beginThroughLine,
     updateLine, commitLine, cancelLine,
     canPaintAt: (hit) => {
       const surface = surfaceAt(hit);

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { projectGradient } from '../src/editor/gradient-projection.js';
+import { projectGradient, rasterizeProjectedUv } from '../src/editor/gradient-projection.js';
 import { reflectedCamera } from '../src/editor/model-mirror.js';
 
 function fixture() {
@@ -22,6 +22,19 @@ test('gradient projects its endpoints across the UV image', () => {
   assert.equal(covered[8 * 16 + 2], 1);
   assert.equal(covered[8 * 16 + 13], 1);
   assert.ok(values[8 * 16 + 2] < values[8 * 16 + 13]);
+});
+
+test('projected UV raster reports the screen footprint of a texel', () => {
+  const { mesh, camera } = fixture();
+  let footprint = null;
+  rasterizeProjectedUv({ mesh, materialIndex: 0, camera, width: 10, height: 10,
+    viewportWidth: 100, viewportHeight: 100, screenDerivatives: true },
+  (pixel, sx, sy, derivatives) => {
+    if (pixel === 5 * 10 + 5) footprint = derivatives;
+  });
+  assert.ok(footprint);
+  assert.ok(Math.abs(footprint[0] - 10) < 1e-5);
+  assert.ok(Math.abs(footprint[3] - 10) < 1e-5);
 });
 
 test('gradient respects the selected pixels and selected material', () => {

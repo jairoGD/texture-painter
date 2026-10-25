@@ -95,6 +95,30 @@ export function numberControl({ label, value, min = 0, max = 4096, step = 1,
   ]);
 }
 
+export function imageImport({ label, value, onChange }) {
+  const input = element('input', { attributes: { type: 'file', accept: 'image/*',
+    'aria-label': label } });
+  input.hidden = true;
+  const name = element('span', { className: 'ui-image-import__name',
+    text: value?.name || 'No image selected' });
+  input.addEventListener('change', async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const bitmap = await createImageBitmap(file);
+      bitmap.close();
+      const reader = new FileReader();
+      reader.onload = () => onChange?.({ name: file.name, dataUrl: reader.result });
+      reader.readAsDataURL(file);
+    } catch { name.textContent = 'Could not open image'; }
+  });
+  const pick = button({ label: value ? 'Change image' : 'Import image',
+    onClick: () => input.click() });
+  return element('div', { className: 'ui-image-import' }, [
+    element('span', { text: label }), name, pick, input
+  ]);
+}
+
 export function colorPicker({ label, value = '#000000', onChange }) {
   const output = element('output', { className: 'ui-color-picker__value', text: value.toUpperCase() });
   const input = element('input', {
@@ -226,6 +250,7 @@ const controlTypes = new Map([
   ['checkbox', checkbox],
   ['select', selectControl],
   ['number', numberControl],
+  ['imageImport', imageImport],
   ['toolGroup', toolGroup],
   ['notice', notice]
 ]);

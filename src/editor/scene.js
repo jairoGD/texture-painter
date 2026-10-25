@@ -533,6 +533,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   }
 
   function commitCurve() {
+    if (toolSettings.curve?.lineStyle === 'texture') return commitCurveTexture();
     if (!curveStartHit || !painter.beginLine(curveStartHit, toolSettings.curve,
       mirrorHitAt(curveStartHit), curveMode, true)) return false;
     const paths = styledPolylinePaths(curveScreenPoints(curvePoints, 2), toolSettings.curve);
@@ -546,6 +547,77 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     });
     painter.updateLine([...hits, ...(mirrorEnabled ? hits.map((path) => path.map(mirrorHitAt)) : [])]);
     return painter.commitLine();
+  }
+
+  const curveImageCache = new Map();
+  async function curveImageData(image) {
+    if (!image?.dataUrl) return null;
+    if (!curveImageCache.has(image.dataUrl)) {
+      const pending = new Promise((resolve, reject) => {
+        const source = new Image();
+        source.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = source.naturalWidth;
+          canvas.height = source.naturalHeight;
+          const context = canvas.getContext('2d', { willReadFrequently: true });
+          context.drawImage(source, 0, 0);
+          resolve(context.getImageData(0, 0, canvas.width, canvas.height));
+        };
+        source.onerror = () => reject(new Error('Could not decode curve image'));
+        source.src = image.dataUrl;
+      });
+      curveImageCache.set(image.dataUrl, pending);
+      pending.catch(() => curveImageCache.delete(image.dataUrl));
+    }
+    return curveImageCache.get(image.dataUrl);
+  }
+
+  async function commitCurveTexture() {
+    const settings = { ...toolSettings.curve };
+    const targetId = selectedTargetId;
+    const startHit = curveStartHit;
+    const points = curveScreenPoints(curvePoints, 2, 2);
+    const rect = renderer.domElement.getBoundingClientRect();
+    const localPoints = points.map((point) =>
+      ({ x: point.x - rect.left, y: point.y - rect.top }));
+    const image = await curveImageData(settings.textureImage);
+    if (!image || !startHit || !painter.isMaterialVisible(targetId) ||
+        targetId !== selectedTargetId) return false;
+    const face = painter.getFaceTarget(targetId);
+    if (!face) return false;
+    const viewport = { width: curveCanvas.width, height: curveCanvas.height };
+    const captureFor = (viewCamera) => captureVisibleUv(renderer, viewCamera,
+      { object: face.mesh, face: { materialIndex: face.materialIndex } }, paintMeshes);
+    const visibilityFor = (capture) => {
+      const tolerance = 3 + 3 * textureResolution /
+        Math.max(1, Math.min(capture.width, capture.height));
+      return (u, v, sx, sy) => {
+        const expectedX = u * textureResolution, expectedY = v * textureResolution;
+        const centerX = Math.floor(sx), centerY = Math.floor(sy);
+        for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) {
+          const uv = decodeVisibleUv(capture.buffer, capture.width, capture.height,
+            centerX + ox, centerY + oy);
+          const distanceX = Math.abs(uv?.x - expectedX);
+          const distanceY = Math.abs(uv?.y - expectedY);
+          if (uv && Math.min(distanceX, textureResolution - distanceX) <= tolerance &&
+              Math.min(distanceY, textureResolution - distanceY) <= tolerance) return true;
+        }
+        return false;
+      };
+    };
+    let mirror = null;
+    if (mirrorEnabled) {
+      const point = resolveMirrorHit.planePoint;
+      const normal = resolveMirrorHit.planeNormal;
+      const side = Math.sign(startHit.point.clone().sub(point).dot(normal)) || 1;
+      const mirrorCamera = reflectedCamera(camera, point, normal);
+      mirror = { camera: mirrorCamera, side, plane: { point, normal },
+        visibleUv: visibilityFor(captureFor(mirrorCamera)) };
+    }
+    return painter.applyCurveTexture(targetId, camera, viewport, localPoints, image,
+      { size: settings.size, opacity: settings.opacity,
+        antialias: settings.antialias, seamless: settings.seamlessTexture },
+      visibilityFor(captureFor(camera)), mirror);
   }
 
   function queueDraw(event) {
@@ -936,7 +1008,13 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         if (curveStep === 2) {
           curveCommitted = commitCurve();
           resetCurve();
-          onSelectionChanged?.(curveCommitted ? 'Curve painted' : 'Curve unchanged');
+          if (curveCommitted instanceof Promise) {
+            curveCommitted.then((changed) => {
+              onSelectionChanged?.(changed ? 'Curve painted' : 'Curve unchanged');
+              if (changed) onContentChanged?.();
+            }).catch((error) => onSelectionChanged?.(`Curve failed: ${error.message}`));
+            curveCommitted = false;
+          } else onSelectionChanged?.(curveCommitted ? 'Curve painted' : 'Curve unchanged');
         } else {
           curveStep++;
           onSelectionChanged?.(curveStep === 1 ?
