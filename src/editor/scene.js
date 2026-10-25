@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { createTexturePainter } from './texture-painter.js';
 import { captureVisibleUv, decodeVisibleUv, projectLassoToUv } from './screen-lasso.js';
 import { captureVisibleFaces } from './screen-face-selection.js';
@@ -9,6 +10,7 @@ import { sampleScreenStroke } from './surface-stroke.js';
 import { sampleThroughLine } from './through-line.js';
 import { lineStylePaths, styledPolylinePaths } from './line-style.js';
 import { curveScreenPoints } from './curve-path.js';
+import { stampPlacement, stampScreenSize } from './stamp-texture.js';
 import { preciseCurveScreenPoints } from './precise-curve.js';
 import { buildSurfaceCurvePath } from './surface-curve-path.js';
 import { createModelMirror, reflectedCamera } from './model-mirror.js';
@@ -227,7 +229,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   let modelSource = { kind: 'starter' };
   let modelFile = null;
   scene.add(model);
-  const loader = new GLTFLoader();
+  const initialModelSize = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3());
+  let stampModelExtent = Math.max(initialModelSize.x, initialModelSize.y, initialModelSize.z);
+  const gltfLoader = new GLTFLoader();
+  const fbxLoader = new FBXLoader();
   const painter = createTexturePainter(renderer, onGraphHistoryApplied, (entry, action) => {
     const state = entry.curveDraft?.[action === 'undo' ? 'before' : 'after'] ??
       (action === 'undo' ? entry.curveHistory : null);
@@ -265,6 +270,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   let gradientStart = null;
   let gradientEnd = null;
   let gradientTargetId = null;
+  let stampStart = null;
+  let stampEnd = null;
+  let stampStartHit = null;
+  let stampTargetId = null;
   let curveStep = 0;
   let curvePoints = [];
   let curveStartHit = null;
@@ -360,6 +369,51 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     for (const point of [gradientStart, gradientEnd]) {
       context.beginPath(); context.arc(point.x, point.y, 4, 0, Math.PI * 2); context.fill();
     }
+  }
+
+  let stampPreviewUrl = null;
+  let stampPreviewImage = null;
+  function projectedStampSettings(settings, hit) {
+    return { ...settings, size: stampScreenSize(settings.size, stampModelExtent,
+      camera, hit.point, gradientCanvas.height) };
+  }
+  function renderStampPreview() {
+    const context = gradientCanvas.getContext('2d');
+    context.clearRect(0, 0, gradientCanvas.width, gradientCanvas.height);
+    if (!stampStart || !stampEnd) return;
+    const settings = projectedStampSettings(toolSettings.stamp, stampStartHit);
+    const url = settings?.image?.dataUrl;
+    if (url !== stampPreviewUrl) {
+      stampPreviewUrl = url;
+      stampPreviewImage = null;
+      if (url) {
+        const source = new Image();
+        source.onload = () => {
+          if (stampPreviewUrl === url) {
+            stampPreviewImage = source;
+            renderStampPreview();
+          }
+        };
+        source.src = url;
+      }
+    }
+    const image = stampPreviewImage ?? { width: 1, height: 1 };
+    const placement = stampPlacement(stampStart, stampEnd, image, settings);
+    if (!placement) return;
+    context.save();
+    context.translate(placement.center.x, placement.center.y);
+    context.rotate(placement.angle);
+    context.imageSmoothingEnabled = settings.antialias !== false;
+    context.globalAlpha = 0.75 * (settings.opacity ?? 100) / 100;
+    if (stampPreviewImage) context.drawImage(stampPreviewImage,
+      -placement.width / 2, -placement.height / 2, placement.width, placement.height);
+    context.globalAlpha = 1;
+    context.strokeStyle = '#70bfff';
+    context.lineWidth = 1;
+    context.setLineDash([5, 4]);
+    context.strokeRect(-placement.width / 2, -placement.height / 2,
+      placement.width, placement.height);
+    context.restore();
   }
 
   function commitGradient() {
@@ -676,7 +730,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     const mirror = mirrorEnabled ? { point: resolveMirrorHit.planePoint,
       normal: resolveMirrorHit.planeNormal } : null;
     if (options.lineStyle === 'texture' && !options.textureImage?.dataUrl) return false;
-    if (options.lineStyle === 'texture') return curveImageData(options.textureImage)
+    if (options.lineStyle === 'texture') return importedImageData(options.textureImage)
       .then((image) => image && targetId === selectedTargetId ?
         painter.applySurfaceCurve(targetId, path, image, options, mirror, history) : false);
     return painter.applySurfaceCurve(targetId, path, null, options, mirror, history);
@@ -716,10 +770,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     }
   }
 
-  const curveImageCache = new Map();
-  async function curveImageData(image) {
+  const importedImageCache = new Map();
+  async function importedImageData(image) {
     if (!image?.dataUrl) return null;
-    if (!curveImageCache.has(image.dataUrl)) {
+    if (!importedImageCache.has(image.dataUrl)) {
       const pending = new Promise((resolve, reject) => {
         const source = new Image();
         source.onload = () => {
@@ -733,17 +787,15 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         source.onerror = () => reject(new Error('Could not decode texture image'));
         source.src = image.dataUrl;
       });
-      curveImageCache.set(image.dataUrl, pending);
-      pending.catch(() => curveImageCache.delete(image.dataUrl));
+      importedImageCache.set(image.dataUrl, pending);
+      pending.catch(() => importedImageCache.delete(image.dataUrl));
     }
-    return curveImageCache.get(image.dataUrl);
+    return importedImageCache.get(image.dataUrl);
   }
 
-  async function commitScreenTexture(settings, targetId, startHit, points, through = false) {
-    const rect = renderer.domElement.getBoundingClientRect();
-    const localPoints = points.map((point) =>
-      ({ x: point.x - rect.left, y: point.y - rect.top }));
-    const image = await curveImageData(settings.textureImage);
+  async function commitProjectedImage(imageRef, targetId, startHit, points,
+    through, paintImage) {
+    const image = await importedImageData(imageRef);
     if (!image || (!startHit && !through) || !painter.isMaterialVisible(targetId) ||
         targetId !== selectedTargetId) return false;
     const face = painter.getFaceTarget(targetId);
@@ -788,11 +840,29 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       mirror = { camera: mirrorCamera, side, plane: { point, normal },
         visibleUv: through ? null : visibilityFor(captureFor(mirrorCamera)) };
     }
-    return painter.applyCurveTexture(targetId, camera, viewport, localPoints, image,
-      { size: settings.size, opacity: settings.opacity,
-        antialias: settings.antialias, seamless: settings.seamlessTexture,
-        flip: settings.flipTexture },
-      through ? null : visibilityFor(captureFor(camera)), mirror);
+    return paintImage(image, viewport, through ? null : visibilityFor(captureFor(camera)), mirror);
+  }
+
+  function commitScreenTexture(settings, targetId, startHit, points, through = false) {
+    const rect = renderer.domElement.getBoundingClientRect();
+    const localPoints = points.map((point) =>
+      ({ x: point.x - rect.left, y: point.y - rect.top }));
+    return commitProjectedImage(settings.textureImage, targetId, startHit, points,
+      through, (image, viewport, visibleUv, mirror) =>
+        painter.applyCurveTexture(targetId, camera, viewport, localPoints, image,
+          { size: settings.size, opacity: settings.opacity,
+            antialias: settings.antialias, seamless: settings.seamlessTexture,
+            flip: settings.flipTexture }, visibleUv, mirror));
+  }
+
+  function commitStamp(settings, targetId, startHit, start, end) {
+    const projectedSettings = projectedStampSettings(settings, startHit);
+    return commitProjectedImage(settings.image, targetId, startHit, [start, end],
+      false, (image, viewport, visibleUv, mirror) => {
+        const placement = stampPlacement(start, end, image, projectedSettings);
+        return painter.applyStamp(targetId, camera, viewport, image, placement,
+          projectedSettings, visibleUv, mirror);
+      });
   }
 
   function commitCurveTexture(precisePoints = null, preciseStartHit = null) {
@@ -1092,6 +1162,22 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       gradientEnd = gradientStart;
       gradientTargetId = selectedTargetId;
       renderGradientGuide();
+    } else if (activeTool === 'stamp') {
+      if (!toolSettings.stamp?.image?.dataUrl) {
+        activePointer = null;
+        onSelectionChanged?.('Import an image to use Stamp');
+        return;
+      }
+      if (!painter.canPaintAt(hit) || painter.targetIdAt(hit) !== selectedTargetId) {
+        activePointer = null;
+        return;
+      }
+      pointerAction = 'stamp';
+      stampStart = viewportPoint(event);
+      stampEnd = stampStart;
+      stampStartHit = hit;
+      stampTargetId = selectedTargetId;
+      renderStampPreview();
     } else if (activeTool === 'line') {
       if (event.ctrlKey) {
         if (toolSettings.line?.lineStyle !== 'texture')
@@ -1143,6 +1229,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       gradientEnd = viewportPoint(event);
       renderGradientGuide();
     }
+    else if (pointerAction === 'stamp' && toolSettings.stamp?.stroke) {
+      stampEnd = viewportPoint(event);
+      renderStampPreview();
+    }
     else if (pointerAction === 'preciseCurve') queueDraw(event);
     else if (pointerAction === 'moveSelection' || pointerAction === 'curve') queueDraw(event);
     else if (activeTool === 'line' || activeTool === 'brush' ||
@@ -1159,6 +1249,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     pendingDraw = null;
     let curveCommitted = false;
     let gradientCommitted = false;
+    let stampPending = false;
     let lineTexturePending = false;
     if (event.type === 'pointerup') {
       if (pointerAction === 'moveSelection') {
@@ -1211,6 +1302,23 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       }
       gradientStart = gradientEnd = gradientTargetId = null;
       renderGradientGuide();
+    } else if (pointerAction === 'stamp') {
+      if (event.type === 'pointerup') {
+        if (toolSettings.stamp?.stroke) stampEnd = viewportPoint(event);
+        const settings = { ...toolSettings.stamp };
+        const targetId = stampTargetId;
+        const startHit = stampStartHit;
+        const start = stampStart;
+        const end = stampEnd;
+        stampPending = true;
+        if (!settings.stroke || Math.hypot(end.x - start.x, end.y - start.y) >= 2)
+          commitStamp(settings, targetId, startHit, start, end).then((changed) => {
+            onSelectionChanged?.(changed ? 'Image stamped' : 'Stamp unchanged');
+            if (changed) onContentChanged?.();
+          }).catch((error) => onSelectionChanged?.(`Stamp failed: ${error.message}`));
+      }
+      stampStart = stampEnd = stampStartHit = stampTargetId = null;
+      renderStampPreview();
     } else if (pointerAction === 'preciseCurve') {
       if (event.type === 'pointercancel') {
         if (preciseDragOriginal) preciseAnchors[preciseDragIndex] = preciseDragOriginal;
@@ -1285,7 +1393,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
     if (movedSelection || curveCommitted || gradientCommitted ||
         (activeTool !== 'eyedropper' && activeTool !== 'wand' &&
-          activeTool !== 'curve' && activeTool !== 'gradient' && !lineTexturePending)) {
+          activeTool !== 'curve' && activeTool !== 'gradient' &&
+          activeTool !== 'stamp' && !stampPending && !lineTexturePending)) {
       onContentChanged?.();
     }
   }
@@ -1317,6 +1426,16 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       activePointer = null; pointerAction = null; strokeRect = null;
       gradientStart = gradientEnd = gradientTargetId = null;
       renderGradientGuide();
+      if (pointerId !== null && renderer.domElement.hasPointerCapture(pointerId))
+        renderer.domElement.releasePointerCapture(pointerId);
+      event.preventDefault();
+      return;
+    }
+    if (pointerAction === 'stamp') {
+      const pointerId = activePointer;
+      activePointer = null; pointerAction = null; strokeRect = null;
+      stampStart = stampEnd = stampStartHit = stampTargetId = null;
+      renderStampPreview();
       if (pointerId !== null && renderer.domElement.hasPointerCapture(pointerId))
         renderer.domElement.releasePointerCapture(pointerId);
       event.preventDefault();
@@ -1366,6 +1485,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     if (bounds.isEmpty()) return;
     const center = bounds.getCenter(new THREE.Vector3());
     const size = bounds.getSize(new THREE.Vector3());
+    stampModelExtent = Math.max(size.x, size.y, size.z);
     const radius = Math.max(size.length() * 0.5, 0.5);
     controls.target.copy(center);
     camera.position.copy(center).add(new THREE.Vector3(radius * 1.65, radius * 1.15, radius * 1.9));
@@ -1375,36 +1495,28 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     controls.update();
   }
 
-  function importGlb(file, referenceId = crypto.randomUUID()) {
-    if (!file || !/\.glb$/i.test(file.name)) return Promise.reject(new Error('Select a .glb file.'));
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error('Could not read the file.'));
-      reader.onload = () => {
-        loader.parse(reader.result, '', (gltf) => {
-          const next = gltf.scene;
-          if (!next.children.length) return reject(new Error('The GLB contains no visible scene.'));
-          let paintableMeshes;
-          resetCurve(true);
-          try { paintableMeshes = painter.prepare(next); }
-          catch (error) { return reject(error); }
-          clearWarpTarget();
-          scene.remove(model);
-          lassoSourceHit = null; lassoPath = []; renderLassoPath();
-          model = next;
-          paintMeshes = painter.getMeshes();
-          resolveMirrorHit = createModelMirror(model, paintMeshes);
-          modelSource = { kind: 'glb', referenceId, name: file.name,
-            size: file.size, lastModified: file.lastModified };
-          modelFile = file;
-          scene.add(model);
-          frame(model);
-          onGraphTargetsChanged?.(painter.getGraphTargets());
-          resolve({ model: next, paintableMeshes });
-        }, reject);
-      };
-      reader.readAsArrayBuffer(file);
-    });
+  async function importModel(file, referenceId = crypto.randomUUID()) {
+    const kind = file?.name.match(/\.(glb|fbx)$/i)?.[1]?.toLowerCase();
+    if (!kind) throw new Error('Select a .glb or .fbx file.');
+    const data = await file.arrayBuffer();
+    const next = kind === 'glb' ? (await gltfLoader.parseAsync(data, '')).scene :
+      fbxLoader.parse(data, '');
+    if (!next.children.length) throw new Error(`The ${kind.toUpperCase()} contains no visible scene.`);
+    resetCurve(true);
+    const paintableMeshes = painter.prepare(next);
+    clearWarpTarget();
+    scene.remove(model);
+    lassoSourceHit = null; lassoPath = []; renderLassoPath();
+    model = next;
+    paintMeshes = painter.getMeshes();
+    resolveMirrorHit = createModelMirror(model, paintMeshes);
+    modelSource = { kind, referenceId, name: file.name,
+      size: file.size, lastModified: file.lastModified };
+    modelFile = file;
+    scene.add(model);
+    frame(model);
+    onGraphTargetsChanged?.(painter.getGraphTargets());
+    return { model: next, paintableMeshes };
   }
 
   function newProject(resolution = 1024) {
@@ -1443,7 +1555,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     if (saved.model.kind === 'starter') newProject(textureResolution);
     else {
       if (!file) throw new Error(`Model not found: ${saved.model.name}`);
-      await importGlb(file, saved.model.referenceId);
+      await importModel(file, saved.model.referenceId);
     }
     await painter.restoreProjectTextures(saved.textures);
     painter.restoreMaterialVisibilityState(saved.view?.materials);
@@ -1475,6 +1587,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     curveCanvas.width = width; curveCanvas.height = height;
     gradientCanvas.width = width; gradientCanvas.height = height;
     renderGradientGuide();
+    if (pointerAction === 'stamp') renderStampPreview();
     renderCurvePreview();
     if (activeTool === 'line' && toolSettings.line?.lineStyle === 'texture')
       renderLineTexturePreview();
@@ -1512,7 +1625,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   }
 
   return {
-    importGlb,
+    importModel,
     newProject, exportProjectData, restoreProjectData,
     frame: () => frame(model),
     setGridVisible: (visible) => { grid.visible = visible; },
@@ -1534,6 +1647,14 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     setLightingMode: (mode) => { currentLightingMode = mode; painter.setLightingMode(mode); },
     setTool: (tool) => {
       if (activeTool === 'curve' && tool !== 'curve') resetCurve(true);
+      if (activeTool === 'stamp' && tool !== 'stamp' && pointerAction === 'stamp') {
+        const pointerId = activePointer;
+        activePointer = null; pointerAction = null; strokeRect = null;
+        stampStart = stampEnd = stampStartHit = stampTargetId = null;
+        renderStampPreview();
+        if (pointerId !== null && renderer.domElement.hasPointerCapture(pointerId))
+          renderer.domElement.releasePointerCapture(pointerId);
+      }
       if (activeTool === 'line' && tool !== 'line' && lineEndScreen)
         clearLineTexturePreview();
       if (tool !== 'faces' && pointerAction === 'faces') {
@@ -1558,6 +1679,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       if (tool === 'curve' && toolSettings.curve?.curveMethod !== settings.curveMethod)
         resetCurve(true);
       toolSettings[tool] = { ...settings };
+      if (tool === 'stamp' && pointerAction === 'stamp') renderStampPreview();
       if (tool === 'curve' && (curvePoints.length || preciseAnchors.length))
         renderCurvePreview();
       if (tool === activeTool && (tool === 'lasso' || tool === 'wand' || tool === 'faces')) {

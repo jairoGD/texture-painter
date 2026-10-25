@@ -28,6 +28,10 @@ export function createLightGizmo({ onChange, onEnd, onReset }) {
     root.setAttribute('aria-label', `Rotate scene lighting. Horizontal ${Math.round(next.yaw * 180 / Math.PI)} degrees, vertical ${Math.round(next.pitch * 180 / Math.PI)} degrees.`);
   }
 
+  function setVisible(visible) {
+    root.hidden = !visible;
+  }
+
   root.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -80,5 +84,5 @@ export function createLightGizmo({ onChange, onEnd, onReset }) {
     onEnd?.();
   });
   setState(state);
-  return { element: root, setState };
+  return { element: root, setState, setVisible };
 }

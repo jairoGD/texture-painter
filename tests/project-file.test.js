@@ -16,5 +16,17 @@ test('a saved GLB project keeps a file reference without model bytes', () => {
 
 test('a GLB project needs a model reference for relinking', () => {
   assert.throws(() => parseProject(project({ kind: 'glb', name: 'Character.glb' })),
-    /valid GLB reference/);
+    /valid model reference/);
+});
+
+test('a saved FBX project keeps a file reference without model bytes', () => {
+  const saved = parseProject(project({ kind: 'fbx', referenceId: 'model-2', name: 'Character.fbx',
+    size: 54321 }));
+  assert.equal(saved.scene.model.referenceId, 'model-2');
+  assert.equal(saved.scene.model.data, undefined);
+});
+
+test('an FBX project needs a model reference for relinking', () => {
+  assert.throws(() => parseProject(project({ kind: 'fbx', name: 'Character.fbx' })),
+    /valid model reference/);
 });

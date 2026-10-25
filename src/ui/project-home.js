@@ -1,5 +1,5 @@
 import { TEXTURE_RESOLUTIONS } from '../editor/texture-resolution.js';
-import { GLB_PICKER } from './model-relink.js';
+import { MODEL_ACCEPT, MODEL_PICKER } from './model-relink.js';
 import { button, element } from './index.js';
 import './project-home.css';
 
@@ -14,10 +14,10 @@ export function createProjectHome({ onNew, onOpen, onRecent, onRemoveRecent }) {
     attributes: { 'aria-label': 'Texture resolution' } },
   TEXTURE_RESOLUTIONS.map((size) => element('option', { text: `${size} × ${size}`,
     attributes: { value: size, selected: size === 1024 ? '' : undefined } })));
-  const modelInput = element('input', { attributes: { type: 'file', accept: '.glb,model/gltf-binary', hidden: '' } });
+  const modelInput = element('input', { attributes: { type: 'file', accept: MODEL_ACCEPT, hidden: '' } });
   const modelName = element('span', { className: 'project-home__model-name', text: 'No model selected' });
   let model = null;
-  const chooseModel = button({ label: 'Choose GLB', onClick: selectModel });
+  const chooseModel = button({ label: 'Choose model', onClick: selectModel });
   const create = button({ label: 'Create Project', variant: 'primary', onClick: createProject });
   const back = button({ label: 'Back', variant: 'ghost', onClick: showHome });
   const home = element('div', { className: 'project-home__home' }, [
@@ -54,8 +54,8 @@ export function createProjectHome({ onNew, onOpen, onRecent, onRemoveRecent }) {
   ]);
 
   function setModel(file, handle = null) {
-    if (!file || !/\.glb$/i.test(file.name)) {
-      setMessage('Choose a .glb model.');
+    if (!file || !/\.(glb|fbx)$/i.test(file.name)) {
+      setMessage('Choose a .glb or .fbx model.');
       return;
     }
     model = { file, handle };
@@ -66,7 +66,7 @@ export function createProjectHome({ onNew, onOpen, onRecent, onRemoveRecent }) {
   async function selectModel() {
     if (!window.showOpenFilePicker) { modelInput.click(); return; }
     try {
-      const [handle] = await window.showOpenFilePicker(GLB_PICKER);
+      const [handle] = await window.showOpenFilePicker(MODEL_PICKER);
       if (handle) setModel(await handle.getFile(), handle);
     } catch (error) {
       if (error.name !== 'AbortError') setMessage(error.message || 'Could not open model.');
@@ -79,7 +79,7 @@ export function createProjectHome({ onNew, onOpen, onRecent, onRemoveRecent }) {
   async function createProject() {
     const name = nameInput.value.trim();
     if (!name) { setMessage('Enter a project name.'); nameInput.focus(); return; }
-    if (!model) { setMessage('Choose a GLB model.'); chooseModel.focus(); return; }
+    if (!model) { setMessage('Choose a GLB or FBX model.'); chooseModel.focus(); return; }
     create.disabled = true;
     setMessage('');
     try { await onNew({ name, resolution: Number(resolutionInput.value), model }); }

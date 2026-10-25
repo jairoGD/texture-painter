@@ -1,16 +1,18 @@
 import { button, element } from './index.js';
 import './model-relink.css';
 
-export const GLB_PICKER = { id: 'texture-painter-model',
-  types: [{ description: 'GLB model', accept: { 'model/gltf-binary': ['.glb'] } }],
+export const MODEL_ACCEPT = '.glb,.fbx';
+export const MODEL_PICKER = { id: 'texture-painter-model',
+  types: [{ description: '3D model (GLB or FBX)', accept: {
+    'model/gltf-binary': ['.glb'], 'application/octet-stream': ['.fbx'] } }],
   excludeAcceptAllOption: true };
 
 export function createModelRelinkDialog() {
   const name = element('strong', { className: 'model-relink__name' });
   const message = element('p', { className: 'model-relink__message' });
-  const fileInput = element('input', { attributes: { type: 'file', accept: '.glb,model/gltf-binary', hidden: '' } });
+  const fileInput = element('input', { attributes: { type: 'file', accept: MODEL_ACCEPT, hidden: '' } });
   const retry = button({ label: 'Try saved location', variant: 'ghost' });
-  const browse = button({ label: 'Locate GLB', variant: 'primary' });
+  const browse = button({ label: 'Locate model', variant: 'primary' });
   const cancel = button({ label: 'Cancel', variant: 'ghost' });
   const root = element('div', { className: 'model-relink', attributes: { hidden: '' } }, [
     element('section', { className: 'model-relink__card', attributes: {
@@ -33,8 +35,8 @@ export function createModelRelinkDialog() {
     resolve?.(result);
   }
   function accept(file, handle = null) {
-    if (!file || !/\.glb$/i.test(file.name)) {
-      message.textContent = 'Choose a .glb file.';
+    if (!file || !/\.(glb|fbx)$/i.test(file.name)) {
+      message.textContent = 'Choose a .glb or .fbx file.';
       return;
     }
     finish({ file, handle });
@@ -48,16 +50,16 @@ export function createModelRelinkDialog() {
         throw new Error('Access to the saved file was not granted.');
       accept(await savedHandle.getFile(), savedHandle);
     } catch {
-      message.textContent = 'The saved file is unavailable. Locate the GLB manually.';
+      message.textContent = 'The saved file is unavailable. Locate the model manually.';
     }
   });
   browse.addEventListener('click', async () => {
     if (!window.showOpenFilePicker) { fileInput.click(); return; }
     try {
-      const [handle] = await window.showOpenFilePicker(GLB_PICKER);
+      const [handle] = await window.showOpenFilePicker(MODEL_PICKER);
       if (handle) accept(await handle.getFile(), handle);
     } catch (error) {
-      if (error.name !== 'AbortError') message.textContent = error.message || 'Could not open the GLB.';
+      if (error.name !== 'AbortError') message.textContent = error.message || 'Could not open the model.';
     }
   });
   fileInput.addEventListener('change', () => accept(fileInput.files?.[0]));
@@ -66,7 +68,7 @@ export function createModelRelinkDialog() {
   function prompt(modelName, handle = null) {
     if (resolvePending) finish(null);
     name.textContent = modelName;
-    message.textContent = 'Locate the original GLB to restore this project.';
+    message.textContent = 'Locate the original GLB or FBX to restore this project.';
     savedHandle = handle;
     retry.hidden = !handle;
     root.hidden = false;

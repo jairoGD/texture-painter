@@ -22,6 +22,7 @@ import { lineStylePaths } from './line-style.js';
 import { scaleLayerRegion, selectionMaskForLayer, uvToLayerPixel } from './layer-space.js';
 import { projectGradient, rasterizeProjectedUv } from './gradient-projection.js';
 import { createCurveTextureSampler, sampleCurveTexturePixel } from './curve-texture.js';
+import { createStampTextureSampler } from './stamp-texture.js';
 import { projectSurfaceCurve } from './surface-curve-paint.js';
 
 function configureTextureSampling(texture, antialiasEnabled) {
@@ -957,23 +958,41 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
 
   function applyCurveTexture(targetId, camera, viewport, points, image, options,
     visibleUv, mirror = null) {
-    const parent = findSurface(targetId);
-    const surface = parent?.activePaint;
-    const face = getFaceTarget(targetId);
-    if (!surface || !face || !materialVisible(parent) || activeStroke || linePreview ||
-        filterSession || (selection && maskEnabled && selection.surface !== surface)) return false;
     const sampler = createCurveTextureSampler(points, image, options);
     if (!sampler) return false;
-    const { canvas, context } = surface;
-    const mask = selection && maskEnabled ? selectionMaskForLayer(selection, canvas)?.alpha : null;
-    const before = context.getImageData(0, 0, canvas.width, canvas.height);
-    const after = new ImageData(new Uint8ClampedArray(before.data), canvas.width, canvas.height);
-    const bounds = { left: canvas.width, top: canvas.height, right: 0, bottom: 0 };
     const radius = Math.max(1, options.size) / 2 + (options.antialias ? 4 : 1);
     const screenBounds = { left: Math.min(...points.map((point) => point.x)) - radius,
       right: Math.max(...points.map((point) => point.x)) + radius,
       top: Math.min(...points.map((point) => point.y)) - radius,
       bottom: Math.max(...points.map((point) => point.y)) + radius };
+    return applyProjectedImage(targetId, camera, viewport, sampler, screenBounds,
+      options, visibleUv, mirror);
+  }
+
+  function applyStamp(targetId, camera, viewport, image, placement, options,
+    visibleUv, mirror = null) {
+    const sampler = createStampTextureSampler(image, placement, options);
+    if (!sampler) return false;
+    const margin = options.antialias ? 4 : 1;
+    const screenBounds = { left: placement.bounds.left - margin,
+      right: placement.bounds.right + margin, top: placement.bounds.top - margin,
+      bottom: placement.bounds.bottom + margin };
+    return applyProjectedImage(targetId, camera, viewport, sampler, screenBounds,
+      options, visibleUv, mirror);
+  }
+
+  function applyProjectedImage(targetId, camera, viewport, sampler, screenBounds,
+    options, visibleUv, mirror = null) {
+    const parent = findSurface(targetId);
+    const surface = parent?.activePaint;
+    const face = getFaceTarget(targetId);
+    if (!surface || !face || !materialVisible(parent) || activeStroke || linePreview ||
+        filterSession || (selection && maskEnabled && selection.surface !== surface)) return false;
+    const { canvas, context } = surface;
+    const mask = selection && maskEnabled ? selectionMaskForLayer(selection, canvas)?.alpha : null;
+    const before = context.getImageData(0, 0, canvas.width, canvas.height);
+    const after = new ImageData(new Uint8ClampedArray(before.data), canvas.width, canvas.height);
+    const bounds = { left: canvas.width, top: canvas.height, right: 0, bottom: 0 };
     let changed = false;
     const project = (viewCamera, visibility, plane, side, includePlane, flipped) =>
       rasterizeProjectedUv({ mesh: face.mesh, materialIndex: face.materialIndex,
@@ -1641,7 +1660,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     }
   }
 
-  return { prepare, clear, paint, fill, sample, applyGradient, applyCurveTexture,
+  return { prepare, clear, paint, fill, sample, applyGradient, applyCurveTexture, applyStamp,
     applySurfaceCurve, beginLine, beginThroughLine,
     updateLine, commitLine, cancelLine,
     canPaintAt: (hit) => {

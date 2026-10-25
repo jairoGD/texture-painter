@@ -495,7 +495,7 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     if (!hasGraph) {
       renderOptions(null);
       imageProperties.render(null);
-      list.replaceChildren(element('p', { className: 'layers-panel__empty', text: 'Import a GLB model to start painting.' }));
+      list.replaceChildren(element('p', { className: 'layers-panel__empty', text: 'Import a GLB or FBX model to start painting.' }));
       upButton.disabled = downButton.disabled = mergeButton.disabled = removeButton.disabled = true;
       return;
     }

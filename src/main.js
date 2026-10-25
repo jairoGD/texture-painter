@@ -11,7 +11,7 @@ import { createLayersPanel } from './ui/layers-panel.js';
 import { createTexturePreview } from './ui/texture-preview.js';
 import { createTextureExportDialog } from './ui/texture-export-dialog.js';
 import { createLightGizmo } from './ui/light-gizmo.js';
-import { createModelRelinkDialog, GLB_PICKER } from './ui/model-relink.js';
+import { createModelRelinkDialog, MODEL_ACCEPT, MODEL_PICKER } from './ui/model-relink.js';
 import { createSelectionSizeDialog } from './ui/selection-size-dialog.js';
 import { createFilterDialog } from './ui/filter-dialog.js';
 import { FILTER_CATEGORIES } from './editor/filter-definitions.js';
@@ -22,7 +22,7 @@ import samplingIcon from './ui/icons/sampling.svg';
 import './style.css';
 
 const app = document.querySelector('#app');
-const fileInput = element('input', { attributes: { type: 'file', accept: '.glb,model/gltf-binary', hidden: '' } });
+const fileInput = element('input', { attributes: { type: 'file', accept: MODEL_ACCEPT, hidden: '' } });
 const projectInput = element('input', { attributes: { type: 'file', accept: '.tp3d,application/json', hidden: '' } });
 const viewport = element('main', { className: 'viewport', attributes: { 'aria-label': '3D viewport' } });
 const status = element('span', { className: 'status__message', text: 'Ready' });
@@ -158,7 +158,7 @@ async function importModelFile(file, handle = null) {
   if (!file) return;
   setStatus(`Loading ${file.name}…`);
   try {
-    const { paintableMeshes } = await scene.importGlb(file);
+    const { paintableMeshes } = await scene.importModel(file);
     currentModelHandle = handle;
     let linkStored = false;
     if (handle) {
@@ -169,7 +169,7 @@ async function importModelFile(file, handle = null) {
     }
     markDirty();
     setStatus(`${file.name} imported · ${paintableMeshes} paintable mesh${paintableMeshes === 1 ? '' : 'es'}` +
-      (linkStored ? '' : ' · locate the GLB when reopening'), !linkStored);
+      (linkStored ? '' : ' · locate the model when reopening'), !linkStored);
   } catch (error) {
     setStatus(error.message || 'Import failed', true);
   }
@@ -184,7 +184,7 @@ fileInput.addEventListener('change', async () => {
 async function chooseModelFile() {
   if (!window.showOpenFilePicker) { fileInput.click(); return; }
   try {
-    const [handle] = await window.showOpenFilePicker(GLB_PICKER);
+    const [handle] = await window.showOpenFilePicker(MODEL_PICKER);
     if (handle) await importModelFile(await handle.getFile(), handle);
   } catch (error) {
     if (error.name !== 'AbortError') setStatus(error.message || 'Could not open model.', true);
@@ -320,6 +320,12 @@ document.addEventListener('keydown', (event) => {
 });
 
 const modeLabel = element('span', { className: 'viewport-header__mode', text: '●  SHADED' });
+function applyLightingMode(mode) {
+  lightingMode = mode;
+  scene.setLightingMode(mode);
+  lightGizmo.setVisible(mode === 'shaded');
+  modeLabel.textContent = mode === 'unlit' ? '●  UNLIT' : '●  SHADED';
+}
 const displayMenu = dropdown({ label: 'Display', items: [
   { type: 'checkbox', label: 'Show grid', getChecked: () => gridVisible, keepOpen: true, onSelect: () => {
     gridVisible = !gridVisible;
@@ -337,16 +343,12 @@ const displayMenu = dropdown({ label: 'Display', items: [
 ] });
 const renderingMenu = dropdown({ label: 'Rendering', items: [
   { type: 'radio', label: 'Shaded', getChecked: () => lightingMode === 'shaded', onSelect: () => {
-    lightingMode = 'shaded';
-    scene.setLightingMode(lightingMode);
+    applyLightingMode('shaded');
     markDirty();
-    modeLabel.textContent = '●  SHADED';
   } },
   { type: 'radio', label: 'Unlit', getChecked: () => lightingMode === 'unlit', onSelect: () => {
-    lightingMode = 'unlit';
-    scene.setLightingMode(lightingMode);
+    applyLightingMode('unlit');
     markDirty();
-    modeLabel.textContent = '●  UNLIT';
   } },
   { type: 'separator' },
   { type: 'checkbox', label: 'Antialiasing', getChecked: () => antialiasEnabled,
@@ -393,8 +395,10 @@ function renderProperties() {
   const tool = TOOL_DEFINITIONS.find((item) => item.id === activeTool);
   propertiesPanel.querySelector('.ui-panel__heading p').textContent = tool.label;
   propertiesBody.replaceChildren(...tool.controls.filter((control) =>
-    !control.when || Object.entries(control.when).every(([key, value]) =>
-      toolSettings[activeTool][key] === value)).map((control) => renderControl({
+    (!control.when || Object.entries(control.when).every(([key, value]) =>
+      toolSettings[activeTool][key] === value)) &&
+    (!control.unless || !Object.entries(control.unless).every(([key, value]) =>
+      toolSettings[activeTool][key] === value))).map((control) => renderControl({
     ...control,
     value: toolSettings[activeTool][control.key],
     checked: control.key ? toolSettings[activeTool][control.key] : undefined,
@@ -405,8 +409,11 @@ function renderProperties() {
     onChange: (value) => {
       toolSettings[activeTool][control.key] = value;
       scene.setToolSettings(activeTool, toolSettings[activeTool]);
-      if (control.key === 'lineStyle') renderProperties();
-      if (control.key === 'curveMethod') renderToolHint();
+      if (control.key === 'lineStyle' || control.key === 'stroke' ||
+          control.key === 'proportionalStroke' ||
+          control.type === 'imageImport') renderProperties();
+      if (['curveMethod', 'stroke', 'proportionalStroke'].includes(control.key))
+        renderToolHint();
       markDirty();
     }
   })));
@@ -509,11 +516,11 @@ function restoreEditorSettings(saved = {}, view = {}) {
   toolsPanel.querySelector('.ui-tool-group').setActive(activeTool);
   renderProperties();
   renderToolHint();
-  lightingMode = ['shaded', 'unlit'].includes(view.lighting) ? view.lighting : 'shaded';
+  const restoredLighting = ['shaded', 'unlit'].includes(view.lighting) ? view.lighting : 'shaded';
   gridVisible = view.grid !== false;
   wireframeVisible = view.wireframe === true;
   antialiasEnabled = view.antialias !== false;
-  scene.setLightingMode(lightingMode);
+  applyLightingMode(restoredLighting);
   scene.setGridVisible(gridVisible);
   scene.setWireframeVisible(wireframeVisible);
   scene.setAntialiasEnabled(antialiasEnabled);
@@ -521,7 +528,6 @@ function restoreEditorSettings(saved = {}, view = {}) {
   mirrorButton.setPressed(scene.getMirrorEnabled());
   scene.setSamplingMode(view.sampling === 'uv' ? 'uv' : 'surface');
   updateSamplingButton(scene.getSamplingMode());
-  modeLabel.textContent = lightingMode === 'unlit' ? '●  UNLIT' : '●  SHADED';
   displayMenu.refresh();
   renderingMenu.refresh();
   nodeEditor.restoreProjectState(saved.nodes);
@@ -553,7 +559,7 @@ async function newProject({ name, resolution, model: selectedModel }) {
   setStatus(`Creating ${name}…`);
   try {
     setTextureResolution(resolution);
-    await scene.importGlb(selectedModel.file);
+    await scene.importModel(selectedModel.file);
     restoreEditorSettings();
     const id = crypto.randomUUID();
     const project = projectDocument(id, name);
@@ -569,10 +575,10 @@ async function newProject({ name, resolution, model: selectedModel }) {
     let modelLinkStored = false;
     if (currentModelHandle) {
       try { await saveModelHandle(project.scene.model.referenceId, currentModelHandle); modelLinkStored = true; }
-      catch { /* The GLB can be located manually when reopening. */ }
+      catch { /* The model can be located manually when reopening. */ }
     }
     setStatus(`${name} created · ${resolution} × ${resolution}` +
-      (modelLinkStored ? '' : ' · locate the GLB when reopening'), !modelLinkStored);
+      (modelLinkStored ? '' : ' · locate the model when reopening'), !modelLinkStored);
     try { await saveRecent(project, handle); await refreshRecent(); }
     catch { setStatus(`${name} created · recent list unavailable`); }
   } catch (error) {
@@ -672,8 +678,8 @@ async function saveProject(saveAs = false) {
   setStatus(`Saving ${handle.name}…`);
   try {
     const modelSource = scene.getModelSource();
-    let modelLinkStored = modelSource.kind !== 'glb';
-    if (modelSource.kind === 'glb' && currentModelHandle) {
+    let modelLinkStored = modelSource.kind === 'starter';
+    if (modelSource.kind !== 'starter' && currentModelHandle) {
       try {
         await saveModelHandle(modelSource.referenceId, currentModelHandle);
         modelLinkStored = true;
@@ -684,7 +690,7 @@ async function saveProject(saveAs = false) {
     projectHandle = handle;
     projectTag.textContent = projectName;
     dirty = false;
-    setStatus(`${handle.name} saved${modelLinkStored ? '' : ' · locate the GLB when reopening'}`,
+    setStatus(`${handle.name} saved${modelLinkStored ? '' : ' · locate the model when reopening'}`,
       !modelLinkStored);
     try { await saveRecent(project, handle); await refreshRecent(); }
     catch { setStatus(`${handle.name} saved · recent list unavailable`); }

@@ -12,6 +12,11 @@ const TOOL_HINTS = {
 };
 
 export function toolHint(toolId, settings = {}) {
+  if (toolId === 'stamp') return settings.stroke ?
+    settings.proportionalStroke === false ?
+      'Drag: stretch length · Size: fixed width · Right-click: pick color' :
+      'Drag: scale image proportionally · Right-click: pick color' :
+    'Click: place image · Right-click: pick color';
   if (toolId === 'curve') return settings.curveMethod === 'precise' ?
     'Click: add point · Drag point: move · Enter: paint · Esc: cancel' :
     'Drag: set endpoints · Drag twice: shape handles · Esc: cancel';

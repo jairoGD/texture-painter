@@ -10,12 +10,12 @@ export function parseProject(text) {
   if (project?.format !== 'tp3d' || project.version !== PROJECT_VERSION ||
       typeof project.id !== 'string' || typeof project.name !== 'string' ||
       !project.scene || !Array.isArray(project.scene.textures) ||
-      !['starter', 'glb'].includes(project.scene.model?.kind))
+      !['starter', 'glb', 'fbx'].includes(project.scene.model?.kind))
     throw new Error('Unsupported or incomplete .tp3d project.');
-  if (project.scene.model.kind === 'glb' &&
+  if (project.scene.model.kind !== 'starter' &&
       (typeof project.scene.model.referenceId !== 'string' ||
         typeof project.scene.model.name !== 'string'))
-    throw new Error('The project has no valid GLB reference.');
+    throw new Error('The project has no valid model reference.');
   return project;
 }
 

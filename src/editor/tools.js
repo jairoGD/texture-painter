@@ -9,6 +9,7 @@ import lassoIcon from '../ui/icons/lasso.svg';
 import magicIcon from '../ui/icons/magic.svg';
 import wireIcon from '../ui/icons/wire.svg';
 import gradientIcon from '../ui/icons/gradient.svg';
+import stampIcon from '../ui/icons/stamp.svg';
 
 const size = { type: 'slider', key: 'size', label: 'Size', min: 2, max: 128, step: 1, unit: ' px' };
 const fineSize = { ...size, min: 1 };
@@ -75,6 +76,20 @@ export const TOOL_DEFINITIONS = [
       { type: 'colorAlpha', key: 'startColor', label: 'Start color' },
       { type: 'colorAlpha', key: 'endColor', label: 'End color' },
       { type: 'checkbox', key: 'xray', label: 'X-ray' }
+    ] },
+  { id: 'stamp', label: 'Stamp', iconUrl: stampIcon,
+    defaults: { image: null, size: 64, rotation: 0, opacity: 100,
+      antialias: true, stroke: false, proportionalStroke: true },
+    controls: [
+      { type: 'imageImport', key: 'image', label: 'Image' },
+      { type: 'slider', key: 'size', label: 'Size', min: 1, max: 512,
+        step: 1, unless: { stroke: true, proportionalStroke: true } },
+      { type: 'number', key: 'rotation', label: 'Rotation', min: -180,
+        max: 180, step: 1, unit: '°' },
+      opacity, antialias,
+      { type: 'checkbox', key: 'stroke', label: 'Stroke' },
+      { type: 'checkbox', key: 'proportionalStroke', label: 'Proportional width',
+        when: { stroke: true } }
     ] },
   { id: 'blur', label: 'Blur', iconUrl: blurIcon,
     defaults: { size: 72, hardness: 35, strength: 20, spread: 20 },
