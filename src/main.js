@@ -32,8 +32,14 @@ const hint = element('span', { className: 'status__hint',
 const toolSettings = Object.fromEntries(TOOL_DEFINITIONS.map((tool) => [tool.id,
   { ...tool.defaults, ...(tool.usesColor ? { color: '#000000' } : {}) }]));
 let activeTool = 'brush';
+let vertexMode = false;
+const VERTEX_TOOLS = new Set(['vertexBrush', 'vertexBlur', 'vertexBucket',
+  'vertexFaces', 'vertexSelect']);
+let lastBitmapTool = 'brush';
+let lastVertexTool = 'vertexBrush';
 let nodeEditor;
 let layersPanel;
+let toolsPanel = null;
 let texturePreview;
 let lightGizmo;
 let projectId = null;
@@ -89,6 +95,7 @@ nodeEditor = createNodeEditor({ targets: scene.getGraphTargets(),
     layersPanel?.setState(state);
     texturePreview?.setTarget(state.targetId,
       state.targets.find((target) => target.id === state.targetId)?.label);
+    syncToolMode(state);
   },
   onError: (message) => setStatus(message, true)
 });
@@ -402,7 +409,10 @@ function renderProperties() {
     ...control,
     value: toolSettings[activeTool][control.key],
     checked: control.key ? toolSettings[activeTool][control.key] : undefined,
-    onClick: control.action === 'clearSelection' ? () => {
+    onClick: control.action === 'clearVertexSelection' ? () => {
+      if (scene.clearVertexSelection(nodeEditor.getState().targetId))
+        setStatus('Vertex selection cleared');
+    } : control.action === 'clearSelection' ? () => {
       if (scene.clearSelection()) setStatus('Selection cleared');
       editMenu.refresh();
     } : undefined,
@@ -425,24 +435,45 @@ function renderToolHint() {
   hint.title = hint.textContent;
 }
 function selectTool(tool) {
+  if (vertexMode !== VERTEX_TOOLS.has(tool)) return;
   activeTool = tool;
+  if (vertexMode) lastVertexTool = tool;
+  else lastBitmapTool = tool;
   scene.setTool(tool);
   toolsPanel?.querySelector('.ui-tool-group')?.setActive(tool);
   renderProperties();
   renderToolHint();
   markDirty();
 }
+function syncToolMode(state) {
+  const vertex = Boolean(state.graph?.nodes.find((node) =>
+    node.id === state.paintSource && node.type === 'image' && node.vertexColor));
+  scene.setVertexSelectionVisible(vertex);
+  if (vertexMode === vertex || !toolsPanel) { vertexMode = vertex; return; }
+  vertexMode = vertex;
+  const available = TOOL_DEFINITIONS.filter((tool) =>
+    VERTEX_TOOLS.has(tool.id) === vertex);
+  const nextTool = vertex ? lastVertexTool : lastBitmapTool;
+  const group = renderControl({ type: 'toolGroup', active: nextTool,
+    onChange: selectTool,
+    items: available.map(({ id, label, iconUrl }) => ({ value: id, label, iconUrl })) });
+  toolsPanel.querySelector('.ui-tool-group').replaceWith(group);
+  toolsPanel.querySelector('.ui-panel__heading p').textContent =
+    vertex ? 'Paint vertex colors on the model' : 'Paint directly on the model';
+  selectTool(nextTool);
+}
 renderProperties();
 renderToolHint();
-let toolsPanel = null;
 const sidebar = element('aside', { className: 'sidebar' }, [
   palette.element,
   toolsPanel = renderPanel({ title: 'Tools', subtitle: 'Paint directly on the model', controls: [
     { type: 'toolGroup', active: 'brush', onChange: selectTool,
-      items: TOOL_DEFINITIONS.map(({ id, label, iconUrl }) => ({ value: id, label, iconUrl })) }
+      items: TOOL_DEFINITIONS.filter(({ id }) => !VERTEX_TOOLS.has(id))
+        .map(({ id, label, iconUrl }) => ({ value: id, label, iconUrl })) }
   ] }),
   propertiesPanel
 ]);
+syncToolMode(nodeEditor.getState());
 
 const viewportHeader = element('div', { className: 'viewport-header' }, [
   element('span', { className: 'viewport-header__title', text: 'PERSPECTIVE VIEW' }),
@@ -512,6 +543,16 @@ function restoreEditorSettings(saved = {}, view = {}) {
   }
   palette.loadState(saved.palette);
   activeTool = TOOL_DEFINITIONS.some((tool) => tool.id === saved.activeTool) ? saved.activeTool : 'brush';
+  if (VERTEX_TOOLS.has(activeTool)) lastVertexTool = activeTool;
+  else lastBitmapTool = activeTool;
+  const restoredState = nodeEditor.getState();
+  const restoredVertex = Boolean(restoredState.graph?.nodes.find((node) =>
+    node.id === restoredState.paintSource && node.vertexColor));
+  if (restoredVertex !== vertexMode) {
+    vertexMode = !restoredVertex;
+    syncToolMode(restoredState);
+  }
+  activeTool = restoredVertex ? lastVertexTool : lastBitmapTool;
   scene.setTool(activeTool);
   toolsPanel.querySelector('.ui-tool-group').setActive(activeTool);
   renderProperties();

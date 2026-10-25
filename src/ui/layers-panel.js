@@ -155,6 +155,32 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     } catch (error) { fail(error); }
   }
 
+  function convertToBitmap(layerId) {
+    const state = current();
+    const layer = state.graph && readLayerStack(state.graph).layers
+      .find((item) => item.id === layerId);
+    if (!layer?.source.vertexColor) return;
+    try {
+      const image = getImageCanvas?.(state.targetId, layer.source.imageKey, true);
+      if (!image) throw new Error('Unable to render vertex colors for this layer');
+      const asset = onCreateImage(state.targetId, layer.source.id, image, layer.label);
+      if (!asset) throw new Error('Unable to create bitmap layer');
+      const graph = cloneTextureGraph(state.graph);
+      const source = graph.nodes.find((node) => node.id === layer.source.id);
+      source.vertexColor = false;
+      source.imageKey = asset.key;
+      source.imageName = asset.name;
+      source.projection = 'flat';
+      source.extension = 'clip';
+      source.scale = 1;
+      source.rotation = source.offsetU = source.offsetV = 0;
+      delete source.warp;
+      selectedByTarget.set(state.targetId, layerId);
+      nodeEditor.replaceGraph(graph);
+      nodeEditor.choosePaintSource(source.id);
+    } catch (error) { fail(error); }
+  }
+
   function closeContextMenu() {
     contextMenu?.remove();
     contextMenu = null;
@@ -186,7 +212,8 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
       item('Paste', () => pasteLayer(copiedLayers, layerId), !copiedLayers),
       item('Duplicate', () => {
         try { pasteLayer(copyLayer(current(), layerId), layerId); } catch (error) { fail(error); }
-      })
+      }),
+      item('Convert to bitmap layer', () => convertToBitmap(layerId), !source?.vertexColor)
     ]);
     document.body.append(contextMenu);
     const bounds = contextMenu.getBoundingClientRect();

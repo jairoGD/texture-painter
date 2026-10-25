@@ -26,6 +26,8 @@ import { createCurveTextureSampler, sampleCurveTexturePixel } from './curve-text
 import { createStampTextureSampler } from './stamp-texture.js';
 import { projectSurfaceCurve } from './surface-curve-paint.js';
 import { clearTriplanarLookup } from './triplanar-raster.js';
+import { clearVertexPaintCache, fillVertexColors, materialVertexIndices,
+  paintVertexColors } from './vertex-paint.js';
 
 function configureTextureSampling(texture, antialiasEnabled) {
   texture.magFilter = antialiasEnabled ? THREE.LinearFilter : THREE.NearestFilter;
@@ -45,6 +47,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
   let undoStack = [];
   let redoStack = [];
   let activeStroke = null;
+  const vertexSelections = new Map();
   let linePreview = null;
   let filterSession = null;
   let selection = null;
@@ -236,6 +239,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
   }
 
   function clear() {
+    vertexSelections.clear();
     clearTriplanarLookup();
     endProjectionPreview();
     for (const record of surfaces.values()) {
@@ -868,8 +872,108 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
 
   function beginStroke() {
     commitFloatingSelection();
-    activeStroke = { commands: [], before: new Map() };
+    activeStroke = { commands: [], before: new Map(), vertexBefore: new Map() };
   }
+  function vertexSnapshot(geometry) {
+    const color = geometry.getAttribute('color');
+    if (!color) return null;
+    const values = new Float32Array(color.count * color.itemSize);
+    for (let id = 0; id < color.count; id++) {
+      values[id * color.itemSize] = color.getX(id);
+      values[id * color.itemSize + 1] = color.getY(id);
+      values[id * color.itemSize + 2] = color.getZ(id);
+      if (color.itemSize === 4) values[id * color.itemSize + 3] = color.getW(id);
+    }
+    return { values, itemSize: color.itemSize };
+  }
+  function restoreVertexSnapshot(geometry, snapshot) {
+    if (snapshot) geometry.setAttribute('color', new THREE.Float32BufferAttribute(
+      snapshot.values.slice(), snapshot.itemSize));
+    else geometry.deleteAttribute('color');
+    for (const record of surfaces.values()) for (const surface of record.slots)
+      if (surface.geometry === geometry) {
+        for (const key of surface.imageCache.keys())
+          if (key.startsWith('vertex-color:')) surface.imageCache.delete(key);
+        surface.requestComposite();
+      }
+  }
+  function paintVertex(hit, kind, options, camera, viewportHeight) {
+    const parent = hit && surfaces.get(hit.object)?.slots[hit.face?.materialIndex ?? 0];
+    if (!parent || !materialVisible(parent)) return false;
+    const activeNode = parent.graph.nodes.find((node) => node.type === 'image' &&
+      node.vertexColor && parent.imageAssets.get(node.imageKey)?.paintSurface === parent.activePaint);
+    if (!activeNode) return false;
+    const geometry = parent.geometry;
+    if (activeStroke && !activeStroke.vertexBefore.has(geometry))
+      activeStroke.vertexBefore.set(geometry, vertexSnapshot(geometry));
+    const center = hit.object.worldToLocal(hit.point.clone());
+    const distance = hit.point.distanceTo(camera.position);
+    const worldRadius = distance * Math.tan(camera.fov * Math.PI / 360) *
+      Math.max(1, Number(options.size) || 1) / Math.max(1, viewportHeight);
+    const radius = worldRadius / Math.max(1e-6, hit.object.getWorldScale(
+      new THREE.Vector3()).length() / Math.sqrt(3));
+    const selection = vertexSelections.get(parent.id);
+    const allowed = selection?.allowed?.size ? selection.allowed : null;
+    const changed = paintVertexColors(geometry, parent.slotIndex, center, radius,
+      kind, options, allowed);
+    if (changed && activeStroke) activeStroke.vertexChanged = true;
+    if (changed) for (const record of surfaces.values()) for (const surface of record.slots)
+      if (surface.geometry === geometry) surface.requestComposite();
+    return changed;
+  }
+  function fillVertex(hit, options) {
+    const parent = hit && surfaces.get(hit.object)?.slots[hit.face?.materialIndex ?? 0];
+    if (!parent || !materialVisible(parent)) return false;
+    const activeNode = parent.graph.nodes.find((node) => node.type === 'image' &&
+      node.vertexColor && parent.imageAssets.get(node.imageKey)?.paintSurface === parent.activePaint);
+    if (!activeNode) return false;
+    const selection = vertexSelections.get(parent.id);
+    const allowed = selection?.allowed?.size ? selection.allowed : null;
+    if (activeStroke && !activeStroke.vertexBefore.has(parent.geometry))
+      activeStroke.vertexBefore.set(parent.geometry, vertexSnapshot(parent.geometry));
+    const changed = fillVertexColors(parent.geometry, parent.slotIndex, options, allowed);
+    if (changed) {
+      if (activeStroke) activeStroke.vertexChanged = true;
+      for (const record of surfaces.values()) for (const surface of record.slots)
+        if (surface.geometry === parent.geometry) surface.requestComposite();
+    }
+    return changed;
+  }
+  function selectVertexElements(targetId, kind, ids, mode = 'replace') {
+    const parent = findSurface(targetId);
+    if (!parent || !['face', 'vertex'].includes(kind)) return false;
+    if (mode === 'replace' && !ids.size) return vertexSelections.delete(targetId);
+    if (kind === 'face' && parent.geometry.index) {
+      const expanded = parent.geometry.toNonIndexed();
+      parent.geometry.copy(expanded);
+      expanded.dispose();
+      clearVertexPaintCache(parent.geometry);
+      parent.topologies?.clear();
+      for (const record of surfaces.values()) for (const surface of record.slots)
+        if (surface.geometry === parent.geometry) surface.imageCache.clear();
+    }
+    const current = vertexSelections.get(targetId);
+    if (mode === 'subtract' && current?.kind !== kind) return false;
+    const result = mode === 'replace' || current?.kind !== kind ? new Set() :
+      new Set(current.ids);
+    for (const id of ids) {
+      if (mode === 'subtract') result.delete(id);
+      else result.add(id);
+    }
+    if (!result.size) return vertexSelections.delete(targetId);
+    const allowed = kind === 'vertex' ? result :
+      new Set([...result].flatMap((face) => [face * 3, face * 3 + 1, face * 3 + 2]));
+    vertexSelections.set(targetId, { kind, ids: result, allowed });
+    return true;
+  }
+  function getVertexSelection(targetId) {
+    const parent = findSurface(targetId);
+    const selection = vertexSelections.get(targetId);
+    return parent && selection ? { mesh: [...surfaces].find(([, record]) =>
+      record.slots.includes(parent))?.[0], geometry: parent.geometry,
+      slotIndex: parent.slotIndex, kind: selection.kind, ids: new Set(selection.ids) } : null;
+  }
+  function clearVertexSelection(targetId) { return vertexSelections.delete(targetId); }
   function apply(command) {
     if (activeStroke && !activeStroke.before.has(command.surface)) {
       const { canvas, context } = command.surface;
@@ -1278,6 +1382,12 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
   }
 
   function endStroke() {
+    if (activeStroke?.vertexChanged && activeStroke.vertexBefore.size) {
+      const vertices = [...activeStroke.vertexBefore].map(([geometry, before]) =>
+        ({ geometry, before, after: vertexSnapshot(geometry) }));
+      undoStack.push({ vertices });
+      redoStack = [];
+    }
     if (activeStroke?.commands.length) {
       undoStack.push({ patches: capturePaintPatches(activeStroke.commands, activeStroke.before) });
       redoStack = [];
@@ -1302,6 +1412,8 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       setGraph(entry.graph.targetId, entry.graph.before);
       onGraphHistoryApplied?.(entry.graph.targetId, entry.graph.before);
     } else if (entry.patches) applyPaintPatches(entry.patches, 'before');
+    else if (entry.vertices) for (const item of entry.vertices)
+      restoreVertexSnapshot(item.geometry, item.before);
     if ('selectionBefore' in entry) {
       const previous = entry.selectionBefore;
       selection = selectionOnPaintSurface(previous, findSurface(previous?.surface.id)?.activePaint);
@@ -1318,6 +1430,8 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       setGraph(entry.graph.targetId, entry.graph.after);
       onGraphHistoryApplied?.(entry.graph.targetId, entry.graph.after);
     } else if (entry.patches) applyPaintPatches(entry.patches, 'after');
+    else if (entry.vertices) for (const item of entry.vertices)
+      restoreVertexSnapshot(item.geometry, item.after);
     if ('selectionAfter' in entry) {
       const next = entry.selectionAfter;
       selection = selectionOnPaintSurface(next, findSurface(next?.surface.id)?.activePaint);
@@ -1435,6 +1549,56 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       return { id: surface.id, label: surface.label,
         canvas };
     }));
+  }
+
+  function exportProjectVertexColors() {
+    return [...surfaces.values()].map((record) => {
+      const color = record.mesh.geometry.getAttribute('color');
+      if (!color) return null;
+      const channels = color.itemSize;
+      const bytes = new Uint8Array(color.count * channels);
+      for (let id = 0; id < color.count; id++) {
+        bytes[id * channels] = Math.round(THREE.MathUtils.clamp(color.getX(id), 0, 1) * 255);
+        bytes[id * channels + 1] = Math.round(THREE.MathUtils.clamp(color.getY(id), 0, 1) * 255);
+        bytes[id * channels + 2] = Math.round(THREE.MathUtils.clamp(color.getZ(id), 0, 1) * 255);
+        if (channels === 4) bytes[id * channels + 3] =
+          Math.round(THREE.MathUtils.clamp(color.getW(id), 0, 1) * 255);
+      }
+      let binary = '';
+      for (let offset = 0; offset < bytes.length; offset += 0x8000)
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+      return { itemSize: channels, splitFaces: !record.mesh.geometry.index,
+        data: btoa(binary) };
+    });
+  }
+
+  function restoreProjectVertexColors(saved = []) {
+    const records = [...surfaces.values()];
+    for (let index = 0; index < records.length; index++) {
+      const entry = saved[index];
+      if (!entry) continue;
+      const geometry = records[index].mesh.geometry;
+      if (entry.splitFaces && geometry.index) {
+        const expanded = geometry.toNonIndexed();
+        geometry.copy(expanded);
+        expanded.dispose();
+        clearVertexPaintCache(geometry);
+      }
+      const channels = entry.itemSize;
+      const count = geometry.getAttribute('position')?.count ?? 0;
+      if (![3, 4].includes(channels) || typeof entry.data !== 'string')
+        throw new Error('The project contains invalid vertex colors.');
+      const binary = atob(entry.data);
+      if (binary.length !== count * channels)
+        throw new Error('Project vertex colors do not match the model.');
+      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      geometry.setAttribute('color', new THREE.Uint8BufferAttribute(bytes, channels, true));
+      for (const surface of records[index].slots) {
+        for (const key of surface.imageCache.keys())
+          if (key.startsWith('vertex-color:')) surface.imageCache.delete(key);
+        surface.requestComposite();
+      }
+    }
   }
 
   function canFilter(targetId) {
@@ -1704,7 +1868,9 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     }
   }
 
-  return { prepare, clear, paint, fill, sample, applyGradient, applyCurveTexture, applyStamp,
+  return { prepare, clear, paint, paintVertex, fillVertex, fill, sample,
+    selectVertexElements, getVertexSelection, clearVertexSelection,
+    materialVertexIndices, applyGradient, applyCurveTexture, applyStamp,
     applySurfaceCurve, beginLine, beginThroughLine,
     updateLine, commitLine, cancelLine,
     canPaintAt: (hit) => {
@@ -1718,7 +1884,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     canResizeSelection: () => !!selection?.indices.length && !lassoDraft && !movePreview,
     canCopySelection: () => !!selection?.indices.length && !lassoDraft && !movePreview,
     canPasteSelection: () => !!clipboard, getLayerImage, getImageInfo, getCompositePreview,
-    getExportTextures,
+    getExportTextures, exportProjectVertexColors, restoreProjectVertexColors,
     canFilter, beginFilter, previewFilter, applyFilter, cancelFilter,
     setMaskEnabled: (enabled) => { maskEnabled = enabled; },
     setBlurSelectionIsolation: (enabled) => { isolateBlur = enabled; },

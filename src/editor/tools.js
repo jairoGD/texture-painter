@@ -99,6 +99,28 @@ export const TOOL_DEFINITIONS = [
       { type: 'slider', key: 'strength', label: 'Strength', min: 1, max: 100, step: 1, unit: '%' },
       { type: 'slider', key: 'spread', label: 'Spread', min: 1, max: 32,
         step: 1, unit: ' px', when: { mode: 'normal' } }] },
+  { id: 'vertexBrush', label: 'Vertex Brush', iconUrl: brushIcon,
+    usesColor: true, defaults: { size: 48, hardness: 60, opacity: 100 },
+    controls: [
+      { ...fineSize, max: 256 }, hardness, opacity
+    ] },
+  { id: 'vertexBlur', label: 'Vertex Blur', iconUrl: blurIcon,
+    defaults: { size: 72, hardness: 60, strength: 50 },
+    controls: [
+      { ...fineSize, max: 256 }, hardness,
+      { type: 'slider', key: 'strength', label: 'Strength', min: 1, max: 100,
+        step: 1, unit: '%' }
+    ] },
+  { id: 'vertexBucket', label: 'Vertex Bucket', iconUrl: bucketIcon,
+    usesColor: true, defaults: { opacity: 100 }, controls: [opacity] },
+  { id: 'vertexFaces', label: 'Vertex Face Select', iconUrl: wireIcon,
+    defaults: {}, controls: [
+      { type: 'button', action: 'clearVertexSelection', label: 'Clear Selection' }
+    ] },
+  { id: 'vertexSelect', label: 'Vertex Select', iconUrl: lassoIcon,
+    defaults: {}, controls: [
+      { type: 'button', action: 'clearVertexSelection', label: 'Clear Selection' }
+    ] },
   { id: 'lasso', label: 'Lasso', iconUrl: lassoIcon,
     defaults: { maskEnabled: true, isolateBlur: true },
     controls: [

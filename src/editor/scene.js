@@ -247,6 +247,40 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   });
   painter.prepare(model);
   let selectedTargetId = painter.getGraphTargets()[0]?.id ?? null;
+  let vertexSelectionOverlay = null;
+  let vertexSelectionVisible = false;
+  function updateVertexSelectionOverlay() {
+    if (vertexSelectionOverlay) {
+      vertexSelectionOverlay.removeFromParent();
+      vertexSelectionOverlay.geometry.dispose();
+      vertexSelectionOverlay.material.dispose();
+      vertexSelectionOverlay = null;
+    }
+    if (!vertexSelectionVisible) return;
+    const selected = painter.getVertexSelection(selectedTargetId);
+    if (!selected?.mesh || !selected.ids.size) return;
+    const position = selected.geometry.getAttribute('position');
+    const index = selected.geometry.index;
+    const values = [];
+    if (selected.kind === 'face') {
+      for (const face of selected.ids) for (let corner = 0; corner < 3; corner++) {
+        const id = index ? index.getX(face * 3 + corner) : face * 3 + corner;
+        values.push(position.getX(id), position.getY(id), position.getZ(id));
+      }
+    } else for (const id of selected.ids)
+      values.push(position.getX(id), position.getY(id), position.getZ(id));
+    if (!values.length) return;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(values, 3));
+    vertexSelectionOverlay = selected.kind === 'face' ?
+      new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color: '#70bfff',
+        side: THREE.DoubleSide, transparent: true, opacity: 0.38,
+        depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 })) :
+      new THREE.Points(geometry, new THREE.PointsMaterial({ color: '#70bfff',
+        size: 8, sizeAttenuation: false, depthTest: true, depthWrite: false }));
+    vertexSelectionOverlay.renderOrder = 5;
+    selected.mesh.add(vertexSelectionOverlay);
+  }
   let paintMeshes = painter.getMeshes();
   let mirrorEnabled = false;
   let samplingMode = 'surface';
@@ -493,7 +527,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     const end = { x: event.clientX, y: event.clientY };
     if (initialHit === undefined && previousPaintScreen &&
         end.x === previousPaintScreen.x && end.y === previousPaintScreen.y) return;
-    const { kind, options } = resolveTemporaryPaintTool(activeTool, toolSettings, event);
+    const vertexTool = activeTool === 'vertexBrush' || activeTool === 'vertexBlur';
+    const { kind, options } = vertexTool ?
+      { kind: activeTool, options: toolSettings[activeTool] } :
+      resolveTemporaryPaintTool(activeTool, toolSettings, event);
     if (kind !== strokeTool) {
       previousHit = null;
       previousMirrorHit = null;
@@ -504,6 +541,14 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     const hits = initialHit !== undefined ? [initialHit] : gestureSamplingMode === 'uv' ?
       [hitTest(event)] : sampleScreenStroke(start, end, hitTestAt, 2);
     for (const hit of previousPaintScreen && gestureSamplingMode === 'surface' ? hits.slice(1) : hits) {
+      if (vertexTool) {
+        if (hit) painter.paintVertex(hit, kind, options, camera,
+          renderer.domElement.getBoundingClientRect().height);
+        const mirrored = mirrorHitAt(hit);
+        if (mirrored) painter.paintVertex(mirrored, kind, options, camera,
+          renderer.domElement.getBoundingClientRect().height);
+        continue;
+      }
       previousHit = hit ? painter.paint(hit, kind, previousHit,
         options, gestureSamplingMode) : null;
       const mirrored = mirrorHitAt(hit);
@@ -964,6 +1009,78 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       faceMode === 'replace' ? 'Selection cleared' : 'Selection unchanged');
   }
 
+  function pickedVertexIds(hit) {
+    if (!hit || hit.faceIndex == null) return new Set();
+    const geometry = hit.object.geometry;
+    const position = geometry.getAttribute('position');
+    const index = geometry.index;
+    const center = hit.object.worldToLocal(hit.point.clone());
+    const face = [0, 1, 2].map((corner) => index ?
+      index.getX(hit.faceIndex * 3 + corner) : hit.faceIndex * 3 + corner);
+    let closest = face[0];
+    let distance = Infinity;
+    for (const id of face) {
+      const squared = center.distanceToSquared(new THREE.Vector3(
+        position.getX(id), position.getY(id), position.getZ(id)));
+      if (squared < distance) { distance = squared; closest = id; }
+    }
+    const selected = new Set();
+    for (const id of painter.materialVertexIndices(geometry, hit.face?.materialIndex ?? 0))
+      if (Math.abs(position.getX(id) - position.getX(closest)) < 1e-6 &&
+          Math.abs(position.getY(id) - position.getY(closest)) < 1e-6 &&
+          Math.abs(position.getZ(id) - position.getZ(closest)) < 1e-6) selected.add(id);
+    return selected;
+  }
+
+  function finishVertexSelection(event) {
+    if (event.type !== 'pointerup' || !faceStart) return;
+    const target = painter.getFaceTarget(selectedTargetId);
+    if (!target || !painter.isMaterialVisible(selectedTargetId)) return;
+    const kind = activeTool === 'vertexFaces' ? 'face' : 'vertex';
+    const end = viewportPoint(event);
+    const dragged = Math.hypot(end.x - faceStart.x, end.y - faceStart.y) > 4;
+    const ids = new Set();
+    if (dragged) {
+      const rect = { left: Math.min(faceStart.x, end.x),
+        top: Math.min(faceStart.y, end.y),
+        right: Math.max(faceStart.x, end.x),
+        bottom: Math.max(faceStart.y, end.y) };
+      const visible = captureVisibleFaces(renderer, camera, target.mesh,
+        target.materialIndex, paintMeshes, rect);
+      if (kind === 'face') for (const face of visible) ids.add(face);
+      else {
+        const geometry = target.mesh.geometry;
+        const position = geometry.getAttribute('position');
+        const index = geometry.index;
+        const viewport = renderer.domElement.getBoundingClientRect();
+        target.mesh.updateWorldMatrix(true, false);
+        for (const face of visible) for (let corner = 0; corner < 3; corner++) {
+          const id = index ? index.getX(face * 3 + corner) : face * 3 + corner;
+          const point = new THREE.Vector3(position.getX(id), position.getY(id),
+            position.getZ(id)).applyMatrix4(target.mesh.matrixWorld).project(camera);
+          const x = (point.x + 1) * viewport.width / 2;
+          const y = (1 - point.y) * viewport.height / 2;
+          if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom)
+            ids.add(id);
+        }
+      }
+    } else {
+      const hit = hitTest(event);
+      if (kind === 'face') {
+        if (hit?.faceIndex != null) ids.add(hit.faceIndex);
+        const mirrored = mirrorHitAt(hit);
+        if (mirrored?.faceIndex != null) ids.add(mirrored.faceIndex);
+      } else {
+        for (const id of pickedVertexIds(hit)) ids.add(id);
+        for (const id of pickedVertexIds(mirrorHitAt(hit))) ids.add(id);
+      }
+    }
+    painter.selectVertexElements(selectedTargetId, kind, ids, faceMode);
+    updateVertexSelectionOverlay();
+    onSelectionChanged?.(ids.size ? `${kind === 'face' ? 'Faces' : 'Vertices'} selected` :
+      'Vertex selection cleared');
+  }
+
   function finishLasso() {
     const mask = projectLassoToUv(renderer, camera, lassoSourceHit, lassoPath, painter.getMeshes());
     const mirroredHit = mirrorHitAt(lassoSourceHit);
@@ -1082,8 +1199,9 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     lineThrough = false;
     lineThroughTarget = null;
     const hit = hitTest(event);
-    if (activeTool === 'faces') {
-      pointerAction = 'faces';
+    if (activeTool === 'faces' || activeTool === 'vertexFaces' ||
+        activeTool === 'vertexSelect') {
+      pointerAction = activeTool;
       faceStart = viewportPoint(event);
       faceEnd = faceStart;
       faceMode = event.altKey ? 'subtract' : event.shiftKey ? 'add' : 'replace';
@@ -1204,7 +1322,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       if (color) onColorPicked?.(color);
     } else {
       painter.beginStroke();
-      if (activeTool === 'bucket') {
+      if (activeTool === 'vertexBucket') {
+        painter.fillVertex(hit, toolSettings.vertexBucket);
+        if (mirrorEnabled) painter.fillVertex(mirrorHitAt(hit), toolSettings.vertexBucket);
+      } else if (activeTool === 'bucket') {
         painter.fill(hit, toolSettings.bucket);
         if (mirrorEnabled) painter.fill(mirrorHitAt(hit), toolSettings.bucket);
       }
@@ -1216,7 +1337,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     if (event.pointerId !== activePointer) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    if (pointerAction === 'faces') {
+    if (pointerAction === 'faces' || pointerAction === 'vertexFaces' ||
+        pointerAction === 'vertexSelect') {
       faceEnd = viewportPoint(event);
       renderFaceRectangle();
     }
@@ -1236,7 +1358,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     else if (pointerAction === 'preciseCurve') queueDraw(event);
     else if (pointerAction === 'moveSelection' || pointerAction === 'curve') queueDraw(event);
     else if (activeTool === 'line' || activeTool === 'brush' ||
-        activeTool === 'eraser' || activeTool === 'blur') queueDraw(event);
+        activeTool === 'eraser' || activeTool === 'blur' ||
+        activeTool === 'vertexBrush' || activeTool === 'vertexBlur') queueDraw(event);
   }
   function endStroke(event) {
     if (event.pointerId !== activePointer) {
@@ -1257,7 +1380,9 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         painter.updateMove(hit ?? (gestureSamplingMode === 'uv' ? null : viewportPoint(event)),
           hit ? mirrorHitAt(hit) : null);
       }
-      else if (activeTool === 'brush' || activeTool === 'eraser' || activeTool === 'blur') paintAt(event);
+      else if (activeTool === 'brush' || activeTool === 'eraser' ||
+          activeTool === 'blur' || activeTool === 'vertexBrush' ||
+          activeTool === 'vertexBlur') paintAt(event);
     }
     activePointer = null;
     strokeRect = null;
@@ -1265,8 +1390,12 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     previousMirrorHit = null;
     previousPaintScreen = null;
     strokeTool = null;
-    if (pointerAction === 'faces') {
-      try { finishFaceSelection(event); }
+    if (pointerAction === 'faces' || pointerAction === 'vertexFaces' ||
+        pointerAction === 'vertexSelect') {
+      try {
+        if (pointerAction === 'faces') finishFaceSelection(event);
+        else finishVertexSelection(event);
+      }
       catch (error) { onSelectionChanged?.(`Face selection failed: ${error.message}`); }
       finally {
         faceStart = null; faceEnd = null; faceMode = 'replace';
@@ -1503,6 +1632,12 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       fbxLoader.parse(data, '');
     if (!next.children.length) throw new Error(`The ${kind.toUpperCase()} contains no visible scene.`);
     resetCurve(true);
+    if (vertexSelectionOverlay) {
+      vertexSelectionOverlay.removeFromParent();
+      vertexSelectionOverlay.geometry.dispose();
+      vertexSelectionOverlay.material.dispose();
+      vertexSelectionOverlay = null;
+    }
     const paintableMeshes = painter.prepare(next);
     clearWarpTarget();
     scene.remove(model);
@@ -1521,6 +1656,12 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
 
   function newProject(resolution = 1024) {
     resetCurve(true);
+    if (vertexSelectionOverlay) {
+      vertexSelectionOverlay.removeFromParent();
+      vertexSelectionOverlay.geometry.dispose();
+      vertexSelectionOverlay.material.dispose();
+      vertexSelectionOverlay = null;
+    }
     clearWarpTarget();
     setTextureResolution(resolution);
     setLightRotation(0, 0);
@@ -1541,6 +1682,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     const visibility = painter.getMaterialVisibilityState();
     return { model: modelSource, resolution: textureResolution,
       textures: painter.exportProjectTextures(),
+      vertexColors: painter.exportProjectVertexColors(),
       view: { camera: camera.position.toArray(), target: controls.target.toArray(),
         lighting: currentLightingMode, grid: grid.visible, mirror: mirrorEnabled,
         sampling: samplingMode, antialias: antialiasEnabled,
@@ -1558,6 +1700,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       await importModel(file, saved.model.referenceId);
     }
     await painter.restoreProjectTextures(saved.textures);
+    painter.restoreProjectVertexColors(saved.vertexColors);
     painter.restoreMaterialVisibilityState(saved.view?.materials);
     mirrorEnabled = saved.view?.mirror === true;
     samplingMode = saved.view?.sampling === 'uv' ? 'uv' : 'surface';
@@ -1591,7 +1734,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     renderCurvePreview();
     if (activeTool === 'line' && toolSettings.line?.lineStyle === 'texture')
       renderLineTexturePreview();
-    if (pointerAction === 'faces') renderFaceRectangle();
+    if (['faces', 'vertexFaces', 'vertexSelect'].includes(pointerAction))
+      renderFaceRectangle();
     else renderLassoPath();
   }
   new ResizeObserver(resize).observe(host);
@@ -1657,7 +1801,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       }
       if (activeTool === 'line' && tool !== 'line' && lineEndScreen)
         clearLineTexturePreview();
-      if (tool !== 'faces' && pointerAction === 'faces') {
+      if (tool !== pointerAction && ['faces', 'vertexFaces', 'vertexSelect'].includes(pointerAction)) {
         const pointerId = activePointer;
         activePointer = null; pointerAction = null; strokeRect = null;
         faceStart = null; faceEnd = null; faceMode = 'replace';
@@ -1722,6 +1866,17 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     setPaintTarget: (id) => {
       if (id !== selectedTargetId) resetCurve(true);
       selectedTargetId = id;
+      updateVertexSelectionOverlay();
+    },
+    clearVertexSelection: (id) => {
+      const changed = painter.clearVertexSelection(id);
+      updateVertexSelectionOverlay();
+      return changed;
+    },
+    setVertexSelectionVisible: (visible) => {
+      if (vertexSelectionVisible === Boolean(visible)) return;
+      vertexSelectionVisible = Boolean(visible);
+      updateVertexSelectionOverlay();
     },
     setGraph: (...args) => { resetCurve(true); return painter.setGraph(...args); },
     recordGraphChange: painter.recordGraphChange,

@@ -1,5 +1,10 @@
 const TOOL_HINTS = {
   brush: 'Drag: paint · Shift+Drag: blur · Ctrl+Drag: erase · Right-click: pick color',
+  vertexBrush: 'Drag: paint vertex colors on the selected material',
+  vertexBlur: 'Drag: soften neighboring vertex colors',
+  vertexBucket: 'Click: fill selected vertices or the entire material',
+  vertexFaces: 'Click/Drag: select faces · Shift: add · Alt: subtract',
+  vertexSelect: 'Click/Drag: select vertices · Shift: add · Alt: subtract',
   eraser: 'Drag: erase pixels · Right-click: pick color',
   bucket: 'Click: fill connected area · Right-click: pick color',
   line: 'Drag: draw line · Ctrl+Drag: draw through the model',

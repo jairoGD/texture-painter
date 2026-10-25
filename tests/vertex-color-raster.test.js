@@ -38,3 +38,49 @@ test('vertex color bake respects indexed material groups and vertex alpha', () =
   assert.equal(first[upperLeft + 3], 0);
   assert.ok(second[upperLeft + 3] > 0);
 });
+
+test('vertex color bake pads UV island edges without filling the empty atlas', () => {
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('uv', new Float32BufferAttribute([
+    0.25, 0.25, 0.75, 0.25, 0.25, 0.75
+  ], 2));
+  geometry.setAttribute('color', new Float32BufferAttribute([
+    0, 0.5, 0, 0, 0.5, 0, 0, 0.5, 0
+  ], 3));
+  const size = 64;
+  const pixels = rasterizeVertexColors(geometry, 0, size);
+  const pixel = (x, y) => (y * size + x) * 4;
+  assert.equal(pixels[pixel(15, 32) + 3], 255);
+  assert.ok(pixels[pixel(15, 32) + 1] > 0);
+  assert.equal(pixels[pixel(8, 32) + 3], 0);
+});
+
+test('vertex color edge padding wraps across the UV atlas boundary', () => {
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('uv', new Float32BufferAttribute([
+    0, 0, 0.5, 0, 0, 0.5
+  ], 2));
+  geometry.setAttribute('color', new Float32BufferAttribute([
+    0, 0, 1, 0, 0, 1, 0, 0, 1
+  ], 3));
+  const size = 64;
+  const pixels = rasterizeVertexColors(geometry, 0, size);
+  const wrapped = (48 * size + size - 1) * 4;
+  assert.equal(pixels[wrapped + 2], 255);
+  assert.equal(pixels[wrapped + 3], 255);
+});
+
+test('vertex color gutter extends past the former four-pixel limit at project resolution', () => {
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('uv', new Float32BufferAttribute([
+    0.25, 0.25, 0.75, 0.25, 0.25, 0.75
+  ], 2));
+  geometry.setAttribute('color', new Float32BufferAttribute([
+    0, 0.25, 0, 0, 0.25, 0, 0, 0.25, 0
+  ], 3));
+  const size = 1024;
+  const pixels = rasterizeVertexColors(geometry, 0, size);
+  const alpha = (x, y) => pixels[(y * size + x) * 4 + 3];
+  assert.equal(alpha(249, 512), 255);
+  assert.equal(alpha(240, 512), 0);
+});
