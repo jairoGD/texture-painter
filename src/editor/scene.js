@@ -7,7 +7,7 @@ import { captureVisibleUv, projectLassoToUv } from './screen-lasso.js';
 import { captureVisibleFaces } from './screen-face-selection.js';
 import { sampleScreenStroke } from './surface-stroke.js';
 import { sampleThroughLine } from './through-line.js';
-import { lineStylePaths } from './line-style.js';
+import { lineStylePaths, styledPolylinePaths } from './line-style.js';
 import { curveScreenPoints } from './curve-path.js';
 import { createModelMirror, reflectedCamera } from './model-mirror.js';
 import { setTextureResolution, textureResolution } from './texture-resolution.js';
@@ -422,17 +422,21 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     if (curvePoints.length < 2) return;
     const rect = renderer.domElement.getBoundingClientRect();
     const points = curveScreenPoints(curvePoints, curveStep);
+    const paths = styledPolylinePaths(points, toolSettings.curve);
     context.save();
-    context.beginPath();
-    context.moveTo(points[0].x - rect.left, points[0].y - rect.top);
-    for (const point of points.slice(1)) context.lineTo(point.x - rect.left, point.y - rect.top);
     context.lineCap = 'round';
     context.lineJoin = 'round';
     context.lineWidth = Math.max(1, toolSettings.curve?.size ?? 2);
     context.strokeStyle = toolSettings.curve?.color ?? '#ffffff';
     context.shadowColor = '#000000';
     context.shadowBlur = 3;
-    context.stroke();
+    for (const path of paths) {
+      if (!path.length) continue;
+      context.beginPath();
+      context.moveTo(path[0].x - rect.left, path[0].y - rect.top);
+      for (const point of path.slice(1)) context.lineTo(point.x - rect.left, point.y - rect.top);
+      context.stroke();
+    }
     context.shadowBlur = 0;
     context.fillStyle = '#70bfff';
     for (const point of curvePoints) {
@@ -446,13 +450,16 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   function commitCurve() {
     if (!curveStartHit || !painter.beginLine(curveStartHit, toolSettings.curve,
       mirrorHitAt(curveStartHit), curveMode, true)) return false;
-    const points = curveScreenPoints(curvePoints, 2);
-    const hits = [];
-    for (let index = 1; index < points.length; index++) {
-      const segment = sampleScreenStroke(points[index - 1], points[index], hitTestAt, 2);
-      hits.push(...(index === 1 ? segment : segment.slice(1)));
-    }
-    painter.updateLine([hits, mirrorEnabled ? hits.map(mirrorHitAt) : []]);
+    const paths = styledPolylinePaths(curveScreenPoints(curvePoints, 2), toolSettings.curve);
+    const hits = paths.map((points) => {
+      const path = [];
+      for (let index = 1; index < points.length; index++) {
+        const segment = sampleScreenStroke(points[index - 1], points[index], hitTestAt, 2);
+        path.push(...(index === 1 ? segment : segment.slice(1)));
+      }
+      return path;
+    });
+    painter.updateLine([...hits, ...(mirrorEnabled ? hits.map((path) => path.map(mirrorHitAt)) : [])]);
     return painter.commitLine();
   }
 

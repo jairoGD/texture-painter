@@ -810,7 +810,8 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
     const surface = surfaceAt(hit);
     if (!surface || (selection && maskEnabled && surface !== selection.surface)) return false;
     commitFloatingSelection();
-    const styledUv = mode === 'uv' && options.lineStyle && options.lineStyle !== 'solid';
+    const styledUv = mode === 'uv' && !preservePath && options.lineStyle &&
+      options.lineStyle !== 'solid';
     linePreview = { options: { ...options }, mode,
       preservePath: preservePath || styledUv || options.lineStyle === 'wavy',
       styledUv, before: new Map(),

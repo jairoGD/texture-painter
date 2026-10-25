@@ -14,6 +14,23 @@ const fineSize = { ...size, min: 1 };
 const hardness = { type: 'slider', key: 'hardness', label: 'Hardness', min: 0, max: 100, step: 1, unit: '%' };
 const opacity = { type: 'slider', key: 'opacity', label: 'Opacity', min: 1, max: 100, step: 1, unit: '%' };
 const antialias = { type: 'checkbox', key: 'antialias', label: 'Antialiasing' };
+const lineStyleDefaults = { lineStyle: 'solid', dashLength: 16, dashGap: 8,
+  waveHeight: 8, waveSpacing: 32 };
+const lineStyleControls = [
+  { type: 'select', key: 'lineStyle', label: 'Appearance', options: [
+    { value: 'solid', label: 'Continuous' },
+    { value: 'dashed', label: 'Dashed' },
+    { value: 'wavy', label: 'Wavy' }
+  ] },
+  { type: 'number', key: 'dashLength', label: 'Dash length', min: 1, max: 1024,
+    step: 1, unit: 'px', when: { lineStyle: 'dashed' } },
+  { type: 'number', key: 'dashGap', label: 'Dash spacing', min: 1, max: 1024,
+    step: 1, unit: 'px', when: { lineStyle: 'dashed' } },
+  { type: 'number', key: 'waveHeight', label: 'Wave height', min: 0, max: 512,
+    step: 1, unit: 'px', when: { lineStyle: 'wavy' } },
+  { type: 'number', key: 'waveSpacing', label: 'Wave spacing', min: 2, max: 1024,
+    step: 1, unit: 'px', when: { lineStyle: 'wavy' } }
+];
 export const TOOL_DEFINITIONS = [
   { id: 'brush', label: 'Brush', iconUrl: brushIcon,
     usesColor: true, defaults: { size: 10, hardness: 100, opacity: 100, antialias: true },
@@ -26,24 +43,12 @@ export const TOOL_DEFINITIONS = [
     controls: [{ type: 'slider', key: 'tolerance', label: 'Tolerance', min: 0, max: 100, step: 1, unit: '%' }, opacity] },
   { id: 'line', label: 'Line', iconUrl: lineIcon,
     usesColor: true, defaults: { size: 2, hardness: 100, opacity: 100, antialias: true,
-      lineStyle: 'solid', dashLength: 16, dashGap: 8, waveHeight: 8, waveSpacing: 32 },
-    controls: [fineSize, hardness, opacity, antialias,
-      { type: 'select', key: 'lineStyle', label: 'Appearance', options: [
-        { value: 'solid', label: 'Continuous' },
-        { value: 'dashed', label: 'Dashed' },
-        { value: 'wavy', label: 'Wavy' }
-      ] },
-      { type: 'number', key: 'dashLength', label: 'Dash length', min: 1, max: 1024,
-        step: 1, unit: 'px', when: { lineStyle: 'dashed' } },
-      { type: 'number', key: 'dashGap', label: 'Dash spacing', min: 1, max: 1024,
-        step: 1, unit: 'px', when: { lineStyle: 'dashed' } },
-      { type: 'number', key: 'waveHeight', label: 'Wave height', min: 0, max: 512,
-        step: 1, unit: 'px', when: { lineStyle: 'wavy' } },
-      { type: 'number', key: 'waveSpacing', label: 'Wave spacing', min: 2, max: 1024,
-        step: 1, unit: 'px', when: { lineStyle: 'wavy' } }] },
+      ...lineStyleDefaults },
+    controls: [fineSize, hardness, opacity, antialias, ...lineStyleControls] },
   { id: 'curve', label: 'Curve', iconUrl: curveIcon,
-    usesColor: true, defaults: { size: 2, hardness: 100, opacity: 100, antialias: true },
-    controls: [fineSize, hardness, opacity, antialias] },
+    usesColor: true, defaults: { size: 2, hardness: 100, opacity: 100, antialias: true,
+      ...lineStyleDefaults },
+    controls: [fineSize, hardness, opacity, antialias, ...lineStyleControls] },
   { id: 'blur', label: 'Blur', iconUrl: blurIcon,
     defaults: { size: 72, hardness: 35, strength: 20, spread: 20 },
     controls: [size, hardness,
