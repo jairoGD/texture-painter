@@ -32,6 +32,19 @@ const lineStyleControls = [
   { type: 'number', key: 'waveSpacing', label: 'Wave spacing', min: 2, max: 1024,
     step: 1, unit: 'px', when: { lineStyle: 'wavy' } }
 ];
+const textureStyleDefaults = { textureImage: null, seamlessTexture: false,
+  flipTexture: false };
+const textureStyleControls = [
+  { ...lineStyleControls[0], options: [...lineStyleControls[0].options,
+    { value: 'texture', label: 'Texture' }] },
+  ...lineStyleControls.slice(1),
+  { type: 'imageImport', key: 'textureImage', label: 'Image',
+    when: { lineStyle: 'texture' } },
+  { type: 'checkbox', key: 'seamlessTexture', label: 'Align texture ends',
+    when: { lineStyle: 'texture' } },
+  { type: 'checkbox', key: 'flipTexture', label: 'Flip',
+    when: { lineStyle: 'texture' } }
+];
 export const TOOL_DEFINITIONS = [
   { id: 'brush', label: 'Brush', iconUrl: brushIcon,
     usesColor: true, defaults: { size: 10, hardness: 100, opacity: 100, antialias: true },
@@ -44,27 +57,17 @@ export const TOOL_DEFINITIONS = [
     controls: [{ type: 'slider', key: 'tolerance', label: 'Tolerance', min: 0, max: 100, step: 1, unit: '%' }, opacity] },
   { id: 'line', label: 'Line', iconUrl: lineIcon,
     usesColor: true, defaults: { size: 2, hardness: 100, opacity: 100, antialias: true,
-      ...lineStyleDefaults },
-    controls: [fineSize, hardness, opacity, antialias, ...lineStyleControls] },
+      ...lineStyleDefaults, ...textureStyleDefaults },
+    controls: [fineSize, hardness, opacity, antialias, ...textureStyleControls] },
   { id: 'curve', label: 'Curve', iconUrl: curveIcon,
     usesColor: true, defaults: { size: 2, hardness: 100, opacity: 100, antialias: true,
-      ...lineStyleDefaults, curveMethod: 'dynamic', textureImage: null,
-      seamlessTexture: false, flipTexture: false },
+      ...lineStyleDefaults, ...textureStyleDefaults, curveMethod: 'dynamic' },
     controls: [
       { type: 'select', key: 'curveMethod', label: 'Method', options: [
         { value: 'dynamic', label: 'Dynamic' },
         { value: 'precise', label: 'Precise' }
       ] },
-      fineSize, hardness, opacity, antialias,
-      { ...lineStyleControls[0], options: [...lineStyleControls[0].options,
-        { value: 'texture', label: 'Texture' }] },
-      ...lineStyleControls.slice(1),
-      { type: 'imageImport', key: 'textureImage', label: 'Image',
-        when: { lineStyle: 'texture' } },
-      { type: 'checkbox', key: 'seamlessTexture', label: 'Align texture ends',
-        when: { lineStyle: 'texture' } },
-      { type: 'checkbox', key: 'flipTexture', label: 'Flip',
-        when: { lineStyle: 'texture' } }] },
+      fineSize, hardness, opacity, antialias, ...textureStyleControls] },
   { id: 'gradient', label: 'Gradient', iconUrl: gradientIcon,
     defaults: { startColor: { color: '#000000', alpha: 100 },
       endColor: { color: '#000000', alpha: 0 }, xray: false },

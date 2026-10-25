@@ -257,6 +257,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   let previousPaintScreen = null;
   let strokeTool = null;
   let lineStartScreen = null;
+  let lineEndScreen = null;
   let lineStartHit = null;
   let lineStartMirrorHit = null;
   let lineThrough = false;
@@ -461,6 +462,11 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   function previewLineAt(event) {
     if (!lineStartScreen) return;
     const end = { x: event.clientX, y: event.clientY };
+    if (toolSettings.line?.lineStyle === 'texture') {
+      lineEndScreen = end;
+      renderLineTexturePreview();
+      return;
+    }
     if (lineThrough && lineThroughTarget) {
       const paths = lineStylePaths(lineStartScreen, end, toolSettings.line);
       const hitPaths = withDoubleSidedPaintMeshes(() => paths.flatMap((points) => {
@@ -495,6 +501,29 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       return path;
     });
     painter.updateLine([...hits, ...(mirrorEnabled ? hits.map((path) => path.map(mirrorHitAt)) : [])]);
+  }
+
+  function renderLineTexturePreview() {
+    if (!lineStartScreen || !lineEndScreen) return;
+    const context = curveCanvas.getContext('2d');
+    context.clearRect(0, 0, curveCanvas.width, curveCanvas.height);
+    const rect = renderer.domElement.getBoundingClientRect();
+    context.save();
+    context.lineCap = 'round';
+    context.lineWidth = Math.max(1, toolSettings.line?.size ?? 2);
+    context.strokeStyle = toolSettings.line?.color ?? '#ffffff';
+    context.shadowColor = '#000000';
+    context.shadowBlur = 3;
+    context.beginPath();
+    context.moveTo(lineStartScreen.x - rect.left, lineStartScreen.y - rect.top);
+    context.lineTo(lineEndScreen.x - rect.left, lineEndScreen.y - rect.top);
+    context.stroke();
+    context.restore();
+  }
+
+  function clearLineTexturePreview() {
+    curveCanvas.getContext('2d').clearRect(0, 0, curveCanvas.width, curveCanvas.height);
+    lineEndScreen = null;
   }
 
   function resetCurve(cancel = false) {
@@ -701,7 +730,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
           context.drawImage(source, 0, 0);
           resolve(context.getImageData(0, 0, canvas.width, canvas.height));
         };
-        source.onerror = () => reject(new Error('Could not decode curve image'));
+        source.onerror = () => reject(new Error('Could not decode texture image'));
         source.src = image.dataUrl;
       });
       curveImageCache.set(image.dataUrl, pending);
@@ -710,16 +739,12 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     return curveImageCache.get(image.dataUrl);
   }
 
-  async function commitCurveTexture(precisePoints = null, preciseStartHit = null) {
-    const settings = { ...toolSettings.curve };
-    const targetId = selectedTargetId;
-    const startHit = preciseStartHit ?? curveStartHit;
-    const points = precisePoints ?? curveScreenPoints(curvePoints, 2, 2);
+  async function commitScreenTexture(settings, targetId, startHit, points, through = false) {
     const rect = renderer.domElement.getBoundingClientRect();
     const localPoints = points.map((point) =>
       ({ x: point.x - rect.left, y: point.y - rect.top }));
     const image = await curveImageData(settings.textureImage);
-    if (!image || !startHit || !painter.isMaterialVisible(targetId) ||
+    if (!image || (!startHit && !through) || !painter.isMaterialVisible(targetId) ||
         targetId !== selectedTargetId) return false;
     const face = painter.getFaceTarget(targetId);
     if (!face) return false;
@@ -747,16 +772,33 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     if (mirrorEnabled) {
       const point = resolveMirrorHit.planePoint;
       const normal = resolveMirrorHit.planeNormal;
-      const side = Math.sign(startHit.point.clone().sub(point).dot(normal)) || 1;
+      let mirrorHit = startHit;
+      if (!mirrorHit && through) {
+        const [start, end] = points;
+        for (let step = 0; step <= 16 && !mirrorHit; step++) {
+          const ratio = step / 16;
+          const hit = hitTestAt(start.x + (end.x - start.x) * ratio,
+            start.y + (end.y - start.y) * ratio);
+          if (hit && painter.targetIdAt(hit) === targetId) mirrorHit = hit;
+        }
+      }
+      const side = Math.sign((mirrorHit?.point ?? face.mesh.getWorldPosition(
+        new THREE.Vector3())).clone().sub(point).dot(normal)) || 1;
       const mirrorCamera = reflectedCamera(camera, point, normal);
       mirror = { camera: mirrorCamera, side, plane: { point, normal },
-        visibleUv: visibilityFor(captureFor(mirrorCamera)) };
+        visibleUv: through ? null : visibilityFor(captureFor(mirrorCamera)) };
     }
     return painter.applyCurveTexture(targetId, camera, viewport, localPoints, image,
       { size: settings.size, opacity: settings.opacity,
         antialias: settings.antialias, seamless: settings.seamlessTexture,
         flip: settings.flipTexture },
-      visibilityFor(captureFor(camera)), mirror);
+      through ? null : visibilityFor(captureFor(camera)), mirror);
+  }
+
+  function commitCurveTexture(precisePoints = null, preciseStartHit = null) {
+    return commitScreenTexture({ ...toolSettings.curve }, selectedTargetId,
+      preciseStartHit ?? curveStartHit,
+      precisePoints ?? curveScreenPoints(curvePoints, 2, 2));
   }
 
   function queueDraw(event) {
@@ -964,6 +1006,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     previousPaintScreen = null;
     strokeTool = null;
     lineStartScreen = null;
+    lineEndScreen = null;
     lineStartHit = null;
     lineStartMirrorHit = null;
     lineThrough = false;
@@ -1051,17 +1094,22 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       renderGradientGuide();
     } else if (activeTool === 'line') {
       if (event.ctrlKey) {
-        painter.beginThroughLine(toolSettings.line);
+        if (toolSettings.line?.lineStyle !== 'texture')
+          painter.beginThroughLine(toolSettings.line);
         lineThrough = true;
         lineThroughTarget = painter.getFaceTarget(selectedTargetId);
         lineStartScreen = { x: event.clientX, y: event.clientY };
         if (lineThroughTarget) previewLineAt(event);
       } else {
         const mirrored = mirrorHitAt(hit);
-        if (painter.beginLine(hit, toolSettings.line, mirrored, gestureSamplingMode)) {
+        const canStart = toolSettings.line?.lineStyle === 'texture' ?
+          hit && painter.targetIdAt(hit) === selectedTargetId :
+          painter.beginLine(hit, toolSettings.line, mirrored, gestureSamplingMode);
+        if (canStart) {
           lineStartScreen = { x: event.clientX, y: event.clientY };
           lineStartHit = hit;
           lineStartMirrorHit = mirrored;
+          if (toolSettings.line?.lineStyle === 'texture') previewLineAt(event);
         }
       }
     }
@@ -1111,6 +1159,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     pendingDraw = null;
     let curveCommitted = false;
     let gradientCommitted = false;
+    let lineTexturePending = false;
     if (event.type === 'pointerup') {
       if (pointerAction === 'moveSelection') {
         const hit = gestureSamplingMode === 'uv' ? hitTest(event) : null;
@@ -1200,12 +1249,31 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         }
       }
     } else if (activeTool === 'line') {
-      if (event.type === 'pointercancel') painter.cancelLine();
-      else { previewLineAt(event); painter.commitLine(); }
+      if (event.type === 'pointercancel') {
+        if (toolSettings.line?.lineStyle === 'texture') clearLineTexturePreview();
+        else painter.cancelLine();
+      }
+      else if (toolSettings.line?.lineStyle === 'texture') {
+        const start = lineStartScreen;
+        const targetId = selectedTargetId;
+        const startHit = lineStartHit;
+        const through = lineThrough;
+        const settings = { ...toolSettings.line };
+        clearLineTexturePreview();
+        lineTexturePending = true;
+        if (start && (!through || lineThroughTarget))
+          commitScreenTexture(settings, targetId, startHit,
+            [start, { x: event.clientX, y: event.clientY }], through)
+            .then((changed) => {
+              onSelectionChanged?.(changed ? 'Line painted' : 'Line unchanged');
+              if (changed) onContentChanged?.();
+            }).catch((error) => onSelectionChanged?.(`Line failed: ${error.message}`));
+      } else { previewLineAt(event); painter.commitLine(); }
     } else if (activeTool !== 'eyedropper' && activeTool !== 'wand') painter.endStroke();
     const movedSelection = pointerAction === 'moveSelection';
     pointerAction = null;
     lineStartScreen = null;
+    lineEndScreen = null;
     lineStartHit = null;
     lineStartMirrorHit = null;
     lineThrough = false;
@@ -1217,7 +1285,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
     if (movedSelection || curveCommitted || gradientCommitted ||
         (activeTool !== 'eyedropper' && activeTool !== 'wand' &&
-          activeTool !== 'curve' && activeTool !== 'gradient')) {
+          activeTool !== 'curve' && activeTool !== 'gradient' && !lineTexturePending)) {
       onContentChanged?.();
     }
   }
@@ -1408,6 +1476,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     gradientCanvas.width = width; gradientCanvas.height = height;
     renderGradientGuide();
     renderCurvePreview();
+    if (activeTool === 'line' && toolSettings.line?.lineStyle === 'texture')
+      renderLineTexturePreview();
     if (pointerAction === 'faces') renderFaceRectangle();
     else renderLassoPath();
   }
@@ -1464,6 +1534,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     setLightingMode: (mode) => { currentLightingMode = mode; painter.setLightingMode(mode); },
     setTool: (tool) => {
       if (activeTool === 'curve' && tool !== 'curve') resetCurve(true);
+      if (activeTool === 'line' && tool !== 'line' && lineEndScreen)
+        clearLineTexturePreview();
       if (tool !== 'faces' && pointerAction === 'faces') {
         const pointerId = activePointer;
         activePointer = null; pointerAction = null; strokeRect = null;
