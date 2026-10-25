@@ -1,4 +1,5 @@
 import './ui.css';
+import './scrollbar.css';
 
 export function element(tag, { className, text, attributes = {}, on = {} } = {}, children = []) {
   const node = document.createElement(tag);
