@@ -1,4 +1,4 @@
-import { mixSeamBlur, seamBlurCorrections } from './surface-blur.js';
+import { surfaceSeamBlur } from './surface-blur.js';
 
 function clamp(value) { return Math.max(0, Math.min(255, Math.round(value))); }
 
@@ -230,12 +230,22 @@ export function renderFilterRegion({ source, sourceRect, dirtyRect, textureWidth
   const original = new Uint8ClampedArray(output.length);
   const blurred = category === 'blur' && settings.depth > 0 ?
     blurredPixels(source, sourceRect, textureWidth, mask, settings.depth, isolateBlur) : null;
-  const seamCorrections = blurred && topology && fullSource ?
-    seamBlurCorrections(topology, dirtyRect, textureWidth, fullSource.height,
-      Math.max(0.5, settings.depth / 2),
-      (pixel) => fullSource.data.subarray(pixel * 4, pixel * 4 + 4),
-      mask && isolateBlur ? mask : null) : null;
   const working = blurred?.pixels ?? source.data;
+  const sampleBlur = (id) => {
+    const x = id % textureWidth, y = Math.floor(id / textureWidth);
+    const original = fullSource.data.subarray(id * 4, id * 4 + 4);
+    if (x < sourceRect.left || x >= sourceRect.right ||
+        y < sourceRect.top || y >= sourceRect.bottom) return original;
+    const offset = ((y - sourceRect.top) * source.width + x - sourceRect.left) * 4;
+    const alpha = blurred.maskBlur ? (blurred.maskBlur[offset + 3] ?
+      clamp(working[offset + 3] * 255 / blurred.maskBlur[offset + 3]) : 0) :
+      working[offset + 3];
+    return [working[offset], working[offset + 1], working[offset + 2], alpha];
+  };
+  const seamPixels = blurred && topology && fullSource ?
+    surfaceSeamBlur(topology, dirtyRect, textureWidth, fullSource.height,
+      settings.depth, sampleBlur, (id) => fullSource.data[id * 4 + 3],
+      mask, isolateBlur) : null;
   const mosaic = category === 'blur' ? settings.mosaic : 1;
   const rampLut = category === 'ramp' ? colorRampLut(settings.stops, settings.interpolation) : null;
   const blocks = new Map();
@@ -246,8 +256,7 @@ export function renderFilterRegion({ source, sourceRect, dirtyRect, textureWidth
       (blurred.maskBlur[offset + 3] ? clamp(working[offset + 3] * 255 /
         blurred.maskBlur[offset + 3]) : 0) : working[offset + 3];
     const pixel = [working[offset], working[offset + 1], working[offset + 2], alpha];
-    return mixSeamBlur(pixel, seamCorrections?.get(globalY * textureWidth + globalX),
-      source.data[offset + 3]);
+    return seamPixels?.get(globalY * textureWidth + globalX) ?? pixel;
   }
 
   function mosaicPixel(globalX, globalY) {

@@ -3,6 +3,7 @@ import test from 'node:test';
 import * as THREE from 'three';
 import { executePaintCommand } from '../src/editor/paint-operations.js';
 import { renderFilterRegion } from '../src/editor/filter-effects.js';
+import { surfaceSeamBlur } from '../src/editor/surface-blur.js';
 import { surfaceWandTopology } from '../src/editor/surface-wand-topology.js';
 
 function seamGeometry() {
@@ -85,6 +86,23 @@ test('isolated selection prevents surface blur from sampling across its boundary
   assert.equal(pixels[portal * 4 + 2], 0);
 });
 
+test('filter seam correction fades into the original blur without touching empty atlas pixels', () => {
+  const width = 128;
+  const topology = surfaceWandTopology(seamGeometry(), 0, width);
+  const portal = [...topology.portals.keys()].find((index) => topology.owners[index] === 1);
+  const rect = { left: 0, top: 0, right: width, bottom: width };
+  const corrected = surfaceSeamBlur(topology, rect, width, width, 4,
+    (id) => topology.owners[id] === 1 ? [255, 0, 0, 128] : [0, 0, 255, 128],
+    () => 255);
+  assert.ok(corrected.get(portal)[2] > 0);
+  assert.ok([...corrected.keys()].every((id) => topology.owners[id] !== 0));
+  const px = portal % width, py = Math.floor(portal / width);
+  const farther = [...corrected.keys()].find((id) => topology.owners[id] === 1 &&
+    Math.abs(id % width - px) + Math.abs(Math.floor(id / width) - py) >= 7 &&
+    corrected.get(id)[3] < 255);
+  assert.ok(farther !== undefined, 'alpha restoration must fade out before the graph patch ends');
+});
+
 test('blur filter reads the connected UV island in surface mode', () => {
   const width = 64;
   const topology = surfaceWandTopology(seamGeometry(), 0, width);
@@ -120,8 +138,20 @@ test('blur filter reads the connected UV island in surface mode', () => {
       category: 'blur', settings: { depth: 4, mosaic: 1 }, fullSource: source };
     const uv = renderFilterRegion(args);
     const surface = renderFilterRegion({ ...args, topology });
+    const remote = [...topology.portals.get(portal)]
+      .find((index) => topology.owners[index] === 2);
+    const inward = [remote - 1, remote + 1, remote - width, remote + width]
+      .find((index) => topology.owners[index] === 2 && !topology.portals.has(index));
     assert.equal(uv.data[portal * 4 + 2], 0);
     assert.ok(surface.data[portal * 4 + 2] > 0);
+    assert.ok(surface.data[remote * 4] > 0,
+      'the connected island receives color from the other side');
+    assert.ok(inward !== undefined && surface.data[inward * 4] > 0,
+      'the correction extends inward rather than stopping at the seam texel');
+    const mask = Uint8Array.from(topology.owners, (owner) => owner === 1 ? 255 : 0);
+    const isolated = renderFilterRegion({ ...args, topology, mask, isolateBlur: true });
+    assert.equal(isolated.data[portal * 4 + 2], 0,
+      'an isolated selection cannot sample the unselected island');
   } finally {
     globalThis.document = oldDocument;
     globalThis.ImageData = oldImageData;
