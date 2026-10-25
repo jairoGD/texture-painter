@@ -7,6 +7,7 @@ import { captureVisibleUv, projectLassoToUv } from './screen-lasso.js';
 import { captureVisibleFaces } from './screen-face-selection.js';
 import { sampleScreenStroke } from './surface-stroke.js';
 import { sampleThroughLine } from './through-line.js';
+import { lineStylePaths } from './line-style.js';
 import { curveScreenPoints } from './curve-path.js';
 import { createModelMirror, reflectedCamera } from './model-mirror.js';
 import { setTextureResolution, textureResolution } from './texture-resolution.js';
@@ -355,11 +356,23 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
 
   function previewLineAt(event) {
     if (!lineStartScreen) return;
+    const end = { x: event.clientX, y: event.clientY };
     if (lineThrough && lineThroughTarget) {
-      const paths = withDoubleSidedPaintMeshes(() => sampleThroughLine(lineStartScreen,
-        { x: event.clientX, y: event.clientY }, throughHitsAt));
+      const paths = lineStylePaths(lineStartScreen, end, toolSettings.line);
+      const hitPaths = withDoubleSidedPaintMeshes(() => paths.flatMap((points) => {
+        const depths = [];
+        for (let index = 1; index < points.length; index++) {
+          const sampled = sampleThroughLine(points[index - 1], points[index], throughHitsAt);
+          for (let depth = 0; depth < Math.max(depths.length, sampled.length); depth++) {
+            if (!depths[depth]) depths[depth] = [];
+            if (!sampled[depth]) depths[depth].push(null);
+            else depths[depth].push(...(index === 1 ? sampled[depth] : sampled[depth].slice(1)));
+          }
+        }
+        return depths;
+      }));
       painter.updateLine(mirrorEnabled ?
-        [...paths, ...paths.map((path) => path.map(mirrorHitAt))] : paths);
+        [...hitPaths, ...hitPaths.map((path) => path.map(mirrorHitAt))] : hitPaths);
       return;
     }
     if (gestureSamplingMode === 'uv') {
@@ -368,9 +381,16 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       painter.updateLine([[lineStartHit, hit], [lineStartMirrorHit, mirrorHitAt(hit)]]);
       return;
     }
-    const hits = sampleScreenStroke(lineStartScreen,
-      { x: event.clientX, y: event.clientY }, hitTestAt, 2);
-    painter.updateLine([hits, mirrorEnabled ? hits.map(mirrorHitAt) : []]);
+    const paths = lineStylePaths(lineStartScreen, end, toolSettings.line);
+    const hits = paths.map((points) => {
+      const path = [];
+      for (let index = 1; index < points.length; index++) {
+        const segment = sampleScreenStroke(points[index - 1], points[index], hitTestAt, 2);
+        path.push(...(index === 1 ? segment : segment.slice(1)));
+      }
+      return path;
+    });
+    painter.updateLine([...hits, ...(mirrorEnabled ? hits.map((path) => path.map(mirrorHitAt)) : [])]);
   }
 
   function resetCurve(cancel = false) {

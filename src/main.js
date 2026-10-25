@@ -374,7 +374,9 @@ const propertiesPanel = panel({ title: 'Properties', subtitle: 'Brush', children
 function renderProperties() {
   const tool = TOOL_DEFINITIONS.find((item) => item.id === activeTool);
   propertiesPanel.querySelector('.ui-panel__heading p').textContent = tool.label;
-  propertiesBody.replaceChildren(...tool.controls.map((control) => renderControl({
+  propertiesBody.replaceChildren(...tool.controls.filter((control) =>
+    !control.when || Object.entries(control.when).every(([key, value]) =>
+      toolSettings[activeTool][key] === value)).map((control) => renderControl({
     ...control,
     value: toolSettings[activeTool][control.key],
     checked: control.key ? toolSettings[activeTool][control.key] : undefined,
@@ -385,6 +387,7 @@ function renderProperties() {
     onChange: (value) => {
       toolSettings[activeTool][control.key] = value;
       scene.setToolSettings(activeTool, toolSettings[activeTool]);
+      if (control.key === 'lineStyle') renderProperties();
       markDirty();
     }
   })));

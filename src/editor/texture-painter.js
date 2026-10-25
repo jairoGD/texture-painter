@@ -18,6 +18,7 @@ import { FILTER_CATEGORIES } from './filter-definitions.js';
 import { renderFilterRegion } from './filter-effects.js';
 import { combineWandMasks, wandSelectionMask } from './wand-selection.js';
 import { surfaceWandTopology } from './surface-wand-topology.js';
+import { lineStylePaths } from './line-style.js';
 import { scaleLayerRegion, selectionMaskForLayer, uvToLayerPixel } from './layer-space.js';
 
 function configureTextureSampling(texture, antialiasEnabled) {
@@ -809,7 +810,10 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
     const surface = surfaceAt(hit);
     if (!surface || (selection && maskEnabled && surface !== selection.surface)) return false;
     commitFloatingSelection();
-    linePreview = { options: { ...options }, mode, preservePath, before: new Map(),
+    const styledUv = mode === 'uv' && options.lineStyle && options.lineStyle !== 'solid';
+    linePreview = { options: { ...options }, mode,
+      preservePath: preservePath || styledUv || options.lineStyle === 'wavy',
+      styledUv, before: new Map(),
       lastDirty: new Map(), commands: [] };
     updateLine([[hit], mirroredHit ? [mirroredHit] : []]);
     return true;
@@ -824,7 +828,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
 
   function updateLine(paths) {
     if (!linePreview) return false;
-    const { before, options, mode, preservePath, lastDirty } = linePreview;
+    const { before, options, mode, preservePath, styledUv, lastDirty } = linePreview;
     for (const [surface, regions] of lastDirty) {
       const image = before.get(surface);
       for (const region of regions) {
@@ -838,7 +842,19 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
       if (mode === 'uv' && !preservePath && (!rawHits[0] || !rawHits.at(-1))) continue;
       if (mode === 'uv' && !preservePath && rawHits.length > 1 &&
           surfaceAt(rawHits[0]) !== surfaceAt(rawHits.at(-1))) continue;
-      const hits = mode === 'uv' && !preservePath ? [rawHits[0], rawHits.at(-1)] : rawHits;
+      let hits = mode === 'uv' && !preservePath ? [rawHits[0], rawHits.at(-1)] : rawHits;
+      if (styledUv && rawHits[0] && rawHits.at(-1)) {
+        const surface = surfaceAt(rawHits[0]);
+        if (!surface || surfaceAt(rawHits.at(-1)) !== surface) continue;
+        const start = toPixel(rawHits[0].uv, surface.canvas);
+        const end = toPixel(rawHits.at(-1).uv, surface.canvas);
+        hits = lineStylePaths(start, end, options).flatMap((path, index) => [
+          ...(index ? [null] : []),
+          ...path.map((point) => ({ ...rawHits[0], uv: {
+            x: point.x / surface.canvas.width, y: 1 - point.y / surface.canvas.height
+          } }))
+        ]);
+      }
       let previousHit = null;
       let previousPoint = null;
       let segment = null;
@@ -852,7 +868,9 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
           surface.canvas.width, surface.canvas.height));
         const point = toPixel(hit.uv, surface.canvas);
         const connected = segment && surface === segment.surface &&
-          (mode === 'uv' || canConnectSurfaceHits(previousHit, hit, previousPoint, point,
+          ((mode === 'uv' && (!styledUv || Math.hypot(point.x - previousPoint.x,
+            point.y - previousPoint.y) < surface.canvas.width * 0.2)) ||
+            canConnectSurfaceHits(previousHit, hit, previousPoint, point,
             surface.canvas.width * 0.2));
         if (preservePath) {
           // A curve must retain each short sampled segment. Extending one command to

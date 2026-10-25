@@ -68,6 +68,32 @@ export function checkbox({ label, checked = false, onChange }) {
   return element('label', { className: 'ui-checkbox' }, [input, element('span', { text: label })]);
 }
 
+export function selectControl({ label, options = [], value, onChange }) {
+  const input = element('select', { className: 'ui-field__input',
+    attributes: { 'aria-label': label },
+    on: { change: (event) => onChange?.(event.target.value) } },
+  options.map((option) => element('option', { text: option.label,
+    attributes: { value: option.value } })));
+  input.value = value;
+  return element('label', { className: 'ui-field' }, [element('span', { text: label }), input]);
+}
+
+export function numberControl({ label, value, min = 0, max = 4096, step = 1,
+  unit = '', onChange }) {
+  const input = element('input', { className: 'ui-field__input',
+    attributes: { type: 'number', value, min, max, step, 'aria-label': label },
+    on: { change: (event) => {
+      const next = Number(event.target.value);
+      if (!Number.isFinite(next)) { event.target.value = value; return; }
+      const valid = Math.min(max, Math.max(min, next));
+      event.target.value = valid;
+      onChange?.(valid);
+    } } });
+  return element('label', { className: 'ui-field' }, [
+    element('span', { text: `${label}${unit ? ` (${unit})` : ''}` }), input
+  ]);
+}
+
 export function colorPicker({ label, value = '#000000', onChange }) {
   const output = element('output', { className: 'ui-color-picker__value', text: value.toUpperCase() });
   const input = element('input', {
@@ -174,6 +200,8 @@ const controlTypes = new Map([
   ['slider', slider],
   ['colorPicker', colorPicker],
   ['checkbox', checkbox],
+  ['select', selectControl],
+  ['number', numberControl],
   ['toolGroup', toolGroup],
   ['notice', notice]
 ]);
