@@ -178,6 +178,52 @@ export function addGraphLayer(graph, type) {
   return { mix, source };
 }
 
+export function copyGraphLayerTree(graph, layerId) {
+  const { layers } = readLayerStack(graph);
+  const root = layers.find((layer) => layer.id === layerId);
+  if (!root) return null;
+  return layers.filter((layer) => layer.id === layerId ||
+    layerAncestors(layers, layer).some((ancestor) => ancestor.id === layerId))
+    .map((layer) => ({ id: layer.id, parentId: layer.mix.layerParentId,
+      label: layer.label, mix: structuredClone(layer.mix),
+      source: structuredClone(layer.source) }));
+}
+
+export function pasteGraphLayerTree(graph, copied, beforeId = null) {
+  if (!copied?.length) return null;
+  const ids = new Map(), siblings = new Map(), created = [];
+  for (const item of copied) {
+    const layer = addGraphLayer(graph, item.source.type);
+    if (!layer) return null;
+    const { mix, source } = layer;
+    const mixId = mix.id, sourceId = source.id;
+    const { id: oldMixId, x: mixX, y: mixY, layerSourceId,
+      layerParentId, layerAutoFactor, layerManualFactor, ...mixSettings } = item.mix;
+    const { id: oldSourceId, x: sourceX, y: sourceY, imageKey,
+      ...sourceSettings } = item.source;
+    Object.assign(mix, mixSettings, { id: mixId, layerSourceId: sourceId,
+      layerName: `${item.label} copy`, layerParentId: null });
+    Object.assign(source, sourceSettings, { id: sourceId, imageKey: null });
+    ids.set(item.id, mixId);
+    ids.set(item.source.id, sourceId);
+    const parentId = ids.get(item.parentId);
+    const previousSibling = siblings.get(item.parentId);
+    if (parentId) moveGraphLayerTo(graph, mixId, previousSibling ?? parentId,
+      previousSibling ? 'after' : 'inside');
+    else if (beforeId) moveGraphLayerTo(graph, mixId, beforeId, 'before');
+    siblings.set(item.parentId, mixId);
+    created.push({ original: item, mix, source, manualFactor: layerManualFactor });
+  }
+  for (const layer of created) {
+    const factor = layer.manualFactor;
+    if (factor) layer.mix.layerManualFactor = {
+      from: ids.get(factor.from) ?? factor.from, fromSocket: factor.fromSocket
+    };
+  }
+  syncLayerMasks(graph);
+  return created;
+}
+
 export function removeGraphLayer(graph, layerId) {
   const { layers, base } = readLayerStack(graph);
   const selected = layers.find((layer) => layer.id === layerId);

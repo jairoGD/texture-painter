@@ -84,7 +84,8 @@ nodeEditor = createNodeEditor({ targets: scene.getGraphTargets(),
   onError: (message) => setStatus(message, true)
 });
 layersPanel = createLayersPanel({ nodeEditor,
-  onCreateImage: (id, nodeId) => scene.createImage(id, nodeId),
+  onCreateImage: (id, nodeId, source, name, preserveResolution) =>
+    scene.createImage(id, nodeId, source, name, null, preserveResolution),
   onImportImage: (id, nodeId, file) => scene.importImage(id, nodeId, file),
   onMergeLayer: (id, layerId, graph) => scene.mergeLayerDown(id, layerId, graph),
   getImageCanvas: (id, key) => scene.getLayerImage(id, key),

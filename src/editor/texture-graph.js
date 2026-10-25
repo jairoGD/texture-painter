@@ -37,6 +37,16 @@ export function cloneTextureGraph(graph) {
   return JSON.parse(JSON.stringify(graph));
 }
 
+export function layerVisibleInHierarchy(node, nodes) {
+  const visited = new Set();
+  while (node?.layerSourceId) {
+    if (node.layerVisible === false || visited.has(node.id)) return false;
+    visited.add(node.id);
+    node = nodes.get(node.layerParentId);
+  }
+  return true;
+}
+
 export function addTextureNode(graph, type, position) {
   if (!NODE_TYPES[type] || NODE_TYPES[type].fixed) return null;
   const node = {
@@ -303,7 +313,7 @@ export function evaluateTextureNode(surface, nodeId, socket = 'Color', graph = s
         node.colorA === '#ffffff' ? newCanvas(size) : solidCanvas(size, node.colorA));
       const top = input(node, 'B') ?? solidCanvas(size, node.colorB);
       const mask = input(node, 'Factor');
-      const factor = node.layerVisible === false || node.layerIsMask ? 0 :
+      const factor = !layerVisibleInHierarchy(node, nodes) || node.layerIsMask ? 0 :
         Math.max(0, Math.min(1, Number(node.factor) || 0));
       result = blendCanvases(base, top, node.mode, factor, size, mask);
     } else if (node.type === 'layerMask')
@@ -368,7 +378,7 @@ function renderGraphRegion(surface, region) {
       const base = input(node, 'A') ?? solidCanvas(width, node.colorA, height);
       const top = input(node, 'B') ?? solidCanvas(width, node.colorB, height);
       const mask = input(node, 'Factor');
-      const factor = node.layerVisible === false || node.layerIsMask ? 0 :
+      const factor = !layerVisibleInHierarchy(node, nodes) || node.layerIsMask ? 0 :
         Math.max(0, Math.min(1, Number(node.factor) || 0));
       result = blendCanvases(base, top, node.mode, factor, width, mask, height);
     } else if (node.type === 'layerMask')
@@ -437,7 +447,7 @@ function renderSimpleLayerStack(surface, region = null) {
     compositeContext.fillRect(left, top, width, height);
   }
   for (const { blend, source, asset } of layers.reverse()) {
-    if (blend.layerVisible === false || blend.layerIsMask) continue;
+    if (!layerVisibleInHierarchy(blend, nodes) || blend.layerIsMask) continue;
     const factor = Math.max(0, Math.min(1, Number(blend.factor) || 0));
     if (!factor) continue;
     let canvas = asset.canvas;

@@ -37,6 +37,26 @@ test('a simple layer stack composites only the dirty rectangle', () => {
   assert.equal(surface.texture.needsUpdate, false);
 });
 
+test('a hidden parent removes its child from the fast layer composite', () => {
+  const graph = createTextureGraph();
+  const parent = addGraphLayer(graph, 'image');
+  const child = addGraphLayer(graph, 'image');
+  parent.source.imageKey = 'parent';
+  child.source.imageKey = 'child';
+  moveGraphLayerTo(graph, child.mix.id, parent.mix.id, 'inside');
+  parent.mix.layerVisible = false;
+  const draws = [];
+  const surface = {
+    graph, canvas: { width: 64, height: 64 }, compositeCanvas: { width: 64 },
+    imageAssets: new Map([['parent', { canvas: { width: 64, height: 64 } }],
+      ['child', { canvas: { width: 64, height: 64 } }]]),
+    compositeContext: { save() {}, restore() {}, fillRect() {},
+      drawImage(...args) { draws.push(args); } }
+  };
+  assert.equal(renderTextureGraph(surface, { left: 0, top: 0, right: 8, bottom: 8 }), true);
+  assert.equal(draws.length, 0);
+});
+
 test('a native-resolution layer covers the project UV canvas without padding', () => {
   const oldDocument = globalThis.document;
   const draws = [];

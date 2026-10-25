@@ -1,5 +1,6 @@
-import { addGraphLayer, layerAncestors, moveGraphLayer, moveGraphLayerTo,
-  readLayerStack, removeGraphLayer, syncLayerMasks } from '../editor/layer-graph.js';
+import { addGraphLayer, copyGraphLayerTree, layerAncestors, moveGraphLayer,
+  moveGraphLayerTo, pasteGraphLayerTree, readLayerStack, removeGraphLayer,
+  syncLayerMasks } from '../editor/layer-graph.js';
 import { BLEND_MODES, cloneTextureGraph } from '../editor/texture-graph.js';
 import { button, element, toggleButton } from './index.js';
 import { createMaterialsPanel } from './materials-panel.js';
@@ -20,6 +21,8 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
   getImageCanvas, getImageInfo, onError }) {
   const selectedByTarget = new Map();
   let draggingId = null;
+  let copiedLayers = null;
+  let contextMenu = null;
   const materialsPanel = createMaterialsPanel({ onSelect: (id) => nodeEditor.selectTarget(id) });
   const list = element('div', { className: 'layers-panel__list', attributes: { role: 'listbox', 'aria-label': 'Layers' } });
   const newImageInput = element('input', { attributes: { type: 'file', accept: 'image/*', hidden: '' } });
@@ -104,6 +107,85 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     return layers.find((layer) => layer.id === id) ?? null;
   }
   function fail(error) { onError?.(error?.message || 'Unable to update layer'); }
+
+  function copyLayer(state, layerId) {
+    const tree = copyGraphLayerTree(state.graph, layerId);
+    if (!tree) return null;
+    return tree.map((item) => {
+      const image = getImageCanvas?.(state.targetId, item.source.imageKey);
+      if (!image) throw new Error(`Image missing from ${item.label}`);
+      const canvas = document.createElement('canvas');
+      canvas.width = image.width;
+      canvas.height = image.height;
+      canvas.getContext('2d').drawImage(image, 0, 0);
+      return { ...item, canvas,
+        imported: getImageInfo?.(state.targetId, item.source.imageKey)?.imported ?? false };
+    });
+  }
+
+  function pasteLayer(copied = copiedLayers, beforeId = selectedLayer(current())?.id) {
+    if (!copied?.length) return;
+    const state = current();
+    if (!state.graph) return;
+    const graph = cloneTextureGraph(state.graph);
+    const created = pasteGraphLayerTree(graph, copied, beforeId);
+    if (!created) return;
+    try {
+      for (const { original, source } of created) {
+        const asset = onCreateImage(state.targetId, source.id, original.canvas,
+          original.source.imageName || original.label, original.imported);
+        if (!asset) throw new Error(`Unable to copy image from ${original.label}`);
+        source.imageKey = asset.key;
+        source.imageName = asset.name;
+      }
+      selectedByTarget.set(state.targetId, created[0].mix.id);
+      nodeEditor.replaceGraph(graph);
+      nodeEditor.choosePaintSource(created[0].source.id);
+    } catch (error) { fail(error); }
+  }
+
+  function closeContextMenu() {
+    contextMenu?.remove();
+    contextMenu = null;
+    document.removeEventListener('pointerdown', outsideContextMenu, true);
+    document.removeEventListener('keydown', contextMenuKeydown, true);
+    window.removeEventListener('blur', closeContextMenu);
+    window.removeEventListener('scroll', closeContextMenu, true);
+  }
+  function outsideContextMenu(event) {
+    if (!contextMenu?.contains(event.target)) closeContextMenu();
+  }
+  function contextMenuKeydown(event) {
+    if (event.key === 'Escape') { event.preventDefault(); closeContextMenu(); }
+  }
+  function showContextMenu(event, state, layerId, source) {
+    event.preventDefault();
+    closeContextMenu();
+    selectLayer(state, layerId, source);
+    const item = (label, action, disabled = false) => {
+      const control = element('button', { text: label,
+        attributes: { type: 'button', role: 'menuitem' } });
+      control.disabled = disabled;
+      control.addEventListener('click', () => { closeContextMenu(); action(); });
+      return control;
+    };
+    contextMenu = element('div', { className: 'layers-panel__context-menu',
+      attributes: { role: 'menu', 'aria-label': 'Layer actions' } }, [
+      item('Copy', () => { try { copiedLayers = copyLayer(current(), layerId); } catch (error) { fail(error); } }),
+      item('Paste', () => pasteLayer(copiedLayers, layerId), !copiedLayers),
+      item('Duplicate', () => {
+        try { pasteLayer(copyLayer(current(), layerId), layerId); } catch (error) { fail(error); }
+      })
+    ]);
+    document.body.append(contextMenu);
+    const bounds = contextMenu.getBoundingClientRect();
+    contextMenu.style.left = `${Math.max(4, Math.min(event.clientX, window.innerWidth - bounds.width - 4))}px`;
+    contextMenu.style.top = `${Math.max(4, Math.min(event.clientY, window.innerHeight - bounds.height - 4))}px`;
+    document.addEventListener('pointerdown', outsideContextMenu, true);
+    document.addEventListener('keydown', contextMenuKeydown, true);
+    window.addEventListener('blur', closeContextMenu);
+    window.addEventListener('scroll', closeContextMenu, true);
+  }
 
   async function addLayer(file = null) {
     const state = current();
@@ -259,14 +341,19 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     } });
     row.style.setProperty('--layer-depth', Math.min(depth, 8));
     if (depth) row.classList.add('is-child');
+    const inheritedHidden = layerAncestors(layers, { id, mix: node })
+      .some((ancestor) => ancestor.mix.layerVisible === false);
+    if (inheritedHidden) row.classList.add('is-inherited-hidden');
     if (node.layerIsMask) row.classList.add('is-mask');
-    const visibilityLabel = node.layerIsMask ?
+    const visibilityLabel = inheritedHidden ? 'Hidden by parent' : node.layerIsMask ?
       node.layerVisible === false ? 'Enable mask' : 'Disable mask' :
       node.layerVisible === false ? 'Show layer' : 'Hide layer';
     const visible = button({ label: visibilityLabel,
-      iconUrl: node.layerVisible === false ? hiddenIcon : eyeIcon, variant: 'ghost', iconOnly: true,
+      iconUrl: inheritedHidden || node.layerVisible === false ? hiddenIcon : eyeIcon,
+      variant: 'ghost', iconOnly: true,
       title: visibilityLabel,
       onClick: () => editSpecificLayer(id, (target) => { target.layerVisible = target.layerVisible === false; }) });
+    visible.disabled = inheritedHidden;
     visible.classList.add('layers-panel__visibility');
     const swatch = element('span', { className: 'layers-panel__swatch',
       attributes: { title: source ? 'Double-click to replace image' : 'Paint layer' } });
@@ -341,6 +428,7 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
       if (swatch.contains(event.target) && source) { selectLayer(state, id, source); replaceImageInput.click(); }
       else if (name.contains(event.target)) beginRename(row, id, label);
     });
+    row.addEventListener('contextmenu', (event) => showContextMenu(event, state, id, source));
     row.addEventListener('keydown', (event) => {
       if (event.target !== row) return;
       if (event.key === 'Enter' || event.key === ' ') {
@@ -385,6 +473,7 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
   }
 
   function render(state) {
+    closeContextMenu();
     const hasGraph = Boolean(state.graph);
     materialsPanel.setState(state.targets, state.targetId);
     addButton.disabled = !hasGraph;

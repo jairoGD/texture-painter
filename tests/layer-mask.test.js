@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { addGraphLayer, layerAncestors, moveGraphLayer, moveGraphLayerTo,
-  readLayerStack, removeGraphLayer, syncLayerMasks } from '../src/editor/layer-graph.js';
-import { addTextureNode, connectTextureNodes, createTextureGraph } from '../src/editor/texture-graph.js';
+import { addGraphLayer, copyGraphLayerTree, layerAncestors, moveGraphLayer,
+  moveGraphLayerTo, pasteGraphLayerTree, readLayerStack, removeGraphLayer,
+  syncLayerMasks } from '../src/editor/layer-graph.js';
+import { addTextureNode, connectTextureNodes, createTextureGraph,
+  layerVisibleInHierarchy } from '../src/editor/texture-graph.js';
 
 function graphWithLayers(count) {
   const graph = createTextureGraph();
@@ -131,4 +133,46 @@ test('Invert changes a normal layer and switches a mask to the bright color', ()
   syncLayerMasks(graph);
   childColor = graph.links.find((link) => link.to === childId && link.toSocket === 'B');
   assert.equal(childColor.from, child.layerSourceId);
+});
+
+test('hiding a parent hides every descendant, including descendants of masks', () => {
+  const { graph, ids: [grandchildId, maskId, parentId] } = graphWithLayers(3);
+  graph.nodes.find((node) => node.id === maskId).layerIsMask = true;
+  moveGraphLayerTo(graph, maskId, parentId, 'inside');
+  moveGraphLayerTo(graph, grandchildId, maskId, 'inside');
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const visible = (id) => layerVisibleInHierarchy(nodes.get(id), nodes);
+  assert.equal(visible(grandchildId), true);
+  nodes.get(parentId).layerVisible = false;
+  assert.equal(visible(maskId), false);
+  assert.equal(visible(grandchildId), false);
+  nodes.get(parentId).layerVisible = true;
+  assert.equal(visible(grandchildId), true);
+  nodes.get(maskId).layerVisible = false;
+  assert.equal(visible(grandchildId), false);
+  assert.equal(nodes.get(grandchildId).layerVisible, true,
+    'the child keeps its own visibility setting');
+});
+
+test('copying a layer tree creates independent nodes and retains its hierarchy', () => {
+  const { graph, ids: [childId, parentId] } = graphWithLayers(2);
+  const parent = graph.nodes.find((node) => node.id === parentId);
+  parent.layerIsMask = true;
+  parent.layerVisible = false;
+  const child = graph.nodes.find((node) => node.id === childId);
+  child.mode = 'multiply';
+  moveGraphLayerTo(graph, childId, parentId, 'inside');
+  const copied = copyGraphLayerTree(graph, parentId);
+  const pasted = pasteGraphLayerTree(graph, copied, parentId);
+  assert.equal(pasted.length, 2);
+  assert.notEqual(pasted[0].mix.id, parentId);
+  assert.notEqual(pasted[0].source.id, copied[0].source.id);
+  assert.equal(pasted[0].mix.layerIsMask, true);
+  assert.equal(pasted[0].mix.layerVisible, false);
+  assert.equal(pasted[1].mix.layerParentId, pasted[0].mix.id);
+  assert.equal(pasted[1].mix.mode, 'multiply');
+  assert.equal(pasted[0].source.imageKey, null);
+  const layers = readLayerStack(graph).layers;
+  assert.equal(layers.findIndex((layer) => layer.id === pasted[0].mix.id) + 2,
+    layers.findIndex((layer) => layer.id === parentId));
 });
