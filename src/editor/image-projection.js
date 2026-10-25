@@ -114,10 +114,11 @@ export function drawFlatImageRegion(context, imageCanvas, node, region, size) {
   const scaleV = scale;
   const offsetU = Number(node.offsetU) || 0;
   const offsetV = Number(node.offsetV) || 0;
+  const rotation = (Number(node.rotation) || 0) * Math.PI / 180;
   const width = region.right - region.left;
   const height = region.bottom - region.top;
   context.imageSmoothingEnabled = node.interpolation !== 'closest';
-  if (scaleU === 1 && scaleV === 1 && !offsetU && !offsetV) {
+  if (scaleU === 1 && scaleV === 1 && !offsetU && !offsetV && !rotation) {
     context.drawImage(imageCanvas, -region.left, -region.top, size, size);
     return true;
   }
@@ -125,20 +126,48 @@ export function drawFlatImageRegion(context, imageCanvas, node, region, size) {
   const tileHeight = size / scaleV;
   const x = -offsetU * tileWidth - region.left;
   const y = -(1 - scaleV - offsetV) * tileHeight - region.top;
+  if (rotation) {
+    const centerX = size / 2 - region.left;
+    const centerY = size / 2 - region.top;
+    context.save();
+    context.translate(centerX, centerY);
+    context.rotate(rotation);
+    context.translate(-centerX, -centerY);
+  }
   if (node.extension === 'clip') {
     context.drawImage(imageCanvas, x, y, tileWidth, tileHeight);
+    if (rotation) context.restore();
     return true;
   }
   if ((node.extension ?? 'repeat') === 'repeat' && typeof DOMMatrix !== 'undefined') {
     const pattern = context.createPattern(imageCanvas, 'repeat');
-    if (!pattern?.setTransform) return false;
+    if (!pattern?.setTransform) {
+      if (rotation) context.restore();
+      return false;
+    }
     pattern.setTransform(new DOMMatrix([
       tileWidth / imageCanvas.width, 0, 0, tileHeight / imageCanvas.height, x, y
     ]));
     context.fillStyle = pattern;
-    context.fillRect(0, 0, width, height);
+    if (rotation) {
+      const centerX = size / 2 - region.left;
+      const centerY = size / 2 - region.top;
+      const cosine = Math.cos(rotation);
+      const sine = Math.sin(rotation);
+      const corners = [[0, 0], [width, 0], [0, height], [width, height]].map(([px, py]) => [
+        centerX + cosine * (px - centerX) + sine * (py - centerY),
+        centerY - sine * (px - centerX) + cosine * (py - centerY)
+      ]);
+      const left = Math.min(...corners.map(([px]) => px));
+      const top = Math.min(...corners.map(([, py]) => py));
+      context.fillRect(left, top,
+        Math.max(...corners.map(([px]) => px)) - left,
+        Math.max(...corners.map(([, py]) => py)) - top);
+      context.restore();
+    } else context.fillRect(0, 0, width, height);
     return true;
   }
+  if (rotation) context.restore();
   return false;
 }
 
@@ -151,10 +180,9 @@ export function bakeImageToUv(surface, node, imageCanvas, size) {
   const offsetU = Number(node.offsetU) || 0;
   const offsetV = Number(node.offsetV) || 0;
   const scale = Number(node.scale) || 1;
-  const scaleU = scale;
-  const scaleV = scale;
-  const mappedOffsetU = offsetU;
-  const mappedOffsetV = offsetV;
+  const rotation = (Number(node.rotation) || 0) * Math.PI / 180;
+  const cosine = Math.cos(rotation);
+  const sine = Math.sin(rotation);
   const flat = (node.projection ?? 'flat') === 'flat';
   if (flat && drawFlatImageRegion(context, imageCanvas, node,
     { left: 0, top: 0, right: size, bottom: size }, size)) return result;
@@ -163,8 +191,10 @@ export function bakeImageToUv(surface, node, imageCanvas, size) {
   const output = context.createImageData(size, size);
   const target = output.data;
   const write = (index, u, v) => {
+    const rotatedU = rotation ? 0.5 + cosine * (u - 0.5) - sine * (v - 0.5) : u;
+    const rotatedV = rotation ? 0.5 + sine * (u - 0.5) + cosine * (v - 0.5) : v;
     const rgba = sampleImage(source, imageCanvas.width, imageCanvas.height,
-      u * scaleU + mappedOffsetU, v * scaleV + mappedOffsetV, interpolation, extension);
+      rotatedU * scale + offsetU, rotatedV * scale + offsetV, interpolation, extension);
     const pixel = index * 4;
     for (let channel = 0; channel < 4; channel++) target[pixel + channel] = rgba[channel];
   };

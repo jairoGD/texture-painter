@@ -521,7 +521,8 @@ export function createNodeEditor({ targets = [], onChange, onPreviewChange, onCr
       }
       for (const [key, label, min, max] of IMAGE_NUMBER_OPTIONS) {
         const field = element('input', { className: 'node-editor__number',
-          attributes: { type: 'number', min, max, step: 0.1, value: node[key],
+          attributes: { type: 'number', min, max, step: 0.1,
+            value: node[key] ?? (key === 'scale' ? 1 : 0),
             'aria-label': `Image ${label.toLowerCase()}` } });
         field.addEventListener('change', () => {
           const before = cloneTextureGraph(graph);

@@ -59,7 +59,7 @@ export function addTextureNode(graph, type, position) {
   });
   if (type === 'image') Object.assign(node, {
     imageKey: null, imageName: '', interpolation: 'linear', projection: 'flat',
-    extension: 'repeat', scale: 1, offsetU: 0, offsetV: 0
+    extension: 'repeat', scale: 1, rotation: 0, offsetU: 0, offsetV: 0
   });
   graph.nodes.push(node);
   return node;
@@ -284,7 +284,7 @@ export function evaluateTextureNode(surface, nodeId, socket = 'Color', graph = s
       const asset = surface.imageAssets?.get(node.imageKey);
       if (asset) {
         const settings = [node.interpolation, node.projection, node.extension, node.scale,
-          node.offsetU, node.offsetV, JSON.stringify(node.warp ?? null)].join(':');
+          node.rotation, node.offsetU, node.offsetV, JSON.stringify(node.warp ?? null)].join(':');
         const imageKey = `${node.id}:${node.imageKey}:${asset.revision}:${settings}`;
         let image = surface.imageCache.get(imageKey);
         if (!image) {
@@ -423,7 +423,7 @@ function renderSimpleLayerStack(surface, region = null) {
         source.id !== blend.layerSourceId || !imageAssets.has(source.imageKey) ||
         (source.projection ?? 'flat') !== 'flat') return false;
     const transformed = (Number(source.scale) || 1) !== 1 ||
-      Number(source.offsetU) || Number(source.offsetV);
+      Number(source.rotation) || Number(source.offsetU) || Number(source.offsetV);
     if (transformed && !['clip', 'repeat'].includes(source.extension ?? 'repeat')) return false;
     if (transformed && (source.extension ?? 'repeat') === 'repeat' &&
         typeof DOMMatrix === 'undefined') return false;
@@ -453,7 +453,7 @@ function renderSimpleLayerStack(surface, region = null) {
     let canvas = asset.canvas;
     let sourceRegion = region;
     const transformed = (Number(source.scale) || 1) !== 1 ||
-      Number(source.offsetU) || Number(source.offsetV) ||
+      Number(source.rotation) || Number(source.offsetU) || Number(source.offsetV) ||
       asset.canvas.width !== surface.canvas.width ||
       asset.canvas.height !== surface.canvas.height;
     if (transformed) {

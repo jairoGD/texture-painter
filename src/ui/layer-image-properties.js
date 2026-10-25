@@ -1,7 +1,7 @@
-import { button, element } from './index.js';
+import { element } from './index.js';
 import { IMAGE_NUMBER_OPTIONS, IMAGE_SELECT_OPTIONS, imageNumberValue } from './image-node-options.js';
 
-export function createLayerImageProperties({ onEdit, onNew, onOpen, onPaint, getImageInfo }) {
+export function createLayerImageProperties({ onEdit, getImageInfo }) {
   const content = element('div', { className: 'layer-image-properties__content' });
   const root = element('section', { className: 'layer-image-properties',
     attributes: { 'aria-label': 'Selected layer image properties' } }, [
@@ -9,7 +9,7 @@ export function createLayerImageProperties({ onEdit, onNew, onOpen, onPaint, get
     content
   ]);
 
-  function render(layer, targetId, paintSource) {
+  function render(layer, targetId) {
     if (!layer || layer.source.type !== 'image') {
       content.replaceChildren(element('p', { className: 'layer-image-properties__empty',
         text: 'Select an image layer.' }));
@@ -23,12 +23,6 @@ export function createLayerImageProperties({ onEdit, onNew, onOpen, onPaint, get
       info ? element('span', { className: 'layer-image-properties__size',
         text: `${info.width} × ${info.height}`, attributes: { title: 'Original image resolution' } }) : null
     ]);
-    const actions = element('div', { className: 'layer-image-properties__actions' }, [
-      button({ label: 'New', variant: 'ghost', onClick: () => onNew?.(node.id) }),
-      button({ label: 'Open', variant: 'ghost', onClick: () => onOpen?.(node.id) }),
-      button({ label: paintSource === node.id ? 'Painting here' : 'Paint here', variant: 'ghost',
-        disabled: !node.imageKey || paintSource === node.id, onClick: () => onPaint?.(node.id) })
-    ]);
     const fields = element('div', { className: 'layer-image-properties__fields' });
     for (const [key, label, choices] of IMAGE_SELECT_OPTIONS) {
       const field = element('select', { attributes: { 'aria-label': `Image ${label.toLowerCase()}` } },
@@ -40,7 +34,8 @@ export function createLayerImageProperties({ onEdit, onNew, onOpen, onPaint, get
     }
     for (const [key, label, min, max] of IMAGE_NUMBER_OPTIONS) {
       const field = element('input', { attributes: { type: 'number', min, max, step: '0.1',
-        value: node[key], 'aria-label': `Image ${label.toLowerCase()}` } });
+        value: node[key] ?? (key === 'scale' ? 1 : 0),
+        'aria-label': `Image ${label.toLowerCase()}` } });
       field.addEventListener('change', () => {
         const value = imageNumberValue(key, field.value, min, max);
         field.value = value;
@@ -48,7 +43,7 @@ export function createLayerImageProperties({ onEdit, onNew, onOpen, onPaint, get
       });
       fields.append(element('label', {}, [element('span', { text: label }), field]));
     }
-    content.replaceChildren(heading, actions, fields);
+    content.replaceChildren(heading, fields);
   }
 
   render(null);

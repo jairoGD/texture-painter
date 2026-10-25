@@ -65,10 +65,7 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     text: 'Drop here to move out of group' });
   const imageProperties = createLayerImageProperties({
     getImageInfo,
-    onEdit: (nodeId, key, value) => editImageNode(nodeId, (node) => { node[key] = value; }),
-    onNew: (nodeId) => newImageForLayer(nodeId),
-    onOpen: () => replaceImageInput.click(),
-    onPaint: (nodeId) => nodeEditor.choosePaintSource(nodeId)
+    onEdit: (nodeId, key, value) => editImageNode(nodeId, (node) => { node[key] = value; })
   });
   const root = element('aside', { className: 'layers-sidebar', attributes: { 'aria-label': 'Layers sidebar' } }, [
     materialsPanel.element,
@@ -271,23 +268,6 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
       source.extension = 'clip';
       nodeEditor.replaceGraph(graph);
       nodeEditor.choosePaintSource(source.id);
-    } catch (error) { fail(error); }
-  }
-
-  function newImageForLayer(nodeId) {
-    const state = current();
-    if (!state.graph?.nodes.some((node) => node.id === nodeId)) return;
-    try {
-      const asset = onCreateImage?.(state.targetId, nodeId);
-      if (!asset) throw new Error('Unable to create image');
-      editImageNode(nodeId, (node) => {
-        node.imageKey = asset.key;
-        node.imageName = asset.name;
-        node.extension = 'repeat';
-        node.scale = 1;
-        node.offsetU = node.offsetV = 0;
-      });
-      nodeEditor.choosePaintSource(nodeId);
     } catch (error) { fail(error); }
   }
 
@@ -508,7 +488,7 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
       selectedByTarget.set(state.targetId, layers[0]?.id ?? null);
     const selected = selectedLayer(state);
     renderOptions(selected);
-    imageProperties.render(selected, state.targetId, state.paintSource);
+    imageProperties.render(selected, state.targetId);
     list.replaceChildren(...layers.map((layer) => createRow({ state, id: layer.id, node: layer.mix,
       source: layer.source, label: layer.label, selected: selected?.id === layer.id,
       depth: layerAncestors(layers, layer).length, layers })), rootDrop);

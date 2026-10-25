@@ -8,6 +8,7 @@ export const IMAGE_SELECT_OPTIONS = [
 
 export const IMAGE_NUMBER_OPTIONS = [
   ['scale', 'Scale', 0.01, 16],
+  ['rotation', 'Rotation (°)', -360, 360],
   ['offsetU', 'Offset U', -8, 8],
   ['offsetV', 'Offset V', -8, 8]
 ];
