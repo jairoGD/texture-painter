@@ -1,6 +1,7 @@
 export const IMAGE_SELECT_OPTIONS = [
   ['interpolation', 'Interpolation', [['linear', 'Linear'], ['closest', 'Closest']]],
   ['projection', 'Projection', [['flat', 'Flat (UV)'], ['warp', 'Warp Projection'], ['box', 'Box'],
+    ['triplanar', 'Triplanar'],
     ['sphere', 'Sphere'], ['tube', 'Tube']]],
   ['extension', 'Extension', [['repeat', 'Repeat'], ['extend', 'Extend'],
     ['clip', 'Clip'], ['mirror', 'Mirror']]]

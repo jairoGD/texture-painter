@@ -283,18 +283,7 @@ export function evaluateTextureNode(surface, nodeId, socket = 'Color', graph = s
     else if (node.type === 'image') {
       const asset = surface.imageAssets?.get(node.imageKey);
       if (asset) {
-        const settings = [node.interpolation, node.projection, node.extension, node.scale,
-          node.rotation, node.offsetU, node.offsetV, JSON.stringify(node.warp ?? null)].join(':');
-        const imageKey = `${node.id}:${node.imageKey}:${asset.revision}:${settings}`;
-        let image = surface.imageCache.get(imageKey);
-        if (!image) {
-          image = bakeImageToUv(surface, node, asset.canvas, size);
-          for (const key of surface.imageCache.keys())
-            if (key.startsWith(`${node.id}:`)) surface.imageCache.delete(key);
-          if (surface.imageCache.size >= 3)
-            surface.imageCache.delete(surface.imageCache.keys().next().value);
-          surface.imageCache.set(imageKey, image);
-        }
+        const image = projectedImage(surface, node, asset, true);
         if (socket === 'Alpha') {
           result = newCanvas(size);
           const context = result.getContext('2d');
@@ -324,6 +313,24 @@ export function evaluateTextureNode(surface, nodeId, socket = 'Color', graph = s
     return result;
   };
   return evaluate(nodeId, socket);
+}
+
+function projectedImage(surface, node, asset, allowBake) {
+  const settings = [node.interpolation, node.projection, node.extension, node.scale,
+    node.rotation, node.offsetU, node.offsetV, JSON.stringify(node.warp ?? null)].join(':');
+  const imageKey = `${node.id}:${node.imageKey}:${asset.revision}:${settings}`;
+  let image = surface.imageCache.get(imageKey);
+  if (!image && allowBake) {
+    image = bakeImageToUv(surface, node, asset.canvas, surface.canvas.width);
+    for (const key of surface.imageCache.keys())
+      if (key.startsWith(`${node.id}:`)) surface.imageCache.delete(key);
+    const projectedLayerCount = surface.graph.nodes.filter((candidate) =>
+      candidate.type === 'image' && (candidate.projection ?? 'flat') !== 'flat').length;
+    if (surface.imageCache.size >= Math.max(3, projectedLayerCount + 2))
+      surface.imageCache.delete(surface.imageCache.keys().next().value);
+    surface.imageCache.set(imageKey, image);
+  }
+  return image;
 }
 
 // The graph can be evaluated in UV-space tiles while painting. Every intermediate
@@ -356,13 +363,17 @@ function renderGraphRegion(surface, region) {
     else if (node.type === 'image') {
       const asset = surface.imageAssets?.get(node.imageKey);
       if (asset) {
-        if ((node.projection ?? 'flat') !== 'flat') supported = false;
+        const projection = node.projection ?? 'flat';
+        const projected = projection === 'flat' ? null : projectedImage(surface, node, asset, false);
+        if (projection !== 'flat' && !projected) supported = false;
         else {
           const image = newCanvas(width, height);
           const context = image.getContext('2d');
-          if (!drawFlatImageRegion(context, asset.canvas, node, region, surface.canvas.width))
+          if (projected) context.drawImage(projected, region.left, region.top,
+            width, height, 0, 0, width, height);
+          else if (!drawFlatImageRegion(context, asset.canvas, node, region, surface.canvas.width))
             supported = false;
-          else if (socket === 'Alpha') {
+          if (supported && socket === 'Alpha') {
             const pixels = context.getImageData(0, 0, width, height);
             for (let offset = 0; offset < pixels.data.length; offset += 4) {
               const alpha = pixels.data[offset + 3];
@@ -420,15 +431,18 @@ function renderSimpleLayerStack(surface, region = null) {
     const sourceLink = incoming(blend.id, 'B');
     const source = nodes.get(sourceLink?.from);
     if (sourceLink?.fromSocket !== 'Color' || source?.type !== 'image' ||
-        source.id !== blend.layerSourceId || !imageAssets.has(source.imageKey) ||
-        (source.projection ?? 'flat') !== 'flat') return false;
+        source.id !== blend.layerSourceId || !imageAssets.has(source.imageKey)) return false;
+    const asset = imageAssets.get(source.imageKey);
+    const projected = (source.projection ?? 'flat') === 'flat' ? null :
+      projectedImage(surface, source, asset, !region);
+    if ((source.projection ?? 'flat') !== 'flat' && !projected) return false;
     const transformed = (Number(source.scale) || 1) !== 1 ||
       Number(source.rotation) || Number(source.offsetU) || Number(source.offsetV);
-    if (transformed && !['clip', 'repeat'].includes(source.extension ?? 'repeat')) return false;
-    if (transformed && (source.extension ?? 'repeat') === 'repeat' &&
+    if (!projected && transformed && !['clip', 'repeat'].includes(source.extension ?? 'repeat')) return false;
+    if (!projected && transformed && (source.extension ?? 'repeat') === 'repeat' &&
         typeof DOMMatrix === 'undefined') return false;
     visited.add(blend.id);
-    layers.push({ blend, source, asset: imageAssets.get(source.imageKey) });
+    layers.push({ blend, source, asset, projected });
     link = incoming(blend.id, 'A');
     if (!link && blend.colorA !== '#ffffff') return false;
   }
@@ -446,16 +460,16 @@ function renderSimpleLayerStack(surface, region = null) {
     compositeContext.fillStyle = '#ffffff';
     compositeContext.fillRect(left, top, width, height);
   }
-  for (const { blend, source, asset } of layers.reverse()) {
+  for (const { blend, source, asset, projected } of layers.reverse()) {
     if (!layerVisibleInHierarchy(blend, nodes) || blend.layerIsMask) continue;
     const factor = Math.max(0, Math.min(1, Number(blend.factor) || 0));
     if (!factor) continue;
-    let canvas = asset.canvas;
+    let canvas = projected ?? asset.canvas;
     let sourceRegion = region;
-    const transformed = (Number(source.scale) || 1) !== 1 ||
+    const transformed = !projected && ((Number(source.scale) || 1) !== 1 ||
       Number(source.rotation) || Number(source.offsetU) || Number(source.offsetV) ||
       asset.canvas.width !== surface.canvas.width ||
-      asset.canvas.height !== surface.canvas.height;
+      asset.canvas.height !== surface.canvas.height);
     if (transformed) {
       const left = region?.left ?? 0;
       const top = region?.top ?? 0;

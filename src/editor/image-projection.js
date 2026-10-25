@@ -1,4 +1,5 @@
 import { Euler, Matrix4, Quaternion, Vector3 } from 'three';
+import { getTriplanarLookup, shadeTriplanarLookup } from './triplanar-raster.js';
 
 export function warpProjectionTransform(node, geometry) {
   if (!geometry.boundingBox) geometry.computeBoundingBox();
@@ -102,6 +103,37 @@ export function projectedUv(position, normal, projection) {
   return [normal[2] >= 0 ? x : 1 - x, y];
 }
 
+export function triplanarCoordinates(position, normal) {
+  const [x, y, z] = position;
+  const weights = normal.map((component) => Math.abs(component) ** 4);
+  const total = weights[0] + weights[1] + weights[2];
+  if (total < 1e-12) weights[2] = 1;
+  const divisor = total < 1e-12 ? 1 : total;
+  return [
+    [normal[0] >= 0 ? 1 - z : z, y, weights[0] / divisor],
+    [x, normal[1] >= 0 ? z : 1 - z, weights[1] / divisor],
+    [normal[2] >= 0 ? x : 1 - x, y, weights[2] / divisor]
+  ];
+}
+
+export function sampleTriplanarImage(source, width, height, position, normal,
+  interpolation, extension, transform = (u, v) => [u, v]) {
+  const color = [0, 0, 0, 0];
+  for (const [u, v, weight] of triplanarCoordinates(position, normal)) {
+    if (weight < 1e-5) continue;
+    const [sampleU, sampleV] = transform(u, v);
+    const sample = sampleImage(source, width, height, sampleU, sampleV,
+      interpolation, extension);
+    const alphaWeight = sample[3] * weight;
+    color[0] += sample[0] * alphaWeight;
+    color[1] += sample[1] * alphaWeight;
+    color[2] += sample[2] * alphaWeight;
+    color[3] += alphaWeight;
+  }
+  if (color[3]) for (let channel = 0; channel < 3; channel++) color[channel] /= color[3];
+  return color;
+}
+
 function triangleMaterial(geometry, triangle) {
   if (!geometry.groups.length) return 0;
   const start = triangle * 3;
@@ -190,11 +222,23 @@ export function bakeImageToUv(surface, node, imageCanvas, size) {
   const source = sourceContext.getImageData(0, 0, imageCanvas.width, imageCanvas.height).data;
   const output = context.createImageData(size, size);
   const target = output.data;
-  const write = (index, u, v) => {
+  if (node.projection === 'triplanar' && surface.geometry) {
+    const lookup = getTriplanarLookup(surface.geometry, surface.slotIndex, size);
+    if (lookup) {
+      shadeTriplanarLookup(lookup, source, imageCanvas.width, imageCanvas.height, target, node);
+      context.putImageData(output, 0, 0);
+    }
+    return result;
+  }
+  const transform = (u, v) => {
     const rotatedU = rotation ? 0.5 + cosine * (u - 0.5) - sine * (v - 0.5) : u;
     const rotatedV = rotation ? 0.5 + sine * (u - 0.5) + cosine * (v - 0.5) : v;
+    return [rotatedU * scale + offsetU, rotatedV * scale + offsetV];
+  };
+  const write = (index, u, v) => {
+    const [sampleU, sampleV] = transform(u, v);
     const rgba = sampleImage(source, imageCanvas.width, imageCanvas.height,
-      rotatedU * scale + offsetU, rotatedV * scale + offsetV, interpolation, extension);
+      sampleU, sampleV, interpolation, extension);
     const pixel = index * 4;
     for (let channel = 0; channel < 4; channel++) target[pixel + channel] = rgba[channel];
   };
@@ -222,8 +266,12 @@ export function bakeImageToUv(surface, node, imageCanvas, size) {
       const denominator = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
       if (Math.abs(denominator) < 1e-8) continue;
       const positions = ids.map((id) => [position.getX(id), position.getY(id), position.getZ(id)]);
+      const faceNormal = normal ? null : new Vector3(...positions[1])
+        .sub(new Vector3(...positions[0]))
+        .cross(new Vector3(...positions[2]).sub(new Vector3(...positions[0])))
+        .normalize().toArray();
       const normals = warpInverse ? null : ids.map((id) => normal ?
-        [normal.getX(id), normal.getY(id), normal.getZ(id)] : [0, 0, 1]);
+        [normal.getX(id), normal.getY(id), normal.getZ(id)] : faceNormal);
       const minX = Math.max(0, Math.floor(Math.min(a[0], b[0], c[0])));
       const maxX = Math.min(size - 1, Math.ceil(Math.max(a[0], b[0], c[0])));
       const minY = Math.max(0, Math.floor(Math.min(a[1], b[1], c[1])));
@@ -237,11 +285,12 @@ export function bakeImageToUv(surface, node, imageCanvas, size) {
         if (weights.some((weight) => weight < -0.00001)) continue;
         const localPoint = [0, 1, 2].map((axis) =>
           positions.reduce((sum, vertex, corner) => sum + vertex[axis] * weights[corner], 0));
+        const normalizedPoint = warpInverse ? null : localPoint.map((value, axis) =>
+          (value - min.getComponent(axis)) / (extent.getComponent(axis) || 1));
+        const interpolatedNormal = warpInverse ? null : [0, 1, 2].map((axis) =>
+          normals.reduce((sum, vertex, corner) => sum + vertex[axis] * weights[corner], 0));
         const coordinates = warpInverse ? warpProjectedUv(localPoint, warpInverse) :
-          projectedUv(localPoint.map((value, axis) =>
-            (value - min.getComponent(axis)) / (extent.getComponent(axis) || 1)),
-          [0, 1, 2].map((axis) => normals.reduce((sum, vertex, corner) =>
-            sum + vertex[axis] * weights[corner], 0)), node.projection);
+          projectedUv(normalizedPoint, interpolatedNormal, node.projection);
         if (!coordinates) continue;
         const [u, v] = coordinates;
         write(y * size + x, u, v);

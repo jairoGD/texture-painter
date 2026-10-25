@@ -24,6 +24,7 @@ import { projectGradient, rasterizeProjectedUv } from './gradient-projection.js'
 import { createCurveTextureSampler, sampleCurveTexturePixel } from './curve-texture.js';
 import { createStampTextureSampler } from './stamp-texture.js';
 import { projectSurfaceCurve } from './surface-curve-paint.js';
+import { clearTriplanarLookup } from './triplanar-raster.js';
 
 function configureTextureSampling(texture, antialiasEnabled) {
   texture.magFilter = antialiasEnabled ? THREE.LinearFilter : THREE.NearestFilter;
@@ -211,6 +212,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
   }
 
   function clear() {
+    clearTriplanarLookup();
     endProjectionPreview();
     for (const record of surfaces.values()) {
       record.mesh.remove(record.overlay);
