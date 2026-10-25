@@ -754,7 +754,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     }
     return painter.applyCurveTexture(targetId, camera, viewport, localPoints, image,
       { size: settings.size, opacity: settings.opacity,
-        antialias: settings.antialias, seamless: settings.seamlessTexture },
+        antialias: settings.antialias, seamless: settings.seamlessTexture,
+        flip: settings.flipTexture },
       visibilityFor(captureFor(camera)), mirror);
   }
 

@@ -15,6 +15,16 @@ test('image rows repeat by distance along the curve', () => {
   assert.equal(sample(5, 20), null);
 });
 
+test('Flip swaps the image edges across a dynamic curve', () => {
+  const points = [{ x: 0, y: 0 }, { x: 100, y: 0 }];
+  const normal = createCurveTextureSampler(points, image,
+    { size: 20, antialias: false });
+  const flipped = createCurveTextureSampler(points, image,
+    { size: 20, antialias: false, flip: true });
+  assert.deepEqual(flipped(5, -5), normal(5, 5));
+  assert.deepEqual(flipped(5, 5), normal(5, -5));
+});
+
 test('strip bends across a turn rather than rotating separate stamps', () => {
   const sample = createCurveTextureSampler([
     { x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 40 }

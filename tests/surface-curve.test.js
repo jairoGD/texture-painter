@@ -184,4 +184,13 @@ test('mirrored texture strip keeps its outer image edge on both outer sides', ()
   assert.deepEqual(colorAt(0.35), colorAt(0.65));
   assert.ok(colorAt(0.15)[0] > colorAt(0.15)[2]);
   assert.ok(colorAt(0.35)[2] > colorAt(0.35)[0]);
+  const flipped = projectSurfaceCurve(path, image, { size: 100,
+    lineStyle: 'texture', opacity: 100, antialias: false, flipTexture: true },
+  256, 256, null,
+  { point: new THREE.Vector3(), normal: new THREE.Vector3(1, 0, 0) });
+  const flippedAt = (u) => flipped.get(128 * 256 + Math.floor(u * 256));
+  assert.deepEqual(flippedAt(0.15), flippedAt(0.85));
+  assert.deepEqual(flippedAt(0.35), flippedAt(0.65));
+  assert.deepEqual(flippedAt(0.15), colorAt(0.35));
+  assert.deepEqual(flippedAt(0.35), colorAt(0.15));
 });

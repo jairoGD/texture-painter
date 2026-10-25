@@ -178,7 +178,7 @@ function surfaceSampler(path, image, options, mirrored = false) {
     if (distance > half + edge) return null;
     let result;
     if (sampleImage) {
-      const u = centered / band + 0.5;
+      const u = (options.flipTexture ? -centered : centered) / band + 0.5;
       const phase = (traveled / path.length * repeats) % 1;
       result = sampleImage(u, phase);
       if (!result) return null;

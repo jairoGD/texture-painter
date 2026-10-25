@@ -49,7 +49,7 @@ export const TOOL_DEFINITIONS = [
   { id: 'curve', label: 'Curve', iconUrl: curveIcon,
     usesColor: true, defaults: { size: 2, hardness: 100, opacity: 100, antialias: true,
       ...lineStyleDefaults, curveMethod: 'dynamic', textureImage: null,
-      seamlessTexture: false },
+      seamlessTexture: false, flipTexture: false },
     controls: [
       { type: 'select', key: 'curveMethod', label: 'Method', options: [
         { value: 'dynamic', label: 'Dynamic' },
@@ -62,6 +62,8 @@ export const TOOL_DEFINITIONS = [
       { type: 'imageImport', key: 'textureImage', label: 'Image',
         when: { lineStyle: 'texture' } },
       { type: 'checkbox', key: 'seamlessTexture', label: 'Align texture ends',
+        when: { lineStyle: 'texture' } },
+      { type: 'checkbox', key: 'flipTexture', label: 'Flip',
         when: { lineStyle: 'texture' } }] },
   { id: 'gradient', label: 'Gradient', iconUrl: gradientIcon,
     defaults: { startColor: { color: '#000000', alpha: 100 },

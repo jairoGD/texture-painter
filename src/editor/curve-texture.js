@@ -1,7 +1,7 @@
 // Maps screen-space curve coordinates into an image strip. Each image row is
 // bent around the local curve tangent, rather than stamped as a rotated tile.
 export function createCurveTextureSampler(points, image, { size = 16,
-  seamless = false, antialias = true, opacity = 100 } = {}) {
+  seamless = false, antialias = true, opacity = 100, flip = false } = {}) {
   if (points.length < 2 || !image?.width || !image?.height) return null;
   const width = Math.max(1, size);
   const radius = width / 2;
@@ -73,7 +73,7 @@ export function createCurveTextureSampler(points, image, { size = 16,
     if (!nearest || distanceSquared > (radius + (antialias ? 0.5 : 0)) ** 2) return null;
     const { segment, t, px, py } = nearest;
     const signed = (segment.dx * (y - py) - segment.dy * (x - px)) / segment.length;
-    const u = signed / width + 0.5;
+    const u = (flip ? -signed : signed) / width + 0.5;
     const progress = (segment.start + t * segment.length) / totalLength;
     const phase = (progress * repetitions) % 1;
     const v = phase;
