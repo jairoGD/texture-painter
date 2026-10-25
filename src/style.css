@@ -31,8 +31,9 @@ html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
   background: #1b222bdc; color: var(--text-muted); font-size: 11px;
   font-weight: 700; letter-spacing: .025em; pointer-events: none; }
 .warp-projection-hint[hidden] { display: none; }
-.status-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 12px; border-top: 1px solid #343b45; background: #1a1f25; color: #71808f; font-size: 10px; font-weight: 600; letter-spacing: .09em; }
-.status__message { color: #adbac8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-bar { display: flex; align-items: center; gap: 16px; min-width: 0; padding: 0 12px; border-top: 1px solid #343b45; background: #1a1f25; color: #71808f; font-size: 11px; font-weight: 600; }
+.status__hint { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #a9c5df; }
+.status__message { flex: 0 1 auto; max-width: 30%; color: #adbac8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status__message.is-error { color: #ff9ca3; }
 @media (max-width: 900px) {
   .workspace { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 230px; }
@@ -45,5 +46,5 @@ html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
   .app-header { gap: 8px; padding: 0 10px; }
   .brand__name { font-size: 10px; }
   .app-header__menu { margin-left: 0; }
-  .app-header__tag, .status-bar > span:first-child { display: none; }
+  .app-header__tag, .status__message:not(.is-error) { display: none; }
 }

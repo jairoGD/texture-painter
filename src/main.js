@@ -3,6 +3,7 @@ import { setTextureResolution } from './editor/texture-resolution.js';
 import { listRecent, parseProject, PROJECT_VERSION, projectFileName,
   getModelHandle, removeRecent, saveModelHandle, saveRecent, writeProjectFile } from './editor/project-file.js';
 import { TOOL_DEFINITIONS } from './editor/tools.js';
+import { toolHint } from './editor/tool-hints.js';
 import { colorPalette } from './ui/color-palette.js';
 import { createNodeEditor } from './ui/node-editor.js';
 import { createProjectHome } from './ui/project-home.js';
@@ -25,6 +26,8 @@ const fileInput = element('input', { attributes: { type: 'file', accept: '.glb,m
 const projectInput = element('input', { attributes: { type: 'file', accept: '.tp3d,application/json', hidden: '' } });
 const viewport = element('main', { className: 'viewport', attributes: { 'aria-label': '3D viewport' } });
 const status = element('span', { className: 'status__message', text: 'Ready' });
+const hint = element('span', { className: 'status__hint',
+  attributes: { 'aria-live': 'polite' } });
 
 const toolSettings = Object.fromEntries(TOOL_DEFINITIONS.map((tool) => [tool.id,
   { ...tool.defaults, ...(tool.usesColor ? { color: '#000000' } : {}) }]));
@@ -403,18 +406,27 @@ function renderProperties() {
       toolSettings[activeTool][control.key] = value;
       scene.setToolSettings(activeTool, toolSettings[activeTool]);
       if (control.key === 'lineStyle') renderProperties();
+      if (control.key === 'curveMethod') renderToolHint();
       markDirty();
     }
   })));
+}
+function renderToolHint() {
+  const tool = TOOL_DEFINITIONS.find((item) => item.id === activeTool);
+  if (!tool) return;
+  hint.textContent = `${tool.label}  ·  ${toolHint(tool.id, toolSettings[tool.id])}`;
+  hint.title = hint.textContent;
 }
 function selectTool(tool) {
   activeTool = tool;
   scene.setTool(tool);
   toolsPanel?.querySelector('.ui-tool-group')?.setActive(tool);
   renderProperties();
+  renderToolHint();
   markDirty();
 }
 renderProperties();
+renderToolHint();
 let toolsPanel = null;
 const sidebar = element('aside', { className: 'sidebar' }, [
   palette.element,
@@ -440,9 +452,8 @@ const workspace = element('div', { className: 'workspace' }, [
 ]);
 
 const footer = element('footer', { className: 'status-bar' }, [
-  element('span', { text: 'TEXTURE PAINTER  /  WORKSPACE' }),
-  status,
-  element('span', { text: 'THREE.JS  ·  LOCAL' })
+  hint,
+  status
 ]);
 
 function canLeaveProject() {
@@ -497,6 +508,7 @@ function restoreEditorSettings(saved = {}, view = {}) {
   scene.setTool(activeTool);
   toolsPanel.querySelector('.ui-tool-group').setActive(activeTool);
   renderProperties();
+  renderToolHint();
   lightingMode = ['shaded', 'unlit'].includes(view.lighting) ? view.lighting : 'shaded';
   gridVisible = view.grid !== false;
   wireframeVisible = view.wireframe === true;
