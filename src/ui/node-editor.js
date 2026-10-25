@@ -533,6 +533,16 @@ export function createNodeEditor({ targets = [], onChange, onPreviewChange, onCr
         rootNode.append(element('label', { className: 'node-editor__control' },
           [element('span', { text: label }), field]));
       }
+      const vertexColor = element('input', { attributes: { type: 'checkbox',
+        'aria-label': 'Vertex Color' } });
+      vertexColor.checked = Boolean(node.vertexColor);
+      vertexColor.addEventListener('change', () => {
+        const before = cloneTextureGraph(graph);
+        node.vertexColor = vertexColor.checked;
+        changed(before);
+      });
+      rootNode.append(element('label', { className: 'node-editor__control' },
+        [element('span', { text: 'Vertex Color' }), vertexColor]));
       const active = activeTarget()?.paintSource === node.id;
       rootNode.append(button({ label: active ? 'Painting here' : 'Paint here', variant: 'ghost',
         disabled: !node.imageKey || active, onClick: () => choosePaintSource(node.id) }));

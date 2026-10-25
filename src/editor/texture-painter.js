@@ -4,7 +4,8 @@ import { combineSelectionAlpha, combineSelectionParts, containsSelection, invert
   selectionFromMask, visibleSelectionSamples } from './lasso-selection.js';
 import { faceUvMask } from './face-uv-mask.js';
 import { addTextureNode, blendCanvases, cloneTextureGraph, connectTextureNodes,
-  createTextureGraph, evaluateTextureNode, removeTextureNode, renderTextureGraph } from './texture-graph.js';
+  createTextureGraph, evaluateTextureNode, removeTextureNode, renderTextureGraph,
+  vertexColorImage } from './texture-graph.js';
 import { addGraphLayer, readLayerStack, removeGraphLayer, syncLayerMasks } from './layer-graph.js';
 import { canConnectSurfaceHits, canConnectUvHits } from './surface-stroke.js';
 import { applyPaintPatches, capturePaintPatches, commandBounds } from './paint-history.js';
@@ -148,6 +149,28 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       overlayCanvas, overlayContext, overlayTexture, overlayMaterial, graph: createTextureGraph(),
       imageAssets: new Map(), imageCache: new Map(), compositeFrame: null,
       compositeDirty: [], compositeLastDirty: null, compositeRevision: 0 };
+    function deferMipmaps() {
+      if (!antialiasEnabled) return;
+      if (!surface.mipmapDeferred) {
+        // copyTextureToTexture regenerates the entire mip chain after every small upload.
+        // Use linear filtering during a stroke and rebuild mipmaps once painting pauses.
+        texture.minFilter = THREE.LinearFilter;
+        texture.generateMipmaps = false;
+        texture.needsUpdate = true;
+        surface.mipmapDeferred = true;
+      }
+      clearTimeout(surface.mipmapIdleTimer);
+      const restoreMipmaps = () => {
+        if (activeStroke || linePreview) {
+          surface.mipmapIdleTimer = setTimeout(restoreMipmaps, 350);
+          return;
+        }
+        surface.mipmapIdleTimer = null;
+        surface.mipmapDeferred = false;
+        configureTextureSampling(texture, antialiasEnabled);
+      };
+      surface.mipmapIdleTimer = setTimeout(restoreMipmaps, 350);
+    }
     function uploadRegion(region) {
       if (!surface.uploadCanvas) {
         surface.uploadCanvas = document.createElement('canvas');
@@ -194,6 +217,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
             partial = true;
             for (const region of dirty) {
               if (!renderTextureGraph(surface, region)) { partial = false; break; }
+              deferMipmaps();
               uploadRegion(region);
             }
           } catch { partial = false; renderTextureGraph(surface); }
@@ -223,6 +247,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       else record.wireMaterial.dispose();
       for (const surface of record.slots) {
         if (surface.compositeFrame !== null) cancelAnimationFrame(surface.compositeFrame);
+        clearTimeout(surface.mipmapIdleTimer);
         surface.texture.dispose(); surface.shaded.dispose(); surface.unlit.dispose();
         surface.uploadTexture?.dispose();
         surface.overlayUploadTexture?.dispose();
@@ -334,6 +359,9 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
   function setAntialiasEnabled(enabled) {
     antialiasEnabled = Boolean(enabled);
     for (const record of surfaces.values()) for (const surface of record.slots) {
+      clearTimeout(surface.mipmapIdleTimer);
+      surface.mipmapIdleTimer = null;
+      surface.mipmapDeferred = false;
       configureTextureSampling(surface.texture, antialiasEnabled);
     }
     if (projectionPreview) configureTextureSampling(projectionPreview.texture, antialiasEnabled);
@@ -861,11 +889,22 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     const continuous = previous && (mode === 'uv' ?
       canConnectUvHits(previousHit, hit, previous, point, surface.canvas.width * 0.2) :
       canConnectSurfaceHits(previousHit, hit, previous, point, surface.canvas.width * 0.2));
+    const smudge = kind === 'blur' && options.mode === 'smudge';
+    let smudgeState = null;
+    if (smudge) {
+      const modelRadius = hit.object?.geometry?.boundingSphere?.radius;
+      const worldScale = hit.object?.matrixWorld?.getMaxScaleOnAxis?.() ?? 1;
+      const nearbyIn3D = !modelRadius || !previousHit?.point?.distanceTo ||
+        previousHit.point.distanceTo(hit.point) <= modelRadius * worldScale * 0.12;
+      smudgeState = previous && previousHit?.object === hit.object && nearbyIn3D ?
+        previousHit.smudgeState ?? {} : {};
+    }
     apply({ kind, surface, point, previous: continuous ? previous : null,
       options: { ...options }, mask: maskEnabled ? selectionMaskForLayer(selection, surface.canvas) : null,
-      isolateBlur, faceIndex: hit.faceIndex, topology: kind === 'blur' && mode === 'surface' ?
+      isolateBlur, smudgeState, faceIndex: hit.faceIndex,
+      topology: kind === 'blur' && !smudge && mode === 'surface' ?
         topologyFor(findSurface(surface.id), surface.canvas) : null });
-    return hit;
+    return smudge ? { ...hit, smudgeState } : hit;
   }
 
   function fill(hit, options) {
@@ -1360,8 +1399,11 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     return null;
   }
 
-  function getLayerImage(targetId, imageKey) {
-    return findSurface(targetId)?.imageAssets.get(imageKey)?.canvas ?? null;
+  function getLayerImage(targetId, imageKey, useVertexColor = false) {
+    const surface = findSurface(targetId);
+    if (!surface) return null;
+    return useVertexColor ? vertexColorImage(surface) :
+      surface.imageAssets.get(imageKey)?.canvas ?? null;
   }
 
   function getImageInfo(targetId, imageKey) {

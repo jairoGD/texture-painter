@@ -1,4 +1,5 @@
 import { bakeImageToUv, drawFlatImageRegion } from './image-projection.js';
+import { rasterizeVertexColors } from './vertex-color-raster.js';
 
 export const NODE_TYPES = {
   color: { title: 'Solid Color', inputs: [], outputs: ['Color'] },
@@ -58,7 +59,7 @@ export function addTextureNode(graph, type, position) {
     mode: 'mix', factor: 0.5, colorA: '#ffffff', colorB: '#2f80ed'
   });
   if (type === 'image') Object.assign(node, {
-    imageKey: null, imageName: '', interpolation: 'linear', projection: 'flat',
+    imageKey: null, imageName: '', vertexColor: false, interpolation: 'linear', projection: 'flat',
     extension: 'repeat', scale: 1, rotation: 0, offsetU: 0, offsetV: 0
   });
   graph.nodes.push(node);
@@ -282,8 +283,9 @@ export function evaluateTextureNode(surface, nodeId, socket = 'Color', graph = s
     else if (node.type === 'invert') result = invertCanvas(input(node, 'Color'), size);
     else if (node.type === 'image') {
       const asset = surface.imageAssets?.get(node.imageKey);
-      if (asset) {
-        const image = projectedImage(surface, node, asset, true);
+      if (asset || node.vertexColor) {
+        const image = node.vertexColor ? vertexColorImage(surface) :
+          projectedImage(surface, node, asset, true);
         if (socket === 'Alpha') {
           result = newCanvas(size);
           const context = result.getContext('2d');
@@ -326,10 +328,31 @@ function projectedImage(surface, node, asset, allowBake) {
       if (key.startsWith(`${node.id}:`)) surface.imageCache.delete(key);
     const projectedLayerCount = surface.graph.nodes.filter((candidate) =>
       candidate.type === 'image' && (candidate.projection ?? 'flat') !== 'flat').length;
-    if (surface.imageCache.size >= Math.max(3, projectedLayerCount + 2))
-      surface.imageCache.delete(surface.imageCache.keys().next().value);
+    if (surface.imageCache.size >= Math.max(3, projectedLayerCount + 2)) {
+      const oldestProjection = [...surface.imageCache.keys()]
+        .find((key) => !key.startsWith('vertex-color:'));
+      if (oldestProjection) surface.imageCache.delete(oldestProjection);
+    }
     surface.imageCache.set(imageKey, image);
   }
+  return image;
+}
+
+export function vertexColorImage(surface) {
+  const size = surface.canvas.width;
+  const geometry = surface.geometry;
+  const color = geometry?.getAttribute('color');
+  const key = `vertex-color:${geometry?.uuid}:${surface.slotIndex}:${size}:${color?.version}`;
+  let image = surface.imageCache.get(key);
+  if (image) return image;
+  image = newCanvas(size);
+  const context = image.getContext('2d');
+  const pixels = context.createImageData(size, size);
+  pixels.data.set(rasterizeVertexColors(geometry, surface.slotIndex, size));
+  context.putImageData(pixels, 0, 0);
+  for (const cachedKey of surface.imageCache.keys())
+    if (cachedKey.startsWith('vertex-color:')) surface.imageCache.delete(cachedKey);
+  surface.imageCache.set(key, image);
   return image;
 }
 
@@ -362,10 +385,12 @@ function renderGraphRegion(surface, region) {
     else if (node.type === 'invert') result = invertCanvas(input(node, 'Color'), width, height);
     else if (node.type === 'image') {
       const asset = surface.imageAssets?.get(node.imageKey);
-      if (asset) {
+      if (asset || node.vertexColor) {
         const projection = node.projection ?? 'flat';
-        const projected = projection === 'flat' ? null : projectedImage(surface, node, asset, false);
-        if (projection !== 'flat' && !projected) supported = false;
+        const vertexImage = node.vertexColor ? vertexColorImage(surface) : null;
+        const projected = vertexImage ?? (projection === 'flat' ? null :
+          projectedImage(surface, node, asset, false));
+        if (!node.vertexColor && projection !== 'flat' && !projected) supported = false;
         else {
           const image = newCanvas(width, height);
           const context = image.getContext('2d');
@@ -431,11 +456,13 @@ function renderSimpleLayerStack(surface, region = null) {
     const sourceLink = incoming(blend.id, 'B');
     const source = nodes.get(sourceLink?.from);
     if (sourceLink?.fromSocket !== 'Color' || source?.type !== 'image' ||
-        source.id !== blend.layerSourceId || !imageAssets.has(source.imageKey)) return false;
+        source.id !== blend.layerSourceId ||
+        (!source.vertexColor && !imageAssets.has(source.imageKey))) return false;
     const asset = imageAssets.get(source.imageKey);
-    const projected = (source.projection ?? 'flat') === 'flat' ? null :
-      projectedImage(surface, source, asset, !region);
-    if ((source.projection ?? 'flat') !== 'flat' && !projected) return false;
+    const projected = source.vertexColor ? vertexColorImage(surface) :
+      (source.projection ?? 'flat') === 'flat' ? null :
+        projectedImage(surface, source, asset, !region);
+    if (!source.vertexColor && (source.projection ?? 'flat') !== 'flat' && !projected) return false;
     const transformed = (Number(source.scale) || 1) !== 1 ||
       Number(source.rotation) || Number(source.offsetU) || Number(source.offsetV);
     if (!projected && transformed && !['clip', 'repeat'].includes(source.extension ?? 'repeat')) return false;

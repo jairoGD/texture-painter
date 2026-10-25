@@ -97,7 +97,7 @@ layersPanel = createLayersPanel({ nodeEditor,
     scene.createImage(id, nodeId, source, name, null, preserveResolution),
   onImportImage: (id, nodeId, file) => scene.importImage(id, nodeId, file),
   onMergeLayer: (id, layerId, graph) => scene.mergeLayerDown(id, layerId, graph),
-  getImageCanvas: (id, key) => scene.getLayerImage(id, key),
+  getImageCanvas: (id, key, vertexColor) => scene.getLayerImage(id, key, vertexColor),
   getImageInfo: (id, key) => scene.getImageInfo(id, key),
   getMaterialVisibilityState: () => scene.getMaterialVisibilityState(),
   onToggleMaterialVisibility: (id) => {

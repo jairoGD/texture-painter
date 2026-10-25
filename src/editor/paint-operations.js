@@ -2,6 +2,7 @@ import { strokeTouchesSelection } from './selection-coverage.js';
 import { rasterizePixelStroke } from './pixel-brush.js';
 import { commandBounds } from './paint-history.js';
 import { blurSurfaceStroke, blurTouchesSeam } from './surface-blur-stroke.js';
+import { smudgeStroke } from './smudge-stroke.js';
 
 const WHITE = '#ffffff';
 
@@ -276,7 +277,9 @@ function floodFill({ surface, point, options, mask }) {
 
 export function executePaintCommand(command) {
   let changed;
-  if (command.kind === 'blur' && command.topology && blurTouchesSeam(command.topology,
+  if (command.kind === 'blur' && command.options.mode === 'smudge')
+    changed = smudgeStroke(command);
+  else if (command.kind === 'blur' && command.topology && blurTouchesSeam(command.topology,
     command.point, command.previous, Math.max(1, command.options.size / 2),
     Math.ceil(Math.max(0.5, command.options.spread / 3) * 3),
     command.surface.canvas.width, command.surface.canvas.height)) {

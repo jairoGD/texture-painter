@@ -356,6 +356,7 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
         attributes: { width: '52', height: '50' } });
       thumbnail.dataset.targetId = state.targetId;
       thumbnail.dataset.imageKey = source.imageKey;
+      thumbnail.dataset.vertexColor = String(Boolean(source.vertexColor));
       thumbnail.dataset.inverted = String(node.layerIsMask ? !node.layerInvert : Boolean(node.layerInvert));
       swatch.append(thumbnail);
     }
@@ -521,7 +522,8 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     for (const thumbnail of list.querySelectorAll('.layers-panel__thumbnail')) {
       const context = thumbnail.getContext('2d');
       context.clearRect(0, 0, thumbnail.width, thumbnail.height);
-      const image = getImageCanvas?.(thumbnail.dataset.targetId, thumbnail.dataset.imageKey);
+      const image = getImageCanvas?.(thumbnail.dataset.targetId, thumbnail.dataset.imageKey,
+        thumbnail.dataset.vertexColor === 'true');
       if (image) {
         context.drawImage(image, 0, 0, thumbnail.width, thumbnail.height);
         if (thumbnail.dataset.inverted === 'true') {

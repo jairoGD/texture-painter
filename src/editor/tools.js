@@ -92,10 +92,13 @@ export const TOOL_DEFINITIONS = [
         when: { stroke: true } }
     ] },
   { id: 'blur', label: 'Blur', iconUrl: blurIcon,
-    defaults: { size: 72, hardness: 35, strength: 20, spread: 20 },
-    controls: [size, hardness,
+    defaults: { mode: 'normal', size: 72, hardness: 35, strength: 20, spread: 20 },
+    controls: [{ type: 'select', key: 'mode', label: 'Mode', options: [
+      { value: 'normal', label: 'Blur' }, { value: 'smudge', label: 'Smudge' }
+    ] }, size, hardness,
       { type: 'slider', key: 'strength', label: 'Strength', min: 1, max: 100, step: 1, unit: '%' },
-      { type: 'slider', key: 'spread', label: 'Spread', min: 1, max: 32, step: 1, unit: ' px' }] },
+      { type: 'slider', key: 'spread', label: 'Spread', min: 1, max: 32,
+        step: 1, unit: ' px', when: { mode: 'normal' } }] },
   { id: 'lasso', label: 'Lasso', iconUrl: lassoIcon,
     defaults: { maskEnabled: true, isolateBlur: true },
     controls: [
