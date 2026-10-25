@@ -795,10 +795,10 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
   }
 
   function sample(hit) {
-    const surface = surfaceAt(hit);
-    surface?.refreshComposite();
-    const composite = surface && findSurface(surface.id);
-    return composite ? samplePaintColor(composite, toPixel(hit.uv)) : null;
+    const surface = hit?.uv ? surfaces.get(hit.object)?.slots[hit.face?.materialIndex ?? 0] : null;
+    if (!surface) return null;
+    if (surface.compositeFrame !== null) surface.refreshComposite();
+    return samplePaintColor(surface, toPixel(hit.uv));
   }
 
   function beginLine(hit, options, mirroredHit = null, mode = 'surface', preservePath = false) {
@@ -808,6 +808,13 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
     linePreview = { options: { ...options }, mode, preservePath, before: new Map(),
       lastDirty: new Map(), commands: [] };
     updateLine([[hit], mirroredHit ? [mirroredHit] : []]);
+    return true;
+  }
+
+  function beginThroughLine(options) {
+    commitFloatingSelection();
+    linePreview = { options: { ...options }, mode: 'surface', preservePath: true,
+      before: new Map(), lastDirty: new Map(), commands: [] };
     return true;
   }
 
@@ -1310,7 +1317,8 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
     }
   }
 
-  return { prepare, clear, paint, fill, sample, beginLine, updateLine, commitLine, cancelLine,
+  return { prepare, clear, paint, fill, sample, beginLine, beginThroughLine,
+    updateLine, commitLine, cancelLine,
     canPaintAt: (hit) => {
       const surface = surfaceAt(hit);
       return !!surface && (!selection || !maskEnabled || surface === selection.surface);

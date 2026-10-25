@@ -6,10 +6,12 @@ import { createTexturePainter } from './texture-painter.js';
 import { captureVisibleUv, projectLassoToUv } from './screen-lasso.js';
 import { captureVisibleFaces } from './screen-face-selection.js';
 import { sampleScreenStroke } from './surface-stroke.js';
+import { sampleThroughLine } from './through-line.js';
 import { curveScreenPoints } from './curve-path.js';
 import { createModelMirror, reflectedCamera } from './model-mirror.js';
 import { setTextureResolution, textureResolution } from './texture-resolution.js';
 import { resizeWarpProjection, warpProjectionTransform } from './image-projection.js';
+import { resolveTemporaryPaintTool } from './temporary-paint-tool.js';
 
 export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTargetsChanged,
   onContentChanged, onLightViewChanged, onProjectionStart, onProjectionPreview,
@@ -235,9 +237,12 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   let previousHit = null;
   let previousMirrorHit = null;
   let previousPaintScreen = null;
+  let strokeTool = null;
   let lineStartScreen = null;
   let lineStartHit = null;
   let lineStartMirrorHit = null;
+  let lineThrough = false;
+  let lineThroughTarget = null;
   let curveStep = 0;
   let curvePoints = [];
   let curveStartHit = null;
@@ -270,16 +275,39 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   });
   window.addEventListener('blur', () => { spacePressed = false; });
 
-  function hitTestAt(clientX, clientY) {
+  function hitTestAt(clientX, clientY, selectedOnly = true) {
     const rect = strokeRect ?? renderer.domElement.getBoundingClientRect();
     pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
     const hit = raycaster.intersectObjects(paintMeshes, false).find((candidate) => candidate.uv);
-    return hit && painter.targetIdAt(hit) === selectedTargetId ? hit : null;
+    return hit && (!selectedOnly || painter.targetIdAt(hit) === selectedTargetId) ? hit : null;
   }
 
   function hitTest(event) { return hitTestAt(event.clientX, event.clientY); }
+
+  function withDoubleSidedPaintMeshes(action) {
+    const { mesh, materialIndex } = lineThroughTarget;
+    const material = Array.isArray(mesh.material) ? mesh.material[materialIndex] : mesh.material;
+    const previousSide = material.side;
+    material.side = THREE.DoubleSide;
+    try { return action(); }
+    finally { material.side = previousSide; }
+  }
+
+  function throughHitsAt(clientX, clientY) {
+    const rect = strokeRect ?? renderer.domElement.getBoundingClientRect();
+    pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    const hits = raycaster.intersectObject(lineThroughTarget.mesh, false)
+      .filter((hit) => hit.uv &&
+        (hit.face?.materialIndex ?? 0) === lineThroughTarget.materialIndex);
+    return hits.filter((hit, index) => !index ||
+      hit.object !== hits[index - 1].object ||
+      hit.face?.materialIndex !== hits[index - 1].face?.materialIndex ||
+      hit.point.distanceToSquared(hits[index - 1].point) > 1e-10);
+  }
 
   function viewportPoint(event) {
     const rect = strokeRect ?? renderer.domElement.getBoundingClientRect();
@@ -305,21 +333,35 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     const end = { x: event.clientX, y: event.clientY };
     if (initialHit === undefined && previousPaintScreen &&
         end.x === previousPaintScreen.x && end.y === previousPaintScreen.y) return;
+    const { kind, options } = resolveTemporaryPaintTool(activeTool, toolSettings, event);
+    if (kind !== strokeTool) {
+      previousHit = null;
+      previousMirrorHit = null;
+      previousPaintScreen = null;
+      strokeTool = kind;
+    }
     const start = previousPaintScreen ?? end;
     const hits = initialHit !== undefined ? [initialHit] : gestureSamplingMode === 'uv' ?
       [hitTest(event)] : sampleScreenStroke(start, end, hitTestAt, 2);
     for (const hit of previousPaintScreen && gestureSamplingMode === 'surface' ? hits.slice(1) : hits) {
-      previousHit = hit ? painter.paint(hit, activeTool, previousHit,
-        toolSettings[activeTool], gestureSamplingMode) : null;
+      previousHit = hit ? painter.paint(hit, kind, previousHit,
+        options, gestureSamplingMode) : null;
       const mirrored = mirrorHitAt(hit);
-      previousMirrorHit = mirrored ? painter.paint(mirrored, activeTool,
-        previousMirrorHit, toolSettings[activeTool], gestureSamplingMode) : null;
+      previousMirrorHit = mirrored ? painter.paint(mirrored, kind,
+        previousMirrorHit, options, gestureSamplingMode) : null;
     }
     previousPaintScreen = end;
   }
 
   function previewLineAt(event) {
     if (!lineStartScreen) return;
+    if (lineThrough && lineThroughTarget) {
+      const paths = withDoubleSidedPaintMeshes(() => sampleThroughLine(lineStartScreen,
+        { x: event.clientX, y: event.clientY }, throughHitsAt));
+      painter.updateLine(mirrorEnabled ?
+        [...paths, ...paths.map((path) => path.map(mirrorHitAt))] : paths);
+      return;
+    }
     if (gestureSamplingMode === 'uv') {
       const hit = hitTest(event);
       if (!hit || painter.targetIdAt(hit) !== painter.targetIdAt(lineStartHit)) return;
@@ -395,7 +437,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   }
 
   function queueDraw(event) {
-    pendingDraw = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY };
+    pendingDraw = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY,
+      ctrlKey: event.ctrlKey, shiftKey: event.shiftKey };
     if (drawFrame !== null) return;
     drawFrame = requestAnimationFrame(() => {
       drawFrame = null;
@@ -566,6 +609,15 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   }
 
   function onPointerDown(event) {
+    if (event.button === 2) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (activePointer === null) {
+        const color = painter.sample(hitTestAt(event.clientX, event.clientY, false));
+        if (color) onColorPicked?.(color);
+      }
+      return;
+    }
     if (warpTarget && (warpControls.axis || warpControls.dragging)) return;
     if (event.button === 0 && spacePressed) {
       controls.mouseButtons.LEFT = THREE.MOUSE.PAN;
@@ -586,9 +638,12 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     previousHit = null;
     previousMirrorHit = null;
     previousPaintScreen = null;
+    strokeTool = null;
     lineStartScreen = null;
     lineStartHit = null;
     lineStartMirrorHit = null;
+    lineThrough = false;
+    lineThroughTarget = null;
     const hit = hitTest(event);
     if (activeTool === 'faces') {
       pointerAction = 'faces';
@@ -645,11 +700,19 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         previewCurveAt(event);
       }
     } else if (activeTool === 'line') {
-      const mirrored = mirrorHitAt(hit);
-      if (painter.beginLine(hit, toolSettings.line, mirrored, gestureSamplingMode)) {
+      if (event.ctrlKey) {
+        painter.beginThroughLine(toolSettings.line);
+        lineThrough = true;
+        lineThroughTarget = painter.getFaceTarget(selectedTargetId);
         lineStartScreen = { x: event.clientX, y: event.clientY };
-        lineStartHit = hit;
-        lineStartMirrorHit = mirrored;
+        if (lineThroughTarget) previewLineAt(event);
+      } else {
+        const mirrored = mirrorHitAt(hit);
+        if (painter.beginLine(hit, toolSettings.line, mirrored, gestureSamplingMode)) {
+          lineStartScreen = { x: event.clientX, y: event.clientY };
+          lineStartHit = hit;
+          lineStartMirrorHit = mirrored;
+        }
       }
     }
     else if (activeTool === 'eyedropper') {
@@ -705,6 +768,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     previousHit = null;
     previousMirrorHit = null;
     previousPaintScreen = null;
+    strokeTool = null;
     if (pointerAction === 'faces') {
       try { finishFaceSelection(event); }
       catch (error) { onSelectionChanged?.(`Face selection failed: ${error.message}`); }
@@ -758,6 +822,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     lineStartScreen = null;
     lineStartHit = null;
     lineStartMirrorHit = null;
+    lineThrough = false;
+    lineThroughTarget = null;
     lastLassoScreen = null;
     lassoStartScreen = null;
     lassoDragged = false;
@@ -769,6 +835,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     }
   }
   function bindRendererCanvas(canvas) {
+    canvas.addEventListener('contextmenu', (event) => event.preventDefault());
     canvas.addEventListener('pointerdown', onWarpHandleDown, true);
     canvas.addEventListener('pointermove', onWarpHandleMove, true);
     canvas.addEventListener('pointerup', onWarpHandleEnd, true);
