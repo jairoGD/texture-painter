@@ -43,6 +43,12 @@ function markDirty() { if (projectId && !loadingProject) dirty = true; }
 const scene = createScene(viewport, {
   onGraphTargetsChanged: (targets) => nodeEditor?.setTargets(targets),
   onGraphHistoryApplied: (targetId, graph) => nodeEditor?.applyHistoryGraph(targetId, graph),
+  onRestoreCurve: (targetId, settings) => {
+    nodeEditor?.selectTarget(targetId);
+    toolSettings.curve = structuredClone(settings);
+    scene.setToolSettings('curve', toolSettings.curve);
+    selectTool('curve');
+  },
   onSelectionChanged: (message) => {
     setStatus(message); editMenu.refresh(); selectMenu.refresh();
     nodeEditor?.refreshHistoryButtons();

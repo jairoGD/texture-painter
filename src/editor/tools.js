@@ -48,8 +48,14 @@ export const TOOL_DEFINITIONS = [
     controls: [fineSize, hardness, opacity, antialias, ...lineStyleControls] },
   { id: 'curve', label: 'Curve', iconUrl: curveIcon,
     usesColor: true, defaults: { size: 2, hardness: 100, opacity: 100, antialias: true,
-      ...lineStyleDefaults, textureImage: null, seamlessTexture: false },
-    controls: [fineSize, hardness, opacity, antialias,
+      ...lineStyleDefaults, curveMethod: 'dynamic', textureImage: null,
+      seamlessTexture: false },
+    controls: [
+      { type: 'select', key: 'curveMethod', label: 'Method', options: [
+        { value: 'dynamic', label: 'Dynamic' },
+        { value: 'precise', label: 'Precise' }
+      ] },
+      fineSize, hardness, opacity, antialias,
       { ...lineStyleControls[0], options: [...lineStyleControls[0].options,
         { value: 'texture', label: 'Texture' }] },
       ...lineStyleControls.slice(1),

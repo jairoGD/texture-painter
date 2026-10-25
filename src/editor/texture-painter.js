@@ -22,6 +22,7 @@ import { lineStylePaths } from './line-style.js';
 import { scaleLayerRegion, selectionMaskForLayer, uvToLayerPixel } from './layer-space.js';
 import { projectGradient, rasterizeProjectedUv } from './gradient-projection.js';
 import { createCurveTextureSampler, sampleCurveTexturePixel } from './curve-texture.js';
+import { projectSurfaceCurve } from './surface-curve-paint.js';
 
 function configureTextureSampling(texture, antialiasEnabled) {
   texture.magFilter = antialiasEnabled ? THREE.LinearFilter : THREE.NearestFilter;
@@ -31,7 +32,8 @@ function configureTextureSampling(texture, antialiasEnabled) {
   texture.needsUpdate = true;
 }
 
-export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
+export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
+  onHistoryApplied) {
   let renderer = initialRenderer;
   const surfaces = new Map();
   let lightingMode = 'shaded';
@@ -1025,6 +1027,62 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
     return true;
   }
 
+  function applySurfaceCurve(targetId, path, image, options, mirror = null,
+    curveHistory = null) {
+    const parent = findSurface(targetId);
+    const surface = parent?.activePaint;
+    if (!surface || !materialVisible(parent) || activeStroke || linePreview || filterSession ||
+        (selection && maskEnabled && selection.surface !== surface)) return false;
+    const { canvas, context } = surface;
+    const mask = selection && maskEnabled ? selectionMaskForLayer(selection, canvas)?.alpha : null;
+    const projected = projectSurfaceCurve(path, image, options, canvas.width,
+      canvas.height, mask, mirror);
+    if (!projected.size) return false;
+    const bounds = { left: canvas.width, top: canvas.height, right: 0, bottom: 0 };
+    for (const pixel of projected.keys()) {
+      const x = pixel % canvas.width, y = (pixel / canvas.width) | 0;
+      bounds.left = Math.min(bounds.left, x);
+      bounds.top = Math.min(bounds.top, y);
+      bounds.right = Math.max(bounds.right, x + 1);
+      bounds.bottom = Math.max(bounds.bottom, y + 1);
+    }
+    const patchWidth = bounds.right - bounds.left;
+    const patchHeight = bounds.bottom - bounds.top;
+    const beforePatch = context.getImageData(bounds.left, bounds.top,
+      patchWidth, patchHeight);
+    const afterPatch = new ImageData(new Uint8ClampedArray(beforePatch.data),
+      patchWidth, patchHeight);
+    let changed = false;
+    for (const [pixel, color] of projected) {
+      const sourceAlpha = color[3] / 255 * (mask ? mask[pixel] / 255 : 1);
+      if (sourceAlpha <= 0) continue;
+      const x = pixel % canvas.width, y = (pixel / canvas.width) | 0;
+      const offset = ((y - bounds.top) * patchWidth + x - bounds.left) * 4;
+      const destinationAlpha = beforePatch.data[offset + 3] / 255;
+      const resultAlpha = sourceAlpha + destinationAlpha * (1 - sourceAlpha);
+      let differs = false;
+      for (let channel = 0; channel < 3; channel++) {
+        const result = Math.round((color[channel] * sourceAlpha +
+          beforePatch.data[offset + channel] * destinationAlpha * (1 - sourceAlpha)) / resultAlpha);
+        afterPatch.data[offset + channel] = result;
+        if (result !== beforePatch.data[offset + channel]) differs = true;
+      }
+      const alpha = Math.round(resultAlpha * 255);
+      afterPatch.data[offset + 3] = alpha;
+      if (alpha !== beforePatch.data[offset + 3]) differs = true;
+      if (!differs) continue;
+      changed = true;
+    }
+    if (!changed) return false;
+    commitFloatingSelection();
+    context.putImageData(afterPatch, bounds.left, bounds.top);
+    surface.requestComposite(bounds);
+    undoStack.push({ patches: [{ surface, x: bounds.left, y: bounds.top,
+      before: beforePatch, after: afterPatch }], curveHistory });
+    redoStack = [];
+    return true;
+  }
+
   function sample(hit) {
     const surface = hit?.uv ? surfaces.get(hit.object)?.slots[hit.face?.materialIndex ?? 0] : null;
     if (!surface) return null;
@@ -1167,18 +1225,29 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
     activeStroke = null;
   }
 
+  function recordCurveDraftChange(before, after) {
+    const previous = before.anchors, next = after.anchors;
+    if (previous.length === next.length && previous.every((anchor, index) =>
+      anchor.faceIndex === next[index].faceIndex &&
+      anchor.point.distanceToSquared(next[index].point) < 1e-14)) return false;
+    undoStack.push({ curveDraft: { before, after } });
+    redoStack = [];
+    return true;
+  }
+
   function undo() {
     if (!undoStack.length || activeStroke || linePreview || filterSession) return false;
     const entry = undoStack.pop(); redoStack.push(entry);
     if (entry.graph) {
       setGraph(entry.graph.targetId, entry.graph.before);
       onGraphHistoryApplied?.(entry.graph.targetId, entry.graph.before);
-    } else applyPaintPatches(entry.patches, 'before');
+    } else if (entry.patches) applyPaintPatches(entry.patches, 'before');
     if ('selectionBefore' in entry) {
       const previous = entry.selectionBefore;
       selection = selectionOnPaintSurface(previous, findSurface(previous?.surface.id)?.activePaint);
       renderOverlay();
     }
+    onHistoryApplied?.(entry, 'undo');
     return true;
   }
 
@@ -1188,12 +1257,13 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
     if (entry.graph) {
       setGraph(entry.graph.targetId, entry.graph.after);
       onGraphHistoryApplied?.(entry.graph.targetId, entry.graph.after);
-    } else applyPaintPatches(entry.patches, 'after');
+    } else if (entry.patches) applyPaintPatches(entry.patches, 'after');
     if ('selectionAfter' in entry) {
       const next = entry.selectionAfter;
       selection = selectionOnPaintSurface(next, findSurface(next?.surface.id)?.activePaint);
       renderOverlay();
     }
+    onHistoryApplied?.(entry, 'redo');
     return true;
   }
 
@@ -1571,7 +1641,8 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
     }
   }
 
-  return { prepare, clear, paint, fill, sample, applyGradient, applyCurveTexture, beginLine, beginThroughLine,
+  return { prepare, clear, paint, fill, sample, applyGradient, applyCurveTexture,
+    applySurfaceCurve, beginLine, beginThroughLine,
     updateLine, commitLine, cancelLine,
     canPaintAt: (hit) => {
       const surface = surfaceAt(hit);
@@ -1588,7 +1659,8 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
     canFilter, beginFilter, previewFilter, applyFilter, cancelFilter,
     setMaskEnabled: (enabled) => { maskEnabled = enabled; },
     setBlurSelectionIsolation: (enabled) => { isolateBlur = enabled; },
-    beginStroke, endStroke, undo, redo, canUndo: () => undoStack.length > 0 && !filterSession,
+    beginStroke, endStroke, recordCurveDraftChange, undo, redo,
+    canUndo: () => undoStack.length > 0 && !filterSession,
     canRedo: () => redoStack.length > 0 && !filterSession, setLightingMode,
     setWireframeEnabled, setAntialiasEnabled,
     setRenderer: (nextRenderer) => { renderer = nextRenderer; },

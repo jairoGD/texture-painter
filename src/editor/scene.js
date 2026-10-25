@@ -9,6 +9,8 @@ import { sampleScreenStroke } from './surface-stroke.js';
 import { sampleThroughLine } from './through-line.js';
 import { lineStylePaths, styledPolylinePaths } from './line-style.js';
 import { curveScreenPoints } from './curve-path.js';
+import { preciseCurveScreenPoints } from './precise-curve.js';
+import { buildSurfaceCurvePath } from './surface-curve-path.js';
 import { createModelMirror, reflectedCamera } from './model-mirror.js';
 import { setTextureResolution, textureResolution } from './texture-resolution.js';
 import { resizeWarpProjection, warpProjectionTransform } from './image-projection.js';
@@ -16,7 +18,7 @@ import { resolveTemporaryPaintTool } from './temporary-paint-tool.js';
 
 export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTargetsChanged,
   onContentChanged, onLightViewChanged, onProjectionStart, onProjectionPreview,
-  onProjectionEnd, onGraphHistoryApplied } = {}) {
+  onProjectionEnd, onGraphHistoryApplied, onRestoreCurve } = {}) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color('#252b34');
 
@@ -226,7 +228,18 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   let modelFile = null;
   scene.add(model);
   const loader = new GLTFLoader();
-  const painter = createTexturePainter(renderer, onGraphHistoryApplied);
+  const painter = createTexturePainter(renderer, onGraphHistoryApplied, (entry, action) => {
+    const state = entry.curveDraft?.[action === 'undo' ? 'before' : 'after'] ??
+      (action === 'undo' ? entry.curveHistory : null);
+    if (!entry.curveDraft && !entry.curveHistory) return;
+    resetCurve(true);
+    if (!state?.anchors.length) return;
+    onRestoreCurve?.(state.targetId, state.settings);
+    preciseAnchors = state.anchors.map((anchor) => ({
+      point: anchor.point.clone(), hit: { faceIndex: anchor.faceIndex } }));
+    precisePath = undefined;
+    renderCurvePreview();
+  });
   painter.prepare(model);
   let selectedTargetId = painter.getGraphTargets()[0]?.id ?? null;
   let paintMeshes = painter.getMeshes();
@@ -255,6 +268,12 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   let curvePoints = [];
   let curveStartHit = null;
   let curveMode = 'surface';
+  let preciseAnchors = [];
+  let preciseDragIndex = -1;
+  let preciseDragOriginal = null;
+  let preciseDragStart = null;
+  let preciseGestureBefore = null;
+  let precisePath;
   let pendingDraw = null;
   let drawFrame = null;
   let activeTool = 'brush';
@@ -481,7 +500,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   function resetCurve(cancel = false) {
     if (cancel) {
       painter.cancelLine();
-      if (pointerAction === 'curve' && activePointer !== null) {
+      if ((pointerAction === 'curve' || pointerAction === 'preciseCurve') &&
+          activePointer !== null) {
         const pointerId = activePointer;
         activePointer = null; pointerAction = null; strokeRect = null;
         if (renderer.domElement.hasPointerCapture(pointerId))
@@ -491,7 +511,63 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     curveStep = 0;
     curvePoints = [];
     curveStartHit = null;
+    preciseAnchors = [];
+    preciseDragIndex = -1;
+    preciseDragOriginal = null;
+    preciseDragStart = null;
+    preciseGestureBefore = null;
+    precisePath = undefined;
     curveCanvas.getContext('2d').clearRect(0, 0, curveCanvas.width, curveCanvas.height);
+  }
+
+  function preciseHistoryState() {
+    return { targetId: selectedTargetId, settings: structuredClone(toolSettings.curve),
+      anchors: preciseAnchors.map((anchor) => ({
+        point: anchor.point.clone(), faceIndex: anchor.hit.faceIndex })) };
+  }
+
+  function currentPrecisePath() {
+    if (precisePath !== undefined || preciseAnchors.length < 2)
+      return precisePath ?? null;
+    const face = painter.getFaceTarget(selectedTargetId);
+    if (!face) return null;
+    precisePath = buildSurfaceCurvePath(face.mesh, face.materialIndex,
+      preciseAnchors, textureResolution, textureResolution);
+    return precisePath;
+  }
+
+  function preciseScreenPoints() {
+    const path = currentPrecisePath();
+    const rect = renderer.domElement.getBoundingClientRect();
+    if (!path) return preciseCurveScreenPoints(preciseAnchors, camera, rect, 4);
+    const stride = Math.max(1, Math.ceil(path.samples.length / 2048));
+    const scaleByFace = new Map(path.triangles.map((triangle) =>
+      [triangle.faceIndex, triangle.worldPerTexel]));
+    const cameraRight = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0)
+      .normalize();
+    const size = Math.max(1, toolSettings.curve?.size ?? 2);
+    return path.samples.filter((sample, index) => index % stride === 0 ||
+      index === path.samples.length - 1).map((sample) => {
+      const view = sample.point.clone().project(camera);
+      const edge = sample.point.clone().addScaledVector(cameraRight,
+        size * (scaleByFace.get(sample.faceIndex) || 0)).project(camera);
+      return { x: rect.left + (view.x + 1) * rect.width / 2,
+        y: rect.top + (1 - view.y) * rect.height / 2,
+        width: Math.hypot((edge.x - view.x) * rect.width / 2,
+          (edge.y - view.y) * rect.height / 2) };
+    });
+  }
+
+  function preciseAnchorAt(clientX, clientY) {
+    const rect = renderer.domElement.getBoundingClientRect();
+    for (let index = preciseAnchors.length - 1; index >= 0; index--) {
+      const view = preciseAnchors[index].point.clone().project(camera);
+      const x = rect.left + (view.x + 1) * rect.width / 2;
+      const y = rect.top + (1 - view.y) * rect.height / 2;
+      if (Math.hypot(x - clientX, y - clientY) <= 10)
+        return index;
+    }
+    return -1;
   }
 
   function previewCurveAt(event) {
@@ -504,14 +580,21 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   function renderCurvePreview() {
     const context = curveCanvas.getContext('2d');
     context.clearRect(0, 0, curveCanvas.width, curveCanvas.height);
-    if (curvePoints.length < 2) return;
+    const precise = toolSettings.curve?.curveMethod === 'precise';
+    if (precise ? !preciseAnchors.length : curvePoints.length < 2) return;
     const rect = renderer.domElement.getBoundingClientRect();
-    const points = curveScreenPoints(curvePoints, curveStep);
+    const points = precise ? preciseScreenPoints() :
+      curveScreenPoints(curvePoints, curveStep);
     const paths = styledPolylinePaths(points, toolSettings.curve);
     context.save();
     context.lineCap = 'round';
     context.lineJoin = 'round';
-    context.lineWidth = Math.max(1, toolSettings.curve?.size ?? 2);
+    const projectedWidths = precise ? points.map((point) => point.width)
+      .filter((width) => Number.isFinite(width) && width > 0)
+      .sort((a, b) => a - b) : [];
+    context.lineWidth = Math.max(1, projectedWidths.length ?
+      projectedWidths[Math.floor(projectedWidths.length / 2)] :
+      (toolSettings.curve?.size ?? 2));
     context.strokeStyle = toolSettings.curve?.color ?? '#ffffff';
     context.shadowColor = '#000000';
     context.shadowBlur = 3;
@@ -524,7 +607,12 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     }
     context.shadowBlur = 0;
     context.fillStyle = '#70bfff';
-    for (const point of curvePoints) {
+    const anchors = precise ? preciseAnchors.map((anchor) => {
+      const view = anchor.point.clone().project(camera);
+      return { x: rect.left + (view.x + 1) * rect.width / 2,
+        y: rect.top + (1 - view.y) * rect.height / 2 };
+    }) : curvePoints;
+    for (const point of anchors) {
       context.beginPath();
       context.arc(point.x - rect.left, point.y - rect.top, 3, 0, Math.PI * 2);
       context.fill();
@@ -547,6 +635,56 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     });
     painter.updateLine([...hits, ...(mirrorEnabled ? hits.map((path) => path.map(mirrorHitAt)) : [])]);
     return painter.commitLine();
+  }
+
+  function commitPreciseCurve() {
+    if (preciseAnchors.length < 2) return false;
+    const path = currentPrecisePath();
+    if (!path) return false;
+    const targetId = selectedTargetId;
+    const options = { ...toolSettings.curve };
+    const history = preciseHistoryState();
+    const mirror = mirrorEnabled ? { point: resolveMirrorHit.planePoint,
+      normal: resolveMirrorHit.planeNormal } : null;
+    if (options.lineStyle === 'texture' && !options.textureImage?.dataUrl) return false;
+    if (options.lineStyle === 'texture') return curveImageData(options.textureImage)
+      .then((image) => image && targetId === selectedTargetId ?
+        painter.applySurfaceCurve(targetId, path, image, options, mirror, history) : false);
+    return painter.applySurfaceCurve(targetId, path, null, options, mirror, history);
+  }
+
+  function movePreciseAnchor(event) {
+    if (preciseDragIndex < 0 || !preciseDragStart ||
+        Math.hypot(event.clientX - preciseDragStart.x,
+          event.clientY - preciseDragStart.y) < 2) return;
+    const hit = hitTest(event);
+    if (!painter.canPaintAt(hit) ||
+        painter.targetIdAt(hit) !== selectedTargetId) return;
+    preciseAnchors[preciseDragIndex] = { point: hit.point.clone(), hit };
+    precisePath = undefined;
+    renderCurvePreview();
+  }
+
+  function finishPreciseCurve() {
+    if (preciseAnchors.length < 2) return;
+    let result;
+    try { result = commitPreciseCurve(); }
+    catch (error) {
+      onSelectionChanged?.(`Curve failed: ${error.message}`);
+      return;
+    }
+    if (result === false) {
+      onSelectionChanged?.('Curve unchanged');
+      return;
+    }
+    if (result instanceof Promise) result.then((changed) => {
+      if (changed) { resetCurve(); onContentChanged?.(); }
+      onSelectionChanged?.(changed ? 'Curve painted' : 'Curve unchanged');
+    }).catch((error) => onSelectionChanged?.(`Curve failed: ${error.message}`));
+    else {
+      if (result) { resetCurve(); onContentChanged?.(); }
+      onSelectionChanged?.(result ? 'Curve painted' : 'Curve unchanged');
+    }
   }
 
   const curveImageCache = new Map();
@@ -572,11 +710,11 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     return curveImageCache.get(image.dataUrl);
   }
 
-  async function commitCurveTexture() {
+  async function commitCurveTexture(precisePoints = null, preciseStartHit = null) {
     const settings = { ...toolSettings.curve };
     const targetId = selectedTargetId;
-    const startHit = curveStartHit;
-    const points = curveScreenPoints(curvePoints, 2, 2);
+    const startHit = preciseStartHit ?? curveStartHit;
+    const points = precisePoints ?? curveScreenPoints(curvePoints, 2, 2);
     const rect = renderer.domElement.getBoundingClientRect();
     const localPoints = points.map((point) =>
       ({ x: point.x - rect.left, y: point.y - rect.top }));
@@ -634,6 +772,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         painter.updateMove(hit ?? (gestureSamplingMode === 'uv' ? null : viewportPoint(next)),
           hit ? mirrorHitAt(hit) : null);
       }
+      else if (pointerAction === 'preciseCurve') movePreciseAnchor(next);
       else if (pointerAction === 'curve') previewCurveAt(next);
       else if (activeTool === 'line') previewLineAt(next);
       else paintAt(next);
@@ -870,7 +1009,27 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         onSelectionChanged?.(created ? 'Selection created' : 'Selection cleared');
       }
     } else if (activeTool === 'curve') {
-      if (curveStep === 0) {
+      if (toolSettings.curve?.curveMethod === 'precise') {
+        renderer.domElement.focus({ preventScroll: true });
+        const anchorIndex = preciseAnchorAt(event.clientX, event.clientY);
+        if (anchorIndex >= 0) {
+          preciseGestureBefore = preciseHistoryState();
+          preciseDragIndex = anchorIndex;
+          preciseDragOriginal = preciseAnchors[anchorIndex];
+          preciseDragStart = { x: event.clientX, y: event.clientY };
+          pointerAction = 'preciseCurve';
+        } else if (painter.canPaintAt(hit) &&
+            painter.targetIdAt(hit) === selectedTargetId) {
+          preciseGestureBefore = preciseHistoryState();
+          preciseAnchors.push({ point: hit.point.clone(), hit });
+          precisePath = undefined;
+          preciseDragIndex = preciseAnchors.length - 1;
+          preciseDragOriginal = null;
+          preciseDragStart = { x: event.clientX, y: event.clientY };
+          pointerAction = 'preciseCurve';
+          renderCurvePreview();
+        }
+      } else if (curveStep === 0) {
         if (painter.canPaintAt(hit)) {
           const start = { x: event.clientX, y: event.clientY };
           curvePoints = [start, { ...start }];
@@ -935,6 +1094,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       gradientEnd = viewportPoint(event);
       renderGradientGuide();
     }
+    else if (pointerAction === 'preciseCurve') queueDraw(event);
     else if (pointerAction === 'moveSelection' || pointerAction === 'curve') queueDraw(event);
     else if (activeTool === 'line' || activeTool === 'brush' ||
         activeTool === 'eraser' || activeTool === 'blur') queueDraw(event);
@@ -1001,6 +1161,22 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       }
       gradientStart = gradientEnd = gradientTargetId = null;
       renderGradientGuide();
+    } else if (pointerAction === 'preciseCurve') {
+      if (event.type === 'pointercancel') {
+        if (preciseDragOriginal) preciseAnchors[preciseDragIndex] = preciseDragOriginal;
+        else preciseAnchors.splice(preciseDragIndex, 1);
+        precisePath = undefined;
+        renderCurvePreview();
+      } else {
+        movePreciseAnchor(event);
+        if (preciseGestureBefore && painter.recordCurveDraftChange(
+          preciseGestureBefore, preciseHistoryState()))
+          onSelectionChanged?.('Curve point updated');
+      }
+      preciseDragIndex = -1;
+      preciseDragOriginal = null;
+      preciseDragStart = null;
+      preciseGestureBefore = null;
     } else if (pointerAction === 'curve') {
       if (event.type === 'pointercancel') resetCurve(true);
       else {
@@ -1045,6 +1221,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     }
   }
   function bindRendererCanvas(canvas) {
+    canvas.tabIndex = -1;
     canvas.addEventListener('contextmenu', (event) => event.preventDefault());
     canvas.addEventListener('pointerdown', onWarpHandleDown, true);
     canvas.addEventListener('pointermove', onWarpHandleMove, true);
@@ -1057,6 +1234,14 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   }
   bindRendererCanvas(renderer.domElement);
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && activeTool === 'curve' &&
+        toolSettings.curve?.curveMethod === 'precise' && preciseAnchors.length >= 2 &&
+        activePointer === null &&
+        !event.target.closest?.('input, textarea, select, [contenteditable]')) {
+      event.preventDefault();
+      finishPreciseCurve();
+      return;
+    }
     if (event.key !== 'Escape') return;
     if (pointerAction === 'gradient') {
       const pointerId = activePointer;
@@ -1068,7 +1253,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       event.preventDefault();
       return;
     }
-    if (pointerAction === 'curve' || curveStep > 0) {
+    if (pointerAction === 'curve' || pointerAction === 'preciseCurve' ||
+        curveStep > 0 || preciseAnchors.length) {
       const pointerId = activePointer;
       activePointer = null; pointerAction = null; strokeRect = null;
       resetCurve(true);
@@ -1227,6 +1413,9 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   new ResizeObserver(resize).observe(host);
   resize();
   const renderFrame = () => { controls.update(); updateLightView(); renderer.render(scene, camera); };
+  controls.addEventListener('change', () => {
+    if (activeTool === 'curve' && preciseAnchors.length) renderCurvePreview();
+  });
   renderer.setAnimationLoop(renderFrame);
 
   function setAntialiasEnabled(enabled) {
@@ -1293,8 +1482,11 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       }
     },
     setToolSettings: (tool, settings) => {
+      if (tool === 'curve' && toolSettings.curve?.curveMethod !== settings.curveMethod)
+        resetCurve(true);
       toolSettings[tool] = { ...settings };
-      if (tool === 'curve' && curvePoints.length) renderCurvePreview();
+      if (tool === 'curve' && (curvePoints.length || preciseAnchors.length))
+        renderCurvePreview();
       if (tool === activeTool && (tool === 'lasso' || tool === 'wand' || tool === 'faces')) {
         painter.setMaskEnabled(settings.maskEnabled);
         painter.setBlurSelectionIsolation(settings.isolateBlur);
