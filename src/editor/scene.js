@@ -288,7 +288,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
-    const hit = raycaster.intersectObjects(paintMeshes, false).find((candidate) => candidate.uv);
+    const hit = raycaster.intersectObjects(paintMeshes, false).find((candidate) =>
+      candidate.uv && painter.isMaterialVisible(painter.targetIdAt(candidate)));
     return hit && (!selectedOnly || painter.targetIdAt(hit) === selectedTargetId) ? hit : null;
   }
 
@@ -310,7 +311,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     raycaster.setFromCamera(pointer, camera);
     const hits = raycaster.intersectObject(lineThroughTarget.mesh, false)
       .filter((hit) => hit.uv &&
-        (hit.face?.materialIndex ?? 0) === lineThroughTarget.materialIndex);
+        (hit.face?.materialIndex ?? 0) === lineThroughTarget.materialIndex &&
+        painter.isMaterialVisible(painter.targetIdAt(hit)));
     return hits.filter((hit, index) => !index ||
       hit.object !== hits[index - 1].object ||
       hit.face?.materialIndex !== hits[index - 1].face?.materialIndex ||
@@ -346,7 +348,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       return false;
     const options = toolSettings.gradient;
     const face = painter.getFaceTarget(gradientTargetId);
-    if (!face) return false;
+    if (!face || !painter.isMaterialVisible(gradientTargetId)) return false;
     const viewport = { width: gradientCanvas.width, height: gradientCanvas.height };
     const captureFor = (viewCamera) => options.xray ? null :
       captureVisibleUv(renderer, viewCamera,
@@ -609,7 +611,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     if (event.type !== 'pointerup' || !faceStart) return;
     const end = viewportPoint(event);
     const target = painter.getFaceTarget(selectedTargetId);
-    if (!target) return;
+    if (!target || !painter.isMaterialVisible(selectedTargetId)) return;
     let faces = new Set();
     if (Math.hypot(end.x - faceStart.x, end.y - faceStart.y) > 4) {
       const rect = { left: faceStart.x, top: faceStart.y,
@@ -1091,12 +1093,15 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   }
 
   function exportProjectData() {
+    const visibility = painter.getMaterialVisibilityState();
     return { model: modelSource, resolution: textureResolution,
       textures: painter.exportProjectTextures(),
       view: { camera: camera.position.toArray(), target: controls.target.toArray(),
         lighting: currentLightingMode, grid: grid.visible, mirror: mirrorEnabled,
         sampling: samplingMode, antialias: antialiasEnabled,
         wireframe: wireframeVisible,
+        materials: { visible: visibility.items.map((item) => item.visible),
+          isolatedIndex: visibility.items.findIndex((item) => item.id === visibility.isolatedId) },
         lightRotation: { yaw: lightYaw, pitch: lightPitch } } };
   }
 
@@ -1108,6 +1113,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       await importGlb(file, saved.model.referenceId);
     }
     await painter.restoreProjectTextures(saved.textures);
+    painter.restoreMaterialVisibilityState(saved.view?.materials);
     mirrorEnabled = saved.view?.mirror === true;
     samplingMode = saved.view?.sampling === 'uv' ? 'uv' : 'surface';
     setLightRotation(saved.view?.lightRotation?.yaw ?? 0,
@@ -1245,6 +1251,9 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     applyFilter: painter.applyFilter,
     cancelFilter: painter.cancelFilter,
     getGraphTargets: painter.getGraphTargets,
+    getMaterialVisibilityState: painter.getMaterialVisibilityState,
+    setMaterialVisibility: painter.setMaterialVisibility,
+    toggleMaterialIsolation: painter.toggleMaterialIsolation,
     setPaintTarget: (id) => {
       if (id !== selectedTargetId) resetCurve(true);
       selectedTargetId = id;

@@ -90,6 +90,14 @@ layersPanel = createLayersPanel({ nodeEditor,
   onMergeLayer: (id, layerId, graph) => scene.mergeLayerDown(id, layerId, graph),
   getImageCanvas: (id, key) => scene.getLayerImage(id, key),
   getImageInfo: (id, key) => scene.getImageInfo(id, key),
+  getMaterialVisibilityState: () => scene.getMaterialVisibilityState(),
+  onToggleMaterialVisibility: (id) => {
+    const item = scene.getMaterialVisibilityState().items.find((entry) => entry.id === id);
+    if (item && scene.setMaterialVisibility(id, !item.effectiveVisible)) markDirty();
+  },
+  onToggleMaterialIsolation: (id) => {
+    if (scene.toggleMaterialIsolation(id)) markDirty();
+  },
   onError: (message) => setStatus(message, true)
 });
 texturePreview = createTexturePreview({ getTexture: (id) => scene.getTexturePreview(id),

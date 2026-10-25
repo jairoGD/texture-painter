@@ -3,9 +3,41 @@ import { blendSelectedPixel } from './selection-clipboard.js';
 import { indexSelectionTiles } from './selection-coverage.js';
 import { textureResolution as SIZE } from './texture-resolution.js';
 
-function drawSelectionOutline(context, alpha, indices) {
+export function joinedSeamPixels(alpha, topology, width = SIZE) {
+  if (!topology?.portals?.size) return null;
+  const joined = new Uint8Array(alpha.length);
+  const mark = (index) => {
+    const owner = topology.owners[index];
+    const x = index % width, y = Math.floor(index / width);
+    for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) {
+      const px = x + dx, py = y + dy;
+      if (px < 0 || px >= width || py < 0 || py >= alpha.length / width) continue;
+      const nearby = py * width + px;
+      if (alpha[nearby] && topology.owners[nearby] === owner) joined[nearby] = 1;
+    }
+  };
+  for (const [index, neighbors] of topology.portals) {
+    if (!alpha[index]) continue;
+    for (const neighbor of neighbors) {
+      if (neighbor < index || !alpha[neighbor]) continue;
+      mark(index); mark(neighbor);
+    }
+  }
+  return joined;
+}
+
+export function selectionBorderAt(alpha, topology, joined, index, neighbor) {
+  if (neighbor >= 0 && neighbor < alpha.length && alpha[neighbor]) return false;
+  // A missing atlas pixel is not a surface boundary when a selected portal
+  // joins this pixel to the selected side of another UV island.
+  return !joined?.[index] || (neighbor >= 0 && neighbor < alpha.length &&
+    topology.owners[neighbor] !== 0);
+}
+
+function drawSelectionOutline(context, alpha, indices, topology = null) {
   const stride = SIZE + 1;
   const edges = new Map();
+  const joined = joinedSeamPixels(alpha, topology);
   const addEdge = (from, to) => {
     let destinations = edges.get(from);
     if (!destinations) edges.set(from, destinations = []);
@@ -15,10 +47,14 @@ function drawSelectionOutline(context, alpha, indices) {
     const x = index % SIZE;
     const y = Math.floor(index / SIZE);
     const topLeft = y * stride + x;
-    if (y === 0 || !alpha[index - SIZE]) addEdge(topLeft, topLeft + 1);
-    if (x === SIZE - 1 || !alpha[index + 1]) addEdge(topLeft + 1, topLeft + stride + 1);
-    if (y === SIZE - 1 || !alpha[index + SIZE]) addEdge(topLeft + stride + 1, topLeft + stride);
-    if (x === 0 || !alpha[index - 1]) addEdge(topLeft + stride, topLeft);
+    if (selectionBorderAt(alpha, topology, joined, index, y === 0 ? -1 : index - SIZE))
+      addEdge(topLeft, topLeft + 1);
+    if (selectionBorderAt(alpha, topology, joined, index, x === SIZE - 1 ? -1 : index + 1))
+      addEdge(topLeft + 1, topLeft + stride + 1);
+    if (selectionBorderAt(alpha, topology, joined, index, y === SIZE - 1 ? -1 : index + SIZE))
+      addEdge(topLeft + stride + 1, topLeft + stride);
+    if (selectionBorderAt(alpha, topology, joined, index, x === 0 ? -1 : index - 1))
+      addEdge(topLeft + stride, topLeft);
   }
   context.strokeStyle = '#ffffff';
   context.lineWidth = 1.25;
@@ -49,14 +85,16 @@ export function selectionFromMask(surface, canvas) {
   return selectionFromAlpha(surface, alpha, canvas, indices);
 }
 
-export function combineSelectionParts(surface, parts, includeMaskCanvas = true) {
+export function combineSelectionParts(surface, parts, includeMaskCanvas = true,
+  outlineTopology = null) {
   const alpha = new Uint8Array(SIZE * SIZE);
   const indices = [];
   for (const part of parts) for (const index of part.indices) {
     if (!alpha[index]) indices.push(index);
     alpha[index] = Math.max(alpha[index], part.alpha[index]);
   }
-  const combined = selectionFromAlpha(surface, alpha, null, indices, includeMaskCanvas);
+  const combined = selectionFromAlpha(surface, alpha, null, indices, includeMaskCanvas,
+    outlineTopology);
   if (combined) combined.parts = parts;
   return combined;
 }
@@ -90,7 +128,7 @@ export function invertSelectionAlpha(source) {
 }
 
 export function selectionFromAlpha(surface, alpha, canvas = null, activeIndices = null,
-  includeMaskCanvas = true) {
+  includeMaskCanvas = true, outlineTopology = null) {
   const indices = activeIndices ?? [];
   if (!activeIndices) for (let index = 0; index < alpha.length; index++)
     if (alpha[index]) indices.push(index);
@@ -115,8 +153,9 @@ export function selectionFromAlpha(surface, alpha, canvas = null, activeIndices 
   const overlayCanvas = document.createElement('canvas');
   overlayCanvas.width = overlayCanvas.height = SIZE;
   const overlayContext = overlayCanvas.getContext('2d');
-  drawSelectionOutline(overlayContext, alpha, indices);
+  drawSelectionOutline(overlayContext, alpha, indices, outlineTopology);
   return { surface, canvas, alpha, bounds, overlayCanvas,
+    outlineTopology,
     indices: Uint32Array.from(indices),
     occupiedTiles: includeMaskCanvas ? indexSelectionTiles(indices, SIZE, SIZE) : null };
 }

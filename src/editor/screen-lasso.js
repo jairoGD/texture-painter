@@ -26,6 +26,7 @@ const hiddenMaterial = new THREE.ShaderMaterial({
   side: THREE.DoubleSide,
   toneMapped: false
 });
+const invisibleMaterial = new THREE.MeshBasicMaterial({ visible: false });
 
 export function decodeVisibleUv(buffer, width, height, x, y) {
   if (x < 0 || x >= width || y < 0 || y >= height) return null;
@@ -49,8 +50,10 @@ export function captureVisibleUv(renderer, camera, hit, meshes) {
   const pickScene = new THREE.Scene();
   for (const candidate of meshes) {
     const materials = Array.isArray(candidate.material) ?
-      candidate.material.map((_, index) => candidate === mesh && index === materialIndex ? uvMaterial : hiddenMaterial) :
-      candidate === mesh ? uvMaterial : hiddenMaterial;
+      candidate.material.map((material, index) => material.visible === false ? invisibleMaterial :
+        candidate === mesh && index === materialIndex ? uvMaterial : hiddenMaterial) :
+      candidate.material.visible === false ? invisibleMaterial :
+        candidate === mesh ? uvMaterial : hiddenMaterial;
     const proxy = candidate.isSkinnedMesh ? new THREE.SkinnedMesh(candidate.geometry, materials) :
       new THREE.Mesh(candidate.geometry, materials);
     if (candidate.isSkinnedMesh) {

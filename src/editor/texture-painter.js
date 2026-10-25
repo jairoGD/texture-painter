@@ -50,6 +50,59 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
   let maskEnabled = true;
   let isolateBlur = true;
   let projectionPreview = null;
+  let isolatedMaterialId = null;
+
+  function materialVisible(surface) {
+    return !!surface && (isolatedMaterialId ? surface.id === isolatedMaterialId :
+      surface.userVisible !== false);
+  }
+
+  function updateMaterialVisibility() {
+    for (const record of surfaces.values()) {
+      for (const surface of record.slots) {
+        const visible = materialVisible(surface);
+        surface.shaded.visible = visible;
+        surface.unlit.visible = visible;
+        surface.overlayMaterial.visible = visible;
+        if (Array.isArray(record.wireMaterial))
+          record.wireMaterial[surface.slotIndex].visible = visible;
+      }
+      record.wire.visible = wireframeEnabled && record.slots.some(materialVisible);
+    }
+  }
+
+  function getMaterialVisibilityState() {
+    return { isolatedId: isolatedMaterialId,
+      items: [...surfaces.values()].flatMap((record) => record.slots.map((surface) => ({
+        id: surface.id, visible: surface.userVisible !== false,
+        effectiveVisible: materialVisible(surface)
+      }))) };
+  }
+
+  function setMaterialVisibility(targetId, visible) {
+    const surface = findSurface(targetId);
+    if (!surface) return false;
+    if (isolatedMaterialId) isolatedMaterialId = null;
+    surface.userVisible = Boolean(visible);
+    updateMaterialVisibility();
+    return true;
+  }
+
+  function toggleMaterialIsolation(targetId) {
+    if (!findSurface(targetId)) return false;
+    isolatedMaterialId = isolatedMaterialId === targetId ? null : targetId;
+    updateMaterialVisibility();
+    return true;
+  }
+
+  function restoreMaterialVisibilityState(saved = {}) {
+    const items = [...surfaces.values()].flatMap((record) => record.slots);
+    items.forEach((surface, index) => {
+      surface.userVisible = saved.visible?.[index] !== false;
+    });
+    isolatedMaterialId = items[saved.isolatedIndex]?.id ?? null;
+    updateMaterialVisibility();
+  }
 
   function endProjectionPreview() {
     if (!projectionPreview) return;
@@ -159,7 +212,9 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
       record.mesh.remove(record.overlay);
       record.mesh.remove(record.wire);
       if (record.wireGeometry) record.wireGeometry.dispose();
-      record.wireMaterial.dispose();
+      if (Array.isArray(record.wireMaterial))
+        record.wireMaterial.forEach((material) => material.dispose());
+      else record.wireMaterial.dispose();
       for (const surface of record.slots) {
         if (surface.compositeFrame !== null) cancelAnimationFrame(surface.compositeFrame);
         surface.texture.dispose(); surface.shaded.dispose(); surface.unlit.dispose();
@@ -170,7 +225,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
     }
     surfaces.clear(); undoStack = []; redoStack = []; activeStroke = null; linePreview = null;
     selection = null; lassoDraft = null; movePreview = null; filterSession = null;
-    overlaySurface = null; overlayRegions = [];
+    overlaySurface = null; overlayRegions = []; isolatedMaterialId = null;
   }
 
   function prepare(root) {
@@ -185,6 +240,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
       record.slots.forEach((surface, slotIndex) => {
         const original = originals[slotIndex];
         surface.id = `${mesh.uuid}:${slotIndex}`;
+        surface.userVisible = true;
         surface.meshName = mesh.name?.trim() || `Mesh ${meshIndex + 1}`;
         surface.materialName = original?.name?.trim() ||
           (record.slots.length > 1 ? `Material ${slotIndex + 1}` : surface.meshName);
@@ -204,14 +260,15 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
       record.overlay.raycast = () => {};
       mesh.add(record.overlay);
       const animated = mesh.isSkinnedMesh || !!mesh.morphTargetInfluences?.length;
-      record.wireGeometry = animated ? null : new THREE.EdgesGeometry(mesh.geometry, 1);
+      record.wireGeometry = animated || isArray ? null : new THREE.EdgesGeometry(mesh.geometry, 1);
       const wireOptions = { color: '#18202a',
         transparent: true, opacity: 0.8, depthTest: true, depthWrite: false,
         toneMapped: false };
-      record.wireMaterial = animated ?
-        new THREE.MeshBasicMaterial({ ...wireOptions, wireframe: true }) :
-        new THREE.LineBasicMaterial(wireOptions);
-      record.wire = animated ?
+      record.wireMaterial = isArray ? record.slots.map(() =>
+        new THREE.MeshBasicMaterial({ ...wireOptions, wireframe: true })) : animated ?
+          new THREE.MeshBasicMaterial({ ...wireOptions, wireframe: true }) :
+          new THREE.LineBasicMaterial(wireOptions);
+      record.wire = animated || isArray ?
         (mesh.isSkinnedMesh ? new THREE.SkinnedMesh(mesh.geometry, record.wireMaterial) :
           new THREE.Mesh(mesh.geometry, record.wireMaterial)) :
         new THREE.LineSegments(record.wireGeometry, record.wireMaterial);
@@ -238,6 +295,8 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
       }
       setMeshMaterial(record);
     }
+    isolatedMaterialId = null;
+    updateMaterialVisibility();
     const allSlots = [...surfaces.values()].flatMap((record) => record.slots);
     const nameCounts = new Map();
     for (const surface of allSlots) nameCounts.set(surface.materialName,
@@ -263,7 +322,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
 
   function setWireframeEnabled(enabled) {
     wireframeEnabled = Boolean(enabled);
-    for (const record of surfaces.values()) record.wire.visible = wireframeEnabled;
+    updateMaterialVisibility();
   }
 
   function setAntialiasEnabled(enabled) {
@@ -451,13 +510,15 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
     const old = selection?.surface === surface ? selection : null;
     let next;
     if (mode === 'replace' && mirrored) {
-      const parts = [selectionFromAlpha(surface, primary), selectionFromAlpha(surface, mirrored)]
+      const parts = [selectionFromAlpha(surface, primary, null, null, true, topology),
+        selectionFromAlpha(surface, mirrored, null, null, true, topology)]
         .filter(Boolean);
-      next = parts.length > 1 ? combineSelectionParts(surface, parts) : parts[0] ?? null;
+      next = parts.length > 1 ? combineSelectionParts(surface, parts, true, topology) :
+        parts[0] ?? null;
     } else {
       const added = mirrored ? combineWandMasks(primary, mirrored, 'add') : primary;
       const alpha = combineWandMasks(old?.alpha, added, mode);
-      next = selectionFromAlpha(surface, alpha);
+      next = selectionFromAlpha(surface, alpha, null, null, true, topology);
     }
     recordSelection(next);
     return !!next;
@@ -813,7 +874,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
     const parent = findSurface(targetId);
     const surface = parent?.activePaint;
     const face = getFaceTarget(targetId);
-    if (!surface || !face || activeStroke || linePreview || filterSession ||
+    if (!surface || !face || !materialVisible(parent) || activeStroke || linePreview || filterSession ||
         (selection && maskEnabled && selection.surface !== surface)) return false;
     const { canvas, context } = surface;
     const mask = selection && maskEnabled ? selectionMaskForLayer(selection, canvas)?.alpha : null;
@@ -1459,6 +1520,9 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
     setWireframeEnabled, setAntialiasEnabled,
     setRenderer: (nextRenderer) => { renderer = nextRenderer; },
     getMeshes: () => [...surfaces.keys()], getFaceTarget,
+    getMaterialVisibilityState, setMaterialVisibility, toggleMaterialIsolation,
+    restoreMaterialVisibilityState,
+    isMaterialVisible: (targetId) => materialVisible(findSurface(targetId)),
     getGraphTargets: graphTargets, setGraph, recordGraphChange,
     createImage, setPaintSource, mergeLayerDown,
     beginProjectionPreview, previewProjectionGraph, endProjectionPreview,

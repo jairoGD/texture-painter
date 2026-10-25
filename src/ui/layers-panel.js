@@ -18,12 +18,23 @@ import invertIcon from './icons/invert_color.svg';
 import './layers-panel.css';
 
 export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, onMergeLayer,
-  getImageCanvas, getImageInfo, onError }) {
+  getImageCanvas, getImageInfo, getMaterialVisibilityState,
+  onToggleMaterialVisibility, onToggleMaterialIsolation, onError }) {
   const selectedByTarget = new Map();
   let draggingId = null;
   let copiedLayers = null;
   let contextMenu = null;
-  const materialsPanel = createMaterialsPanel({ onSelect: (id) => nodeEditor.selectTarget(id) });
+  const materialsPanel = createMaterialsPanel({
+    onSelect: (id) => nodeEditor.selectTarget(id),
+    onToggleVisibility: (id) => {
+      onToggleMaterialVisibility?.(id);
+      refreshMaterials();
+    },
+    onToggleIsolation: (id) => {
+      onToggleMaterialIsolation?.(id);
+      refreshMaterials();
+    }
+  });
   const list = element('div', { className: 'layers-panel__list', attributes: { role: 'listbox', 'aria-label': 'Layers' } });
   const newImageInput = element('input', { attributes: { type: 'file', accept: 'image/*', hidden: '' } });
   const replaceImageInput = element('input', { attributes: { type: 'file', accept: 'image/*', hidden: '' } });
@@ -101,6 +112,9 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
   });
 
   function current() { return nodeEditor.getState(); }
+  function refreshMaterials(state = current()) {
+    materialsPanel.setState(state.targets, state.targetId, getMaterialVisibilityState?.());
+  }
   function selectedLayer(state) {
     const layers = state.graph ? readLayerStack(state.graph).layers : [];
     const id = selectedByTarget.get(state.targetId);
@@ -475,7 +489,7 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
   function render(state) {
     closeContextMenu();
     const hasGraph = Boolean(state.graph);
-    materialsPanel.setState(state.targets, state.targetId);
+    refreshMaterials(state);
     addButton.disabled = !hasGraph;
     openButton.disabled = !hasGraph;
     if (!hasGraph) {

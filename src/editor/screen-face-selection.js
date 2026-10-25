@@ -24,6 +24,7 @@ const faceIdMaterial = new THREE.ShaderMaterial({
 const occluderMaterial = new THREE.MeshBasicMaterial({
   color: 0xffffff, side: THREE.DoubleSide, toneMapped: false
 });
+const invisibleMaterial = new THREE.MeshBasicMaterial({ visible: false });
 
 function indexedFacesGeometry(source) {
   const cached = faceGeometryCache.get(source);
@@ -90,9 +91,10 @@ export function captureVisibleFaces(renderer, camera, targetMesh, materialIndex,
     const selected = candidate === targetMesh;
     const geometry = selected ? indexedFacesGeometry(candidate.geometry) : candidate.geometry;
     const materials = Array.isArray(candidate.material) ?
-      candidate.material.map((_, index) => selected && index === materialIndex ?
-        faceIdMaterial : occluderMaterial) :
-      selected && materialIndex === 0 ? faceIdMaterial : occluderMaterial;
+      candidate.material.map((material, index) => material.visible === false ? invisibleMaterial :
+        selected && index === materialIndex ? faceIdMaterial : occluderMaterial) :
+      candidate.material.visible === false ? invisibleMaterial :
+        selected && materialIndex === 0 ? faceIdMaterial : occluderMaterial;
     pickScene.add(proxyFor(candidate, geometry, materials));
   }
   const previousTarget = renderer.getRenderTarget();
