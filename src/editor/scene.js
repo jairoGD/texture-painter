@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { createTexturePainter } from './texture-painter.js';
-import { captureVisibleUv, projectLassoToUv } from './screen-lasso.js';
+import { captureVisibleUv, decodeVisibleUv, projectLassoToUv } from './screen-lasso.js';
 import { captureVisibleFaces } from './screen-face-selection.js';
 import { sampleScreenStroke } from './surface-stroke.js';
 import { sampleThroughLine } from './through-line.js';
@@ -41,6 +41,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   curveCanvas.className = 'curve-overlay';
   curveCanvas.setAttribute('aria-hidden', 'true');
   host.append(curveCanvas);
+  const gradientCanvas = document.createElement('canvas');
+  gradientCanvas.className = 'gradient-overlay';
+  gradientCanvas.setAttribute('aria-hidden', 'true');
+  host.append(gradientCanvas);
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = false;
@@ -244,6 +248,9 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   let lineStartMirrorHit = null;
   let lineThrough = false;
   let lineThroughTarget = null;
+  let gradientStart = null;
+  let gradientEnd = null;
+  let gradientTargetId = null;
   let curveStep = 0;
   let curvePoints = [];
   let curveStartHit = null;
@@ -313,6 +320,82 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   function viewportPoint(event) {
     const rect = strokeRect ?? renderer.domElement.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  }
+
+  function renderGradientGuide() {
+    const context = gradientCanvas.getContext('2d');
+    context.clearRect(0, 0, gradientCanvas.width, gradientCanvas.height);
+    if (!gradientStart || !gradientEnd) return;
+    context.strokeStyle = '#70bfff';
+    context.fillStyle = '#e5f3ff';
+    context.lineWidth = 1.5;
+    context.setLineDash([6, 4]);
+    context.beginPath();
+    context.moveTo(gradientStart.x, gradientStart.y);
+    context.lineTo(gradientEnd.x, gradientEnd.y);
+    context.stroke();
+    context.setLineDash([]);
+    for (const point of [gradientStart, gradientEnd]) {
+      context.beginPath(); context.arc(point.x, point.y, 4, 0, Math.PI * 2); context.fill();
+    }
+  }
+
+  function commitGradient() {
+    if (!gradientStart || !gradientEnd || !gradientTargetId ||
+        Math.hypot(gradientEnd.x - gradientStart.x, gradientEnd.y - gradientStart.y) < 2)
+      return false;
+    const options = toolSettings.gradient;
+    const face = painter.getFaceTarget(gradientTargetId);
+    if (!face) return false;
+    const viewport = { width: gradientCanvas.width, height: gradientCanvas.height };
+    const captureFor = (viewCamera) => options.xray ? null :
+      captureVisibleUv(renderer, viewCamera,
+        { object: face.mesh, face: { materialIndex: face.materialIndex } }, paintMeshes);
+    const uvDistance = (a, b) => Math.min(Math.abs(a - b),
+      textureResolution - Math.abs(a - b));
+    const visibilityFor = (capture) => {
+      if (!capture) return null;
+      const tolerance = 3 + 3 * textureResolution /
+        Math.max(1, Math.min(capture.width, capture.height));
+      return (u, v, sx, sy) => {
+      const expectedX = u * textureResolution;
+      const expectedY = v * textureResolution;
+      const centerX = Math.floor(sx), centerY = Math.floor(sy);
+      for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) {
+        const uv = decodeVisibleUv(capture.buffer, capture.width, capture.height,
+          centerX + ox, centerY + oy);
+        if (uv && uvDistance(uv.x, expectedX) <= tolerance &&
+            uvDistance(uv.y, expectedY) <= tolerance) return true;
+      }
+      return false;
+      };
+    };
+    const visibleUv = visibilityFor(captureFor(camera));
+    let mirror = null;
+    if (mirrorEnabled) {
+      const point = resolveMirrorHit.planePoint;
+      const normal = resolveMirrorHit.planeNormal;
+      const rect = renderer.domElement.getBoundingClientRect();
+      let side = 0;
+      const steps = Math.max(1, Math.ceil(Math.hypot(gradientEnd.x - gradientStart.x,
+        gradientEnd.y - gradientStart.y) / 8));
+      for (let i = 0; i <= steps && !side; i++) {
+        const t = i / steps;
+        const hit = hitTestAt(rect.left + gradientStart.x +
+          (gradientEnd.x - gradientStart.x) * t,
+        rect.top + gradientStart.y + (gradientEnd.y - gradientStart.y) * t);
+        if (hit) {
+          const distance = hit.point.clone().sub(point).dot(normal);
+          if (Math.abs(distance) > 1e-5) side = Math.sign(distance);
+        }
+      }
+      if (!side) side = Math.sign(camera.position.clone().sub(point).dot(normal)) || 1;
+      const mirrorCamera = reflectedCamera(camera, point, normal);
+      mirror = { camera: mirrorCamera, side, plane: { point, normal },
+        visibleUv: visibilityFor(captureFor(mirrorCamera)) };
+    }
+    return painter.applyGradient(gradientTargetId, camera, viewport, gradientStart,
+      gradientEnd, options, visibleUv, mirror);
   }
 
   function mirrorHitAt(hit) {
@@ -726,6 +809,12 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         pointerAction = 'curve';
         previewCurveAt(event);
       }
+    } else if (activeTool === 'gradient') {
+      pointerAction = 'gradient';
+      gradientStart = viewportPoint(event);
+      gradientEnd = gradientStart;
+      gradientTargetId = selectedTargetId;
+      renderGradientGuide();
     } else if (activeTool === 'line') {
       if (event.ctrlKey) {
         painter.beginThroughLine(toolSettings.line);
@@ -768,6 +857,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         event.clientY - lassoStartScreen.y) > 4) lassoDragged = true;
       traceLassoTo(event);
     }
+    else if (pointerAction === 'gradient') {
+      gradientEnd = viewportPoint(event);
+      renderGradientGuide();
+    }
     else if (pointerAction === 'moveSelection' || pointerAction === 'curve') queueDraw(event);
     else if (activeTool === 'line' || activeTool === 'brush' ||
         activeTool === 'eraser' || activeTool === 'blur') queueDraw(event);
@@ -782,6 +875,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     drawFrame = null;
     pendingDraw = null;
     let curveCommitted = false;
+    let gradientCommitted = false;
     if (event.type === 'pointerup') {
       if (pointerAction === 'moveSelection') {
         const hit = gestureSamplingMode === 'uv' ? hitTest(event) : null;
@@ -825,6 +919,14 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       else {
         if (painter.endMove()) onSelectionChanged?.('Selection moved');
       }
+    } else if (pointerAction === 'gradient') {
+      if (event.type === 'pointerup') {
+        gradientEnd = viewportPoint(event);
+        try { gradientCommitted = commitGradient(); }
+        catch (error) { onSelectionChanged?.(`Gradient failed: ${error.message}`); }
+      }
+      gradientStart = gradientEnd = gradientTargetId = null;
+      renderGradientGuide();
     } else if (pointerAction === 'curve') {
       if (event.type === 'pointercancel') resetCurve(true);
       else {
@@ -856,8 +958,9 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     lassoDragged = false;
     lassoMode = 'replace';
     if (renderer.domElement.hasPointerCapture(event.pointerId)) renderer.domElement.releasePointerCapture(event.pointerId);
-    if (movedSelection || curveCommitted ||
-        (activeTool !== 'eyedropper' && activeTool !== 'wand' && activeTool !== 'curve')) {
+    if (movedSelection || curveCommitted || gradientCommitted ||
+        (activeTool !== 'eyedropper' && activeTool !== 'wand' &&
+          activeTool !== 'curve' && activeTool !== 'gradient')) {
       onContentChanged?.();
     }
   }
@@ -875,6 +978,16 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   bindRendererCanvas(renderer.domElement);
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
+    if (pointerAction === 'gradient') {
+      const pointerId = activePointer;
+      activePointer = null; pointerAction = null; strokeRect = null;
+      gradientStart = gradientEnd = gradientTargetId = null;
+      renderGradientGuide();
+      if (pointerId !== null && renderer.domElement.hasPointerCapture(pointerId))
+        renderer.domElement.releasePointerCapture(pointerId);
+      event.preventDefault();
+      return;
+    }
     if (pointerAction === 'curve' || curveStep > 0) {
       const pointerId = activePointer;
       activePointer = null; pointerAction = null; strokeRect = null;
@@ -1021,6 +1134,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     renderer.setSize(width, height, false);
     lassoCanvas.width = width; lassoCanvas.height = height;
     curveCanvas.width = width; curveCanvas.height = height;
+    gradientCanvas.width = width; gradientCanvas.height = height;
+    renderGradientGuide();
     renderCurvePreview();
     if (pointerAction === 'faces') renderFaceRectangle();
     else renderLassoPath();

@@ -25,6 +25,7 @@ html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 .viewport canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
 .viewport canvas.lasso-overlay { position: absolute; inset: 0; pointer-events: none; mix-blend-mode: difference; }
 .viewport canvas.curve-overlay { position: absolute; inset: 0; pointer-events: none; }
+.viewport canvas.gradient-overlay { position: absolute; inset: 0; pointer-events: none; }
 .warp-projection-hint { position: absolute; z-index: 5; left: 12px; top: 12px;
   padding: 7px 10px; border: 1px solid var(--border-control); border-radius: 7px;
   background: #1b222bdc; color: var(--text-muted); font-size: 11px;

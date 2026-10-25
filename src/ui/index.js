@@ -108,6 +108,28 @@ export function colorPicker({ label, value = '#000000', onChange }) {
   ]);
 }
 
+export function colorAlpha({ label, value = { color: '#000000', alpha: 100 }, onChange }) {
+  const current = { color: value?.color || '#000000', alpha: value?.alpha ?? 100 };
+  const color = element('input', { className: 'ui-color-picker__input',
+    attributes: { type: 'color', value: current.color, 'aria-label': `${label} color` },
+    on: { input: (event) => {
+      current.color = event.target.value;
+      onChange?.({ ...current });
+    } } });
+  const alphaValue = element('output', { text: `${current.alpha}%` });
+  const alpha = element('input', { attributes: { type: 'range', min: 0, max: 100,
+    step: 1, value: current.alpha, 'aria-label': `${label} opacity` },
+    on: { input: (event) => {
+      current.alpha = Number(event.target.value);
+      alphaValue.value = `${current.alpha}%`;
+      onChange?.({ ...current });
+    } } });
+  return element('div', { className: 'ui-color-alpha' }, [
+    element('span', { text: label }),
+    element('div', { className: 'ui-color-alpha__row' }, [color, alpha, alphaValue])
+  ]);
+}
+
 export function panel({ title, subtitle, children = [], className = '' }) {
   return element('section', { className: `ui-panel ${className}`.trim() }, [
     element('div', { className: 'ui-panel__heading' }, [
@@ -200,6 +222,7 @@ const controlTypes = new Map([
   ['button', button],
   ['slider', slider],
   ['colorPicker', colorPicker],
+  ['colorAlpha', colorAlpha],
   ['checkbox', checkbox],
   ['select', selectControl],
   ['number', numberControl],

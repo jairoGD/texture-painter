@@ -8,6 +8,7 @@ import blurIcon from '../ui/icons/blur.svg';
 import lassoIcon from '../ui/icons/lasso.svg';
 import magicIcon from '../ui/icons/magic.svg';
 import wireIcon from '../ui/icons/wire.svg';
+import gradientIcon from '../ui/icons/gradient.svg';
 
 const size = { type: 'slider', key: 'size', label: 'Size', min: 2, max: 128, step: 1, unit: ' px' };
 const fineSize = { ...size, min: 1 };
@@ -49,6 +50,14 @@ export const TOOL_DEFINITIONS = [
     usesColor: true, defaults: { size: 2, hardness: 100, opacity: 100, antialias: true,
       ...lineStyleDefaults },
     controls: [fineSize, hardness, opacity, antialias, ...lineStyleControls] },
+  { id: 'gradient', label: 'Gradient', iconUrl: gradientIcon,
+    defaults: { startColor: { color: '#000000', alpha: 100 },
+      endColor: { color: '#000000', alpha: 0 }, xray: false },
+    controls: [
+      { type: 'colorAlpha', key: 'startColor', label: 'Start color' },
+      { type: 'colorAlpha', key: 'endColor', label: 'End color' },
+      { type: 'checkbox', key: 'xray', label: 'X-ray' }
+    ] },
   { id: 'blur', label: 'Blur', iconUrl: blurIcon,
     defaults: { size: 72, hardness: 35, strength: 20, spread: 20 },
     controls: [size, hardness,
