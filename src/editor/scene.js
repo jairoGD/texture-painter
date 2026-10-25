@@ -681,7 +681,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         lassoDragged = false;
       } else {
         const created = hit ? painter.selectWand(hit, toolSettings.wand, wandMode,
-          mirrorHitAt(hit)) : false;
+          mirrorHitAt(hit), gestureSamplingMode) : false;
         if (!hit && wandMode === 'replace') painter.clearSelection();
         onSelectionChanged?.(created ? 'Selection created' : 'Selection cleared');
       }

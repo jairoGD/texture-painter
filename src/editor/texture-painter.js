@@ -17,6 +17,7 @@ import { selectionOnPaintSurface } from './selection-layer.js';
 import { FILTER_CATEGORIES } from './filter-definitions.js';
 import { renderFilterRegion } from './filter-effects.js';
 import { combineWandMasks, wandSelectionMask } from './wand-selection.js';
+import { surfaceWandTopology } from './surface-wand-topology.js';
 import { scaleLayerRegion, selectionMaskForLayer, uvToLayerPixel } from './layer-space.js';
 
 function configureTextureSampling(texture, antialiasEnabled) {
@@ -413,7 +414,8 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
     return true;
   }
 
-  function selectWand(hit, options = {}, mode = 'replace', mirroredHit = null) {
+  function selectWand(hit, options = {}, mode = 'replace', mirroredHit = null,
+    samplingMode = 'surface') {
     const surface = surfaceAt(hit);
     if (!surface || lassoDraft || movePreview || activeStroke || linePreview || filterSession) return false;
     commitFloatingSelection();
@@ -427,12 +429,14 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
       context.drawImage(surface.canvas, 0, 0, SIZE, SIZE);
     }
     const image = context.getImageData(0, 0, SIZE, SIZE);
+    const topology = samplingMode === 'surface' ?
+      (parent.wandTopology ??= surfaceWandTopology(parent.geometry, parent.slotIndex, SIZE)) : null;
     const makeMask = (sourceHit) => {
       const point = toPixel(sourceHit.uv);
       return wandSelectionMask(image,
         Math.max(0, Math.min(SIZE - 1, Math.floor(point.x))),
         Math.max(0, Math.min(SIZE - 1, Math.floor(point.y))),
-        options.threshold ?? 30, options.similar === true);
+        options.threshold ?? 30, options.similar === true, topology, sourceHit.faceIndex);
     };
     const primary = makeMask(hit);
     const mirrored = mirroredHit && surfaceAt(mirroredHit) === surface ? makeMask(mirroredHit) : null;
