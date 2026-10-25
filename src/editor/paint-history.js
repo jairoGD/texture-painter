@@ -39,6 +39,15 @@ export function capturePaintPatches(commands, beforeImages) {
       command.kind === 'bucket' || command.kind === 'moveSelection');
     const tiles = new Set();
     for (const command of fullCanvas ? [] : surfaceCommands) {
+      if (command.dirtyRegions) {
+        for (const region of command.dirtyRegions)
+          for (let y = Math.floor(region.top / TILE_SIZE) * TILE_SIZE;
+            y < region.bottom; y += TILE_SIZE)
+            for (let x = Math.floor(region.left / TILE_SIZE) * TILE_SIZE;
+              x < region.right; x += TILE_SIZE)
+              tiles.add(`${x}:${y}`);
+        continue;
+      }
       const bounds = commandBounds(command, width, height);
       for (let y = Math.floor(bounds.top / TILE_SIZE) * TILE_SIZE; y < bounds.bottom; y += TILE_SIZE)
         for (let x = Math.floor(bounds.left / TILE_SIZE) * TILE_SIZE; x < bounds.right; x += TILE_SIZE) {

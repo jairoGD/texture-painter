@@ -1125,7 +1125,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     getTexturePreview: painter.getCompositePreview,
     getExportTextures: painter.getExportTextures,
     canFilter: painter.canFilter,
-    beginFilter: painter.beginFilter,
+    beginFilter: (targetId) => painter.beginFilter(targetId, samplingMode),
     previewFilter: painter.previewFilter,
     applyFilter: painter.applyFilter,
     cancelFilter: painter.cancelFilter,

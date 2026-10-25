@@ -8,7 +8,17 @@ export function surfaceWandTopology(geometry, materialIndex, width, height = wid
   const owners = new Uint32Array(width * height);
   const adjacent = new Map();
   const portals = new Map();
+  const faceParents = new Uint32Array(faceCount);
+  for (let face = 0; face < faceCount; face++) faceParents[face] = face;
   if (!uv || !position) return emptyTopology(owners);
+
+  const root = (face) => {
+    while (faceParents[face] !== face) {
+      faceParents[face] = faceParents[faceParents[face]];
+      face = faceParents[face];
+    }
+    return face;
+  };
 
   const belongs = (face) => !geometry.groups?.length || geometry.groups.some((group) =>
     face * 3 >= group.start && face * 3 + 2 < group.start + group.count &&
@@ -89,7 +99,10 @@ export function surfaceWandTopology(geometry, materialIndex, width, height = wid
       if (Math.hypot((first.a.x - secondA.x) * width,
         (first.a.y - secondA.y) * height) < 0.25 &&
         Math.hypot((first.b.x - secondB.x) * width,
-          (first.b.y - secondB.y) * height) < 0.25) continue;
+          (first.b.y - secondB.y) * height) < 0.25) {
+        faceParents[root(second.face)] = root(first.face);
+        continue;
+      }
       const firstLength = Math.hypot((first.b.x - first.a.x) * width,
         (first.b.y - first.a.y) * height);
       const secondLength = Math.hypot((secondB.x - secondA.x) * width,
@@ -111,8 +124,16 @@ export function surfaceWandTopology(geometry, materialIndex, width, height = wid
       }
     }
   }
+  const portalTiles = new Map();
+  for (const pixel of portals.keys()) {
+    const x = pixel % width, y = Math.floor(pixel / width);
+    const key = `${Math.floor(x / 64)}:${Math.floor(y / 64)}`;
+    if (!portalTiles.has(key)) portalTiles.set(key, []);
+    portalTiles.get(key).push(pixel);
+  }
   return {
-    owners, portals,
+    owners, portals, portalTiles,
+    islandAt(pixel) { return owners[pixel] ? root(owners[pixel] - 1) + 1 : 0; },
     seed(x, y, face) {
       const candidate = y * width + x;
       if (owners[candidate] && (face == null || owners[candidate] === face + 1)) return candidate;
@@ -128,5 +149,6 @@ export function surfaceWandTopology(geometry, materialIndex, width, height = wid
 }
 
 function emptyTopology(owners) {
-  return { owners, portals: new Map(), seed: () => -1, connected: () => false };
+  return { owners, portals: new Map(), portalTiles: new Map(),
+    islandAt: () => 0, seed: () => -1, connected: () => false };
 }

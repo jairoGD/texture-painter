@@ -280,6 +280,13 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
   function surfaceAt(hit) {
     return hit?.uv ? surfaces.get(hit.object)?.slots[hit.face?.materialIndex ?? 0]?.activePaint ?? null : null;
   }
+  function topologyFor(parent, canvas) {
+    parent.topologies ??= new Map();
+    const key = `${canvas.width}:${canvas.height}`;
+    if (!parent.topologies.has(key)) parent.topologies.set(key,
+      surfaceWandTopology(parent.geometry, parent.slotIndex, canvas.width, canvas.height));
+    return parent.topologies.get(key);
+  }
   function uploadOverlayRegion(surface, region) {
     if (!renderer) { surface.overlayTexture.needsUpdate = true; return; }
     try {
@@ -430,8 +437,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
       context.drawImage(surface.canvas, 0, 0, SIZE, SIZE);
     }
     const image = context.getImageData(0, 0, SIZE, SIZE);
-    const topology = samplingMode === 'surface' ?
-      (parent.wandTopology ??= surfaceWandTopology(parent.geometry, parent.slotIndex, SIZE)) : null;
+    const topology = samplingMode === 'surface' ? topologyFor(parent, parent.canvas) : null;
     const makeMask = (sourceHit) => {
       const point = toPixel(sourceHit.uv);
       return wandSelectionMask(image,
@@ -788,7 +794,9 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
       canConnectUvHits(previousHit, hit, previous, point, surface.canvas.width * 0.2) :
       canConnectSurfaceHits(previousHit, hit, previous, point, surface.canvas.width * 0.2));
     apply({ kind, surface, point, previous: continuous ? previous : null,
-      options: { ...options }, mask: maskEnabled ? selectionMaskForLayer(selection, surface.canvas) : null, isolateBlur });
+      options: { ...options }, mask: maskEnabled ? selectionMaskForLayer(selection, surface.canvas) : null,
+      isolateBlur, faceIndex: hit.faceIndex, topology: kind === 'blur' && mode === 'surface' ?
+        topologyFor(findSurface(surface.id), surface.canvas) : null });
     return hit;
   }
 
@@ -1084,13 +1092,13 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
       (selection?.surface.id !== targetId || !!selection.indices.length);
   }
 
-  function beginFilter(targetId) {
+  function beginFilter(targetId, mode = 'surface') {
     if (filterSession || !canFilter(targetId)) return false;
     const parent = findSurface(targetId);
     const mask = selection?.surface.id === targetId ? selection.alpha : null;
     const rect = mask ? { ...selection.bounds } :
       { left: 0, top: 0, right: SIZE, bottom: SIZE };
-    filterSession = { parent, mask, rect, snapshots: new Map() };
+    filterSession = { parent, mask, rect, mode, snapshots: new Map() };
     return true;
   }
 
@@ -1102,7 +1110,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
       ...keys.map((key) => session.parent.imageAssets.get(key)?.paintSurface).filter(Boolean)])];
   }
 
-  function filterSnapshot(session, surface) {
+  function filterSnapshot(session, surface, category) {
     let snapshot = session.snapshots.get(surface);
     if (snapshot) return snapshot;
     const rect = session.mask ? scaleLayerRegion(session.rect, session.parent.canvas,
@@ -1120,6 +1128,9 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
       mask: session.mask ? selectionMaskForLayer(selection, surface.canvas)?.alpha : null,
       source: sameRect ? before : surface.context.getImageData(sourceRect.left, sourceRect.top,
         sourceRect.right - sourceRect.left, sourceRect.bottom - sourceRect.top),
+      fullSource: session.mode === 'surface' && category === 'blur' ?
+        (sameRect ? before : surface.context.getImageData(0, 0,
+          surface.canvas.width, surface.canvas.height)) : null,
       previewed: false };
     session.snapshots.set(surface, snapshot);
     return snapshot;
@@ -1150,11 +1161,13 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied) {
     for (const [surface, snapshot] of session.snapshots)
       if (!targetSet.has(surface)) restoreFilterSurface(surface, snapshot);
     for (const surface of targets) {
-      const snapshot = filterSnapshot(session, surface);
+      const snapshot = filterSnapshot(session, surface, category);
       const result = renderFilterRegion({ source: snapshot.source,
         sourceRect: snapshot.sourceRect, dirtyRect: snapshot.rect,
         textureWidth: surface.canvas.width, mask: snapshot.mask, category, settings,
-        isolateBlur });
+        isolateBlur, topology: session.mode === 'surface' && category === 'blur' && settings.depth > 0 ?
+          topologyFor(session.parent, surface.canvas) : null,
+        fullSource: snapshot.fullSource });
       surface.context.putImageData(new ImageData(result.data, result.width, result.height),
         snapshot.rect.left, snapshot.rect.top);
       surface.requestComposite(snapshot.rect);

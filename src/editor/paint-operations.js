@@ -1,6 +1,7 @@
 import { strokeTouchesSelection } from './selection-coverage.js';
 import { rasterizePixelStroke } from './pixel-brush.js';
 import { commandBounds } from './paint-history.js';
+import { blurSurfaceStroke, blurTouchesSeam } from './surface-blur-stroke.js';
 
 const WHITE = '#ffffff';
 
@@ -274,10 +275,20 @@ function floodFill({ surface, point, options, mask }) {
 }
 
 export function executePaintCommand(command) {
-  const changed = command.kind === 'bucket' ? floodFill(command) :
+  let changed;
+  if (command.kind === 'blur' && command.topology && blurTouchesSeam(command.topology,
+    command.point, command.previous, Math.max(1, command.options.size / 2),
+    Math.ceil(Math.max(0.5, command.options.spread / 3) * 3),
+    command.surface.canvas.width, command.surface.canvas.height)) {
+    command.dirtyRegions = blurSurfaceStroke(command);
+    changed = command.dirtyRegions.length > 0;
+  } else changed = command.kind === 'bucket' ? floodFill(command) :
     command.kind === 'blur' ? blurStroke(command) : drawMark(command);
-  if (changed) command.surface.requestComposite(commandBounds(command,
-    command.surface.canvas.width, command.surface.canvas.height));
+  if (changed) {
+    const regions = command.dirtyRegions ?? [commandBounds(command,
+      command.surface.canvas.width, command.surface.canvas.height)];
+    for (const region of regions) command.surface.requestComposite(region);
+  }
   return changed;
 }
 

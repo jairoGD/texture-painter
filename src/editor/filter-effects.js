@@ -1,3 +1,5 @@
+import { mixSeamBlur, seamBlurCorrections } from './surface-blur.js';
+
 function clamp(value) { return Math.max(0, Math.min(255, Math.round(value))); }
 
 function rampColor(hex) {
@@ -220,13 +222,19 @@ function blendSelection(output, original, mask, rect, textureWidth) {
 }
 
 export function renderFilterRegion({ source, sourceRect, dirtyRect, textureWidth,
-  mask = null, category, settings, isolateBlur = true }) {
+  mask = null, category, settings, isolateBlur = true,
+  topology = null, fullSource = null }) {
   const width = dirtyRect.right - dirtyRect.left;
   const height = dirtyRect.bottom - dirtyRect.top;
   const output = new Uint8ClampedArray(width * height * 4);
   const original = new Uint8ClampedArray(output.length);
   const blurred = category === 'blur' && settings.depth > 0 ?
     blurredPixels(source, sourceRect, textureWidth, mask, settings.depth, isolateBlur) : null;
+  const seamCorrections = blurred && topology && fullSource ?
+    seamBlurCorrections(topology, dirtyRect, textureWidth, fullSource.height,
+      Math.max(0.5, settings.depth / 2),
+      (pixel) => fullSource.data.subarray(pixel * 4, pixel * 4 + 4),
+      mask && isolateBlur ? mask : null) : null;
   const working = blurred?.pixels ?? source.data;
   const mosaic = category === 'blur' ? settings.mosaic : 1;
   const rampLut = category === 'ramp' ? colorRampLut(settings.stops, settings.interpolation) : null;
@@ -237,7 +245,9 @@ export function renderFilterRegion({ source, sourceRect, dirtyRect, textureWidth
     const alpha = blurred?.maskBlur ?
       (blurred.maskBlur[offset + 3] ? clamp(working[offset + 3] * 255 /
         blurred.maskBlur[offset + 3]) : 0) : working[offset + 3];
-    return [working[offset], working[offset + 1], working[offset + 2], alpha];
+    const pixel = [working[offset], working[offset + 1], working[offset + 2], alpha];
+    return mixSeamBlur(pixel, seamCorrections?.get(globalY * textureWidth + globalX),
+      source.data[offset + 3]);
   }
 
   function mosaicPixel(globalX, globalY) {
