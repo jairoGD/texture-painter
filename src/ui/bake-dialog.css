@@ -1,0 +1,18 @@
+.bake-dialog { position: fixed; inset: 0; z-index: 92; background: transparent; }
+.bake-dialog[hidden] { display: none; }
+.bake-dialog__card { position: absolute; width: 298px; max-width: calc(100vw - 24px); border: 1px solid var(--border-control); border-radius: 10px; background: var(--surface-panel); box-shadow: 0 18px 55px #000a; overflow: hidden; }
+.bake-dialog__header { display: flex; align-items: center; justify-content: space-between; min-height: 39px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--border-panel); background: var(--surface-control); }
+.bake-dialog__header h2 { margin: 0; color: var(--text-primary); font-size: 12px; }
+.bake-dialog__header .ui-button { min-width: 28px; min-height: 28px; padding: 0; font-size: 17px; }
+.bake-dialog__body { display: grid; gap: 13px; padding: 15px 14px 10px; }
+.bake-dialog__target { margin: 0 0 2px; overflow: hidden; color: var(--text-primary); font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.bake-dialog__body label { display: grid; gap: 6px; color: var(--text-muted); font-size: 11px; }
+.bake-dialog__body .bake-dialog__checkbox { display: flex; align-items: center; gap: 8px; color: var(--text-primary); }
+.bake-dialog__checkbox input { margin: 0; accent-color: var(--accent); }
+.bake-dialog__body select { height: 29px; padding: 0 7px; border: 1px solid var(--border-control); border-radius: 5px; background: var(--surface-control); color: var(--text-primary); }
+.bake-dialog__body input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); }
+.bake-dialog__label { display: flex; justify-content: space-between; gap: 8px; }
+.bake-dialog__label output { color: var(--text-primary); }
+.bake-dialog__progress { min-height: 15px; margin: 0; color: var(--accent-soft); font-size: 11px; }
+.bake-dialog__actions { display: flex; gap: 8px; padding: 6px 14px 14px; }
+.bake-dialog__actions .ui-button { flex: 1; }

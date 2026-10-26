@@ -14,6 +14,7 @@ import { createLightGizmo } from './ui/light-gizmo.js';
 import { createModelRelinkDialog, MODEL_ACCEPT, MODEL_PICKER } from './ui/model-relink.js';
 import { createSelectionSizeDialog } from './ui/selection-size-dialog.js';
 import { createFilterDialog } from './ui/filter-dialog.js';
+import { createBakeDialog } from './ui/bake-dialog.js';
 import { FILTER_CATEGORIES } from './editor/filter-definitions.js';
 import { writeTexturePngs } from './editor/texture-export.js';
 import { dropdown, element, notice, panel, renderControl, renderPanel, toggleButton, toolbar } from './ui/index.js';
@@ -300,6 +301,18 @@ const filterMenu = dropdown({ label: 'Filter', items: FILTER_CATEGORIES.map((cat
   label: category.label, getDisabled: () => !scene.canFilter(nodeEditor.getState().targetId),
   onSelect: () => filterDialog.open(category.id)
 })) });
+const bakeDialog = createBakeDialog({
+  onBake: async (targetId, settings, onProgress, signal) => {
+    const image = await scene.bakeAmbientOcclusion(targetId, settings, onProgress, signal);
+    return layersPanel.addBakedLayer(targetId, image);
+  },
+  onComplete: () => {
+    markDirty();
+    nodeEditor.refreshHistoryButtons();
+    setStatus('Ambient occlusion baked into a new layer');
+  },
+  onError: (message) => setStatus(message, true)
+});
 
 function applySelectionSize(mode, amount, unit = scene.getSelectionUnit()) {
   if (scene.resizeSelection(amount, mode === 'expand')) {
@@ -392,6 +405,14 @@ const renderingMenu = dropdown({ label: 'Rendering', items: [
       markDirty();
     } }
 ] });
+const bakeMenu = dropdown({ label: 'Bake', items: [
+  { label: 'Ambient occlusion', getDisabled: () => !nodeEditor.getState().targetId,
+    onSelect: () => {
+      const state = nodeEditor.getState();
+      const material = state.targets.find((item) => item.id === state.targetId);
+      bakeDialog.open(state.targetId, material?.label ?? 'Selected material');
+    } }
+] });
 
 const projectTag = element('span', { className: 'app-header__tag', text: 'NO PROJECT' });
 const samplingButton = toggleButton({ label: 'Switch to UV sampling', iconUrl: samplingIcon,
@@ -419,7 +440,8 @@ const header = element('header', { className: 'app-header' }, [
     element('span', { className: 'brand__mark', text: '◈', attributes: { 'aria-hidden': 'true' } }),
     element('span', { className: 'brand__name', text: 'TEXTURE PAINTER' })
   ]),
-  toolbar({ items: [fileMenu, editMenu, selectMenu, filterMenu, displayMenu, renderingMenu], className: 'app-header__menu' }),
+  toolbar({ items: [fileMenu, editMenu, selectMenu, filterMenu, displayMenu, renderingMenu,
+    bakeMenu], className: 'app-header__menu' }),
   element('div', { className: 'app-header__right' }, [samplingButton, mirrorButton, projectTag])
 ]);
 
@@ -714,6 +736,10 @@ async function openProject(project, handle = null) {
 
 async function saveProject(saveAs = false) {
   if (!projectId || loadingProject) return;
+  if (bakeDialog.isBusy()) {
+    setStatus('Wait for the bake to finish before saving.', true);
+    return;
+  }
   if (filterDialog.isOpen()) {
     setStatus('Apply or cancel the filter before saving.', true);
     return;
@@ -813,5 +839,6 @@ window.addEventListener('beforeunload', (event) => {
 
 app.append(header, workspace, footer, fileInput, projectInput, texturePreview.element,
   projectHome.element, modelRelink.element, selectionSizeDialog.element, filterDialog.element,
+  bakeDialog.element,
   textureExportDialog.element);
 refreshRecent();

@@ -18,6 +18,7 @@ import { preciseCurveScreenPoints } from './precise-curve.js';
 import { buildSurfaceCurvePath } from './surface-curve-path.js';
 import { createModelMirror, reflectedCamera } from './model-mirror.js';
 import { setTextureResolution, textureResolution } from './texture-resolution.js';
+import { collectAmbientOcclusionGeometry } from './ambient-occlusion-source.js';
 import { resizeWarpProjection, warpProjectionTransform } from './image-projection.js';
 import { resolveTemporaryPaintTool } from './temporary-paint-tool.js';
 
@@ -1749,6 +1750,42 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         lightRotation: { yaw: lightYaw, pitch: lightPitch } } };
   }
 
+  async function bakeAmbientOcclusion(targetId, options, onProgress, signal) {
+    if (signal?.aborted) throw new DOMException('Bake cancelled', 'AbortError');
+    const target = painter.getFaceTarget(targetId);
+    if (!target) throw new Error('Select a material before baking.');
+    const source = collectAmbientOcclusionGeometry(painter.getMeshes(),
+      target.mesh, target.materialIndex, options);
+    if (signal?.aborted) throw new DOMException('Bake cancelled', 'AbortError');
+    const image = await new Promise((resolve, reject) => {
+      const worker = new Worker(new URL('./ambient-occlusion-worker.js', import.meta.url),
+        { type: 'module' });
+      const finish = () => {
+        signal?.removeEventListener('abort', abort);
+        worker.terminate();
+      };
+      const abort = () => { finish(); reject(new DOMException('Bake cancelled', 'AbortError')); };
+      signal?.addEventListener('abort', abort, { once: true });
+      worker.onmessage = ({ data }) => {
+        if (data.type === 'progress') onProgress?.(data.value);
+        else if (data.type === 'complete') { finish(); resolve(data.image); }
+        else if (data.type === 'error') { finish(); reject(new Error(data.message)); }
+      };
+      worker.onerror = (event) => {
+        finish(); reject(new Error(event.message || 'Ambient occlusion bake failed.'));
+      };
+      worker.postMessage({ source, options }, [source.positions.buffer,
+        source.targetTriangles.buffer, source.targetUvs.buffer,
+        source.targetNormals.buffer]);
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = image.width;
+    canvas.height = image.height;
+    canvas.getContext('2d').putImageData(new ImageData(image.data,
+      image.width, image.height), 0, 0);
+    return canvas;
+  }
+
   async function restoreProjectData(saved, file = null) {
     setTextureResolution(saved.resolution ?? 1024);
     if (saved.model.kind === 'starter') newProject(textureResolution);
@@ -1828,6 +1865,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   return {
     importModel,
     newProject, exportProjectData, restoreProjectData,
+    bakeAmbientOcclusion,
     frame: () => frame(model),
     setGridVisible: (visible) => { grid.visible = visible; },
     setWireframeVisible: (visible) => {

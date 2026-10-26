@@ -261,6 +261,27 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     } catch (error) { fail(error); }
   }
 
+  function addBakedLayer(targetId, canvas, name = 'Ambient Occlusion') {
+    const state = current();
+    if (!state.graph || state.targetId !== targetId) return false;
+    const graph = cloneTextureGraph(state.graph);
+    const created = addGraphLayer(graph, 'image');
+    if (!created) return false;
+    try {
+      const asset = onCreateImage(targetId, created.source.id, canvas, name, true);
+      if (!asset) throw new Error('Unable to create baked layer');
+      created.source.imageKey = asset.key;
+      created.source.imageName = asset.name;
+      created.source.extension = 'clip';
+      created.mix.layerName = name;
+      created.mix.mode = 'multiply';
+      selectedByTarget.set(targetId, created.mix.id);
+      nodeEditor.replaceGraph(graph);
+      nodeEditor.choosePaintSource(created.source.id);
+      return true;
+    } catch (error) { fail(error); return false; }
+  }
+
   function move(direction) {
     const state = current();
     const selected = selectedLayer(state);
@@ -583,5 +604,5 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
 
   function setState(state) { render(state); }
   setState(current());
-  return { element: root, setState, refreshThumbnails };
+  return { element: root, setState, refreshThumbnails, addBakedLayer };
 }
