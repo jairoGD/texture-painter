@@ -13,6 +13,7 @@ import stampIcon from '../ui/icons/stamp.svg';
 
 const size = { type: 'slider', key: 'size', label: 'Size', min: 2, max: 128, step: 1, unit: ' px' };
 const fineSize = { ...size, min: 1 };
+const editableSize = { ...fineSize, max: 500, editable: true };
 const hardness = { type: 'slider', key: 'hardness', label: 'Hardness', min: 0, max: 100, step: 1, unit: '%' };
 const opacity = { type: 'slider', key: 'opacity', label: 'Opacity', min: 1, max: 100, step: 1, unit: '%' };
 const antialias = { type: 'checkbox', key: 'antialias', label: 'Antialiasing' };
@@ -59,7 +60,7 @@ const strokeProfileControls = [
 export const TOOL_DEFINITIONS = [
   { id: 'brush', label: 'Brush', iconUrl: brushIcon,
     usesColor: true, defaults: { size: 10, hardness: 100, opacity: 100, antialias: true },
-    controls: [fineSize, hardness, opacity, antialias] },
+    controls: [editableSize, hardness, opacity, antialias] },
   { id: 'eraser', label: 'Eraser', iconUrl: eraserIcon,
     defaults: { size: 10, hardness: 100, opacity: 100, antialias: true },
     controls: [size, hardness, opacity, antialias] },
@@ -69,7 +70,7 @@ export const TOOL_DEFINITIONS = [
   { id: 'line', label: 'Line', iconUrl: lineIcon,
     usesColor: true, defaults: { size: 2, hardness: 100, opacity: 100, antialias: true,
       ...lineStyleDefaults, ...textureStyleDefaults, ...strokeProfileDefaults },
-    controls: [fineSize, hardness, opacity, antialias, ...textureStyleControls,
+    controls: [editableSize, hardness, opacity, antialias, ...textureStyleControls,
       ...strokeProfileControls] },
   { id: 'curve', label: 'Curve', iconUrl: curveIcon,
     usesColor: true, defaults: { size: 2, hardness: 100, opacity: 100, antialias: true,
@@ -80,7 +81,7 @@ export const TOOL_DEFINITIONS = [
         { value: 'dynamic', label: 'Dynamic' },
         { value: 'precise', label: 'Precise' }
       ] },
-      fineSize, hardness, opacity, antialias, ...textureStyleControls,
+      editableSize, hardness, opacity, antialias, ...textureStyleControls,
       ...strokeProfileControls] },
   { id: 'gradient', label: 'Gradient', iconUrl: gradientIcon,
     defaults: { startColor: { color: '#000000', alpha: 100 },

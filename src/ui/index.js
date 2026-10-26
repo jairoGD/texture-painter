@@ -44,14 +44,44 @@ export function toggleButton({ label, iconUrl, pressed = false, onChange, classN
   return node;
 }
 
-export function slider({ label, min = 0, max = 100, step = 1, value = min, unit = '', onChange }) {
+export function slider({ label, min = 0, max = 100, step = 1, value = min,
+  unit = '', editable = false, onChange }) {
+  let current = Number.isFinite(Number(value)) ?
+    Math.max(min, Math.min(max, Number(value))) : min;
   const output = element('output', { className: 'ui-slider__value' });
   const input = element('input', {
     className: 'ui-slider__input',
-    attributes: { type: 'range', min, max, step, value, 'aria-label': label },
-    on: { input: (event) => { output.value = `${event.target.value}${unit}`; onChange?.(Number(event.target.value)); } }
+    attributes: { type: 'range', min, max, step, value: current, 'aria-label': label },
+    on: { input: (event) => {
+      current = Number(event.target.value);
+      output.value = `${current}${unit}`;
+      if (numberInput) numberInput.value = current;
+      onChange?.(current);
+    } }
   });
-  output.value = `${value}${unit}`;
+  output.value = `${current}${unit}`;
+  const numberInput = editable ? element('input', {
+    className: 'ui-slider__number',
+    attributes: { type: 'number', min, max, step, value: current,
+      'aria-label': `${label} (${unit.trim() || 'value'})` },
+    on: { change: (event) => {
+      const typed = Number(event.target.value);
+      if (event.target.value.trim() === '' || !Number.isFinite(typed)) {
+        event.target.value = current;
+        return;
+      }
+      current = Math.max(min, Math.min(max, Math.round(typed / step) * step));
+      event.target.value = current;
+      input.value = current;
+      output.value = `${current}${unit}`;
+      onChange?.(current);
+    } }
+  }) : null;
+  if (editable) return element('div', { className: 'ui-slider ui-slider--editable' }, [
+    element('span', { className: 'ui-slider__heading' }, [element('span', { text: label })]),
+    element('span', { className: 'ui-slider__row' }, [numberInput,
+      element('span', { className: 'ui-slider__unit', text: unit.trim() }), input])
+  ]);
   return element('label', { className: 'ui-slider' }, [
     element('span', { className: 'ui-slider__heading' }, [
       element('span', { text: label }), output
