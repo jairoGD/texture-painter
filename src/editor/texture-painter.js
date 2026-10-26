@@ -28,6 +28,8 @@ import { projectSurfaceCurve } from './surface-curve-paint.js';
 import { clearTriplanarLookup } from './triplanar-raster.js';
 import { clearVertexPaintCache, fillVertexColors, materialVertexIndices,
   paintVertexColors } from './vertex-paint.js';
+import { invertVertexFaces, resizeVertexFaces } from './vertex-face-selection.js';
+import { invertVertexPoints, resizeVertexPoints } from './vertex-point-selection.js';
 
 function configureTextureSampling(texture, antialiasEnabled) {
   texture.magFilter = antialiasEnabled ? THREE.LinearFilter : THREE.NearestFilter;
@@ -974,6 +976,33 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       slotIndex: parent.slotIndex, kind: selection.kind, ids: new Set(selection.ids) } : null;
   }
   function clearVertexSelection(targetId) { return vertexSelections.delete(targetId); }
+  function canEditVertexSelection(targetId, requireSelected = true) {
+    const selected = vertexSelections.get(targetId);
+    return ['face', 'vertex'].includes(selected?.kind) &&
+      (!requireSelected || selected.ids.size > 0) &&
+      !lassoDraft && !movePreview && !activeStroke && !linePreview && !filterSession;
+  }
+  function editVertexSelection(targetId, amount = 0, expand = true) {
+    if (!canEditVertexSelection(targetId, amount !== 0) ||
+        (amount !== 0 && (!Number.isInteger(amount) || amount < 1 || amount > 100)))
+      return false;
+    const parent = findSurface(targetId);
+    const selected = vertexSelections.get(targetId);
+    if (!parent) return false;
+    const geometry = parent.geometry, slotIndex = parent.slotIndex;
+    let next;
+    if (selected.kind === 'face') next = amount ?
+      resizeVertexFaces(geometry, slotIndex, selected.ids, amount, expand) :
+      invertVertexFaces(geometry, slotIndex, selected.ids);
+    else next = amount ?
+      resizeVertexPoints(geometry, slotIndex, selected.ids, amount, expand) :
+      invertVertexPoints(geometry, slotIndex, selected.ids);
+    if (next.size === selected.ids.size && [...next].every((id) => selected.ids.has(id)))
+      return false;
+    if (next.size) selectVertexElements(targetId, selected.kind, next);
+    else vertexSelections.set(targetId, { kind: selected.kind, ids: next, allowed: new Set() });
+    return true;
+  }
   function apply(command) {
     if (activeStroke && !activeStroke.before.has(command.surface)) {
       const { canvas, context } = command.surface;
@@ -1870,6 +1899,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
 
   return { prepare, clear, paint, paintVertex, fillVertex, fill, sample,
     selectVertexElements, getVertexSelection, clearVertexSelection,
+    canEditVertexSelection, editVertexSelection,
     materialVertexIndices, applyGradient, applyCurveTexture, applyStamp,
     applySurfaceCurve, beginLine, beginThroughLine,
     updateLine, commitLine, cancelLine,

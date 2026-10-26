@@ -264,12 +264,17 @@ function invertSelection() {
   selectMenu.refresh();
 }
 
+function openSelectionSize(mode) {
+  if (scene.canResizeSelection())
+    selectionSizeDialog.open(mode, scene.getSelectionUnit());
+}
+
 const selectMenu = dropdown({ label: 'Select', items: [
-  { label: 'Select more', getDisabled: () => !scene.canResizeSelection(),
-    onSelect: () => selectionSizeDialog.open('expand') },
-  { label: 'Select less', getDisabled: () => !scene.canResizeSelection(),
-    onSelect: () => selectionSizeDialog.open('contract') },
-  { label: 'Invert Selection', getDisabled: () => !scene.canInvertSelection(),
+  { label: 'Select more', shortcut: 'Ctrl++', getDisabled: () => !scene.canResizeSelection(),
+    onSelect: () => openSelectionSize('expand') },
+  { label: 'Select less', shortcut: 'Ctrl+-', getDisabled: () => !scene.canResizeSelection(),
+    onSelect: () => openSelectionSize('contract') },
+  { label: 'Invert Selection', shortcut: 'Ctrl+I', getDisabled: () => !scene.canInvertSelection(),
     onSelect: invertSelection }
 ] });
 
@@ -293,26 +298,45 @@ const filterMenu = dropdown({ label: 'Filter', items: FILTER_CATEGORIES.map((cat
   onSelect: () => filterDialog.open(category.id)
 })) });
 
-const selectionSizeDialog = createSelectionSizeDialog({ onApply: (mode, pixels) => {
-  if (scene.resizeSelection(pixels, mode === 'expand'))
-    setStatus(mode === 'expand' ? `Selection expanded by ${pixels} px` :
-      `Selection contracted by ${pixels} px`);
+function applySelectionSize(mode, amount, unit = scene.getSelectionUnit()) {
+  if (scene.resizeSelection(amount, mode === 'expand')) {
+    const measure = unit === 'faces' ? `${amount} face${amount === 1 ? '' : 's'}` :
+      unit === 'vertices' ? `${amount} ${amount === 1 ? 'vertex' : 'vertices'}` :
+      `${amount} px`;
+    setStatus(mode === 'expand' ? `Selection expanded by ${measure}` :
+      `Selection contracted by ${measure}`);
+  }
   editMenu.refresh();
   selectMenu.refresh();
-} });
+}
+
+const selectionSizeDialog = createSelectionSizeDialog({ onApply: applySelectionSize });
 
 document.addEventListener('keydown', (event) => {
   const key = event.key.toLowerCase();
-  if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey &&
+  if ((event.ctrlKey || event.metaKey) && !event.altKey &&
       !event.target.closest?.('input, textarea, select, [contenteditable], .node-editor')) {
-    if (key === 'c' && scene.canCopySelection()) {
-      event.preventDefault(); copySelection(); return;
+    if ((key === '+' || key === '=' || event.code === 'NumpadAdd') &&
+        scene.canResizeSelection()) {
+      event.preventDefault(); applySelectionSize('expand', 1); return;
     }
-    if (key === 'x' && scene.canCopySelection()) {
-      event.preventDefault(); cutSelection(); return;
+    if (!event.shiftKey && (key === '-' || event.code === 'NumpadSubtract') &&
+        scene.canResizeSelection()) {
+      event.preventDefault(); applySelectionSize('contract', 1); return;
     }
-    if (key === 'v' && scene.canPasteSelection()) {
-      event.preventDefault(); pasteSelection(); return;
+    if (!event.shiftKey && key === 'i' && scene.canInvertSelection()) {
+      event.preventDefault(); invertSelection(); return;
+    }
+    if (!event.shiftKey) {
+      if (key === 'c' && scene.canCopySelection()) {
+        event.preventDefault(); copySelection(); return;
+      }
+      if (key === 'x' && scene.canCopySelection()) {
+        event.preventDefault(); cutSelection(); return;
+      }
+      if (key === 'v' && scene.canPasteSelection()) {
+        event.preventDefault(); pasteSelection(); return;
+      }
     }
   }
   if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 's') {

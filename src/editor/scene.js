@@ -1835,10 +1835,25 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       lassoSourceHit = null; lassoPath = []; renderLassoPath();
       return painter.clearSelection();
     },
-    invertSelection: painter.invertSelection,
-    canInvertSelection: painter.canInvertSelection,
-    resizeSelection: painter.resizeSelection,
-    canResizeSelection: painter.canResizeSelection,
+    invertSelection: () => {
+      if (!vertexSelectionVisible) return painter.invertSelection();
+      const changed = painter.editVertexSelection(selectedTargetId);
+      if (changed) updateVertexSelectionOverlay();
+      return changed;
+    },
+    canInvertSelection: () => vertexSelectionVisible ?
+      painter.canEditVertexSelection(selectedTargetId, false) : painter.canInvertSelection(),
+    resizeSelection: (amount, expand) => {
+      if (!vertexSelectionVisible) return painter.resizeSelection(amount, expand);
+      const changed = painter.editVertexSelection(selectedTargetId, amount, expand);
+      if (changed) updateVertexSelectionOverlay();
+      return changed;
+    },
+    canResizeSelection: () => vertexSelectionVisible ?
+      painter.canEditVertexSelection(selectedTargetId) : painter.canResizeSelection(),
+    getSelectionUnit: () => vertexSelectionVisible ?
+      painter.getVertexSelection(selectedTargetId)?.kind === 'vertex' ? 'vertices' : 'faces' :
+      'pixels',
     undo: () => warpControls.dragging || warpHandleDrag ? false : painter.undo(),
     redo: () => warpControls.dragging || warpHandleDrag ? false : painter.redo(),
     canUndo: () => !warpControls.dragging && !warpHandleDrag && painter.canUndo(),

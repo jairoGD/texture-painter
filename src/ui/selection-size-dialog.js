@@ -7,6 +7,7 @@ export function createSelectionSizeDialog({ onApply }) {
     type: 'number', min: '1', max: '100', step: '1', value: '1',
     'aria-label': 'Pixels'
   } });
+  const unitLabel = element('span', { text: 'Pixels' });
   const error = element('p', { className: 'selection-size-dialog__error',
     attributes: { role: 'status' } });
   const cancel = button({ label: 'Cancel', variant: 'ghost', onClick: close });
@@ -17,13 +18,14 @@ export function createSelectionSizeDialog({ onApply }) {
     } }, [
       title,
       element('label', { className: 'selection-size-dialog__field' }, [
-        element('span', { text: 'Pixels' }), amount
+        unitLabel, amount
       ]),
       error,
       element('div', { className: 'selection-size-dialog__actions' }, [cancel, apply])
     ])
   ]);
   let mode = 'expand';
+  let unit = 'pixels';
 
   function close() { root.hidden = true; }
   function confirm() {
@@ -33,12 +35,16 @@ export function createSelectionSizeDialog({ onApply }) {
       amount.focus();
       return;
     }
-    onApply(mode, pixels);
+    onApply(mode, pixels, unit);
     close();
   }
-  function open(nextMode) {
+  function open(nextMode, nextUnit = 'pixels') {
     mode = nextMode;
+    unit = nextUnit;
     title.textContent = mode === 'expand' ? 'Expand Selection' : 'Contract Selection';
+    unitLabel.textContent = unit === 'faces' ? 'Faces' :
+      unit === 'vertices' ? 'Vertices' : 'Pixels';
+    amount.setAttribute('aria-label', unitLabel.textContent);
     amount.value = '1';
     error.textContent = '';
     root.hidden = false;
