@@ -37,6 +37,27 @@ test('a simple layer stack composites only the dirty rectangle', () => {
   assert.equal(surface.texture.needsUpdate, false);
 });
 
+test('transparent material composition clears the base instead of painting it white', () => {
+  const calls = [];
+  const graph = createTextureGraph();
+  const layer = addGraphLayer(graph, 'image');
+  layer.source.imageKey = 'image-1';
+  const image = { width: 64, height: 64 };
+  const surface = {
+    graph, canvas: { width: 64, height: 64 }, compositeCanvas: { width: 64 },
+    transparentBase: true, imageAssets: new Map([['image-1', { canvas: image }]]),
+    texture: { needsUpdate: false },
+    compositeContext: { save() {}, restore() {},
+      clearRect(...args) { calls.push(['clear', ...args]); },
+      fillRect(...args) { calls.push(['fill', ...args]); },
+      drawImage(...args) { calls.push(['draw', ...args]); } }
+  };
+  assert.equal(renderTextureGraph(surface, { left: 4, top: 5, right: 12, bottom: 15 }), true);
+  assert.deepEqual(calls[0], ['clear', 4, 5, 8, 10]);
+  assert.deepEqual(calls[1], ['draw', image, 4, 5, 8, 10, 4, 5, 8, 10]);
+  assert.ok(!calls.some(([operation]) => operation === 'fill'));
+});
+
 test('a hidden parent removes its child from the fast layer composite', () => {
   const graph = createTextureGraph();
   const parent = addGraphLayer(graph, 'image');

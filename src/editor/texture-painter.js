@@ -30,6 +30,8 @@ import { clearVertexPaintCache, fillVertexColors, materialVertexIndices,
   paintVertexColors } from './vertex-paint.js';
 import { invertVertexFaces, resizeVertexFaces } from './vertex-face-selection.js';
 import { invertVertexPoints, resizeVertexPoints } from './vertex-point-selection.js';
+import { applyMaterialTransparency, normalizeMaterialTransparency } from
+  './material-transparency.js';
 
 function configureTextureSampling(texture, antialiasEnabled) {
   texture.magFilter = antialiasEnabled ? THREE.LinearFilter : THREE.NearestFilter;
@@ -86,8 +88,22 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     return { isolatedId: isolatedMaterialId,
       items: [...surfaces.values()].flatMap((record) => record.slots.map((surface) => ({
         id: surface.id, visible: surface.userVisible !== false,
-        effectiveVisible: materialVisible(surface)
+        effectiveVisible: materialVisible(surface),
+        transparency: surface.transparencyMode ?? 'opaque'
       }))) };
+  }
+
+  function setMaterialTransparency(targetId, mode) {
+    const surface = findSurface(targetId);
+    if (!surface) return false;
+    const next = normalizeMaterialTransparency(mode);
+    if (surface.transparencyMode === next) return false;
+    surface.transparencyMode = next;
+    applyMaterialTransparency(surface.shaded, next);
+    applyMaterialTransparency(surface.unlit, next);
+    surface.transparentBase = next !== 'opaque';
+    surface.requestComposite();
+    return true;
   }
 
   function setMaterialVisibility(targetId, visible) {
@@ -110,6 +126,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     const items = [...surfaces.values()].flatMap((record) => record.slots);
     items.forEach((surface, index) => {
       surface.userVisible = saved.visible?.[index] !== false;
+      setMaterialTransparency(surface.id, saved.transparency?.[index] ?? 'opaque');
     });
     isolatedMaterialId = items[saved.isolatedIndex]?.id ?? null;
     updateMaterialVisibility();
@@ -153,7 +170,8 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     const surface = { canvas, context, compositeCanvas, compositeContext, texture, shaded, unlit,
       overlayCanvas, overlayContext, overlayTexture, overlayMaterial, graph: createTextureGraph(),
       imageAssets: new Map(), imageCache: new Map(), compositeFrame: null,
-      compositeDirty: [], compositeLastDirty: null, compositeRevision: 0 };
+      compositeDirty: [], compositeLastDirty: null, compositeRevision: 0,
+      transparencyMode: 'opaque', transparentBase: false };
     function deferMipmaps() {
       if (!antialiasEnabled) return;
       if (!surface.mipmapDeferred) {
@@ -1948,6 +1966,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     setRenderer: (nextRenderer) => { renderer = nextRenderer; },
     getMeshes: () => [...surfaces.keys()], getFaceTarget,
     getMaterialVisibilityState, setMaterialVisibility, toggleMaterialIsolation,
+    setMaterialTransparency,
     restoreMaterialVisibilityState,
     isMaterialVisible: (targetId) => materialVisible(findSurface(targetId)),
     getGraphTargets: graphTargets, setGraph, recordGraphChange,

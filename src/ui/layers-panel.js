@@ -20,7 +20,8 @@ import './layers-panel.css';
 
 export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, onMergeLayer,
   getImageCanvas, getImageInfo, getMaterialVisibilityState,
-  onToggleMaterialVisibility, onToggleMaterialIsolation, onError }) {
+  onToggleMaterialVisibility, onToggleMaterialIsolation,
+  onMaterialTransparencyChange, onError }) {
   const selectedByTarget = new Map();
   let draggingId = null;
   let copiedLayers = null;
@@ -33,6 +34,10 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     },
     onToggleIsolation: (id) => {
       onToggleMaterialIsolation?.(id);
+      refreshMaterials();
+    },
+    onTransparencyChange: (id, mode) => {
+      onMaterialTransparencyChange?.(id, mode);
       refreshMaterials();
     }
   });

@@ -1744,6 +1744,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         sampling: samplingMode, antialias: antialiasEnabled,
         wireframe: wireframeVisible,
         materials: { visible: visibility.items.map((item) => item.visible),
+          transparency: visibility.items.map((item) => item.transparency),
           isolatedIndex: visibility.items.findIndex((item) => item.id === visibility.isolatedId) },
         lightRotation: { yaw: lightYaw, pitch: lightPitch } } };
   }
@@ -1933,6 +1934,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     getGraphTargets: painter.getGraphTargets,
     getMaterialVisibilityState: painter.getMaterialVisibilityState,
     setMaterialVisibility: painter.setMaterialVisibility,
+    setMaterialTransparency: painter.setMaterialTransparency,
     toggleMaterialIsolation: painter.toggleMaterialIsolation,
     setPaintTarget: (id) => {
       if (id !== selectedTargetId) resetCurve(true);

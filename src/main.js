@@ -114,6 +114,9 @@ layersPanel = createLayersPanel({ nodeEditor,
   onToggleMaterialIsolation: (id) => {
     if (scene.toggleMaterialIsolation(id)) markDirty();
   },
+  onMaterialTransparencyChange: (id, mode) => {
+    if (scene.setMaterialTransparency(id, mode)) markDirty();
+  },
   onError: (message) => setStatus(message, true)
 });
 texturePreview = createTexturePreview({ getTexture: (id) => scene.getTexturePreview(id),
