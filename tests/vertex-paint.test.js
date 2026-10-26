@@ -31,7 +31,7 @@ test('touching the middle of a sparse face does not paint its corners', () => {
   assert.equal(geometry.getAttribute('color'), undefined);
 });
 
-test('vertex blur mixes neighboring vertex colors without changing alpha', () => {
+test('vertex blur uses incident face corners and Blender squared-color averaging', () => {
   const geometry = square();
   geometry.setAttribute('color', new Float32BufferAttribute([
     1, 0, 0, 0.4, 0, 0, 1, 0.6, 0, 0, 1, 0.6,
@@ -40,8 +40,61 @@ test('vertex blur mixes neighboring vertex colors without changing alpha', () =>
   assert.equal(paintVertexColors(geometry, 0, new Vector3(0, -1, 0),
     2.5, 'vertexBlur', { strength: 100, hardness: 100 }), true);
   const colors = geometry.getAttribute('color');
+  assert.ok(Math.abs(colors.getX(0) - Math.sqrt(1 / 3)) < 1e-6);
+  assert.ok(Math.abs(colors.getZ(0) - Math.sqrt(2 / 3)) < 1e-6);
+  assert.ok(Math.abs(colors.getW(0) - Math.sqrt((0.4 ** 2 + 2 * 0.6 ** 2) / 3)) < 1e-6);
+});
+
+test('vertex blur crosses a split UV edge but ignores a point-only contact', () => {
+  const geometry = square();
+  geometry.setAttribute('color', new Float32BufferAttribute([
+    1, 0, 0, 1, 0, 0, 1, 0, 0,
+    0, 0, 1, 0, 0, 1, 0, 0, 1
+  ], 3));
+  paintVertexColors(geometry, 0, new Vector3(1, -1, 0),
+    0.1, 'vertexBlur', { strength: 100, hardness: 100 });
+  const colors = geometry.getAttribute('color');
+  assert.ok(colors.getZ(1) > 0);
+  assert.equal(colors.getZ(0), 0);
+
+  const touching = new BufferGeometry();
+  touching.setAttribute('position', new Float32BufferAttribute([
+    0, 0, 0, 1, 0, 0, 0, 1, 0,
+    0, 0, 0, -1, 0, 0, 0, -1, 0
+  ], 3));
+  touching.setAttribute('color', new Float32BufferAttribute([
+    1, 0, 0, 1, 0, 0, 1, 0, 0,
+    0, 0, 1, 0, 0, 1, 0, 0, 1
+  ], 3));
+  paintVertexColors(touching, 0, new Vector3(0, 0, 0),
+    0.1, 'vertexBlur', { strength: 100, hardness: 100 });
+  assert.equal(touching.getAttribute('color').getZ(0), 0);
+  assert.equal(touching.getAttribute('color').getX(3), 0);
+});
+
+test('vertex blur selection masks writes, not color sampling', () => {
+  const geometry = square();
+  geometry.setAttribute('color', new Float32BufferAttribute([
+    1, 0, 0, 0, 0, 1, 0, 0, 1,
+    0, 0, 1, 0, 0, 1, 0, 0, 1
+  ], 3));
+  paintVertexColors(geometry, 0, new Vector3(-1, -1, 0),
+    0.1, 'vertexBlur', { strength: 100, hardness: 100 }, new Set([0]));
+  const colors = geometry.getAttribute('color');
   assert.ok(colors.getZ(0) > 0);
-  assert.ok(Math.abs(colors.getW(0) - 0.4) < 1e-6);
+  assert.equal(colors.getZ(1), 1);
+});
+
+test('vertex blur with a face selection samples only selected faces', () => {
+  const geometry = square();
+  geometry.setAttribute('color', new Float32BufferAttribute([
+    1, 0, 0, 1, 0, 0, 1, 0, 0,
+    0, 0, 1, 0, 0, 1, 0, 0, 1
+  ], 3));
+  assert.equal(paintVertexColors(geometry, 0, new Vector3(1, -1, 0),
+    0.1, 'vertexBlur', { strength: 100, hardness: 100 },
+    new Set([1]), new Set([0])), false);
+  assert.equal(geometry.getAttribute('color').getZ(1), 0);
 });
 
 test('vertex brush colors coincident vertices on both sides of a seam', () => {

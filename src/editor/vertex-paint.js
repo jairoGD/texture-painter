@@ -1,7 +1,11 @@
 import { Float32BufferAttribute } from 'three';
 
 const materialVertices = new WeakMap();
-export function clearVertexPaintCache(geometry) { materialVertices.delete(geometry); }
+const blurTopology = new WeakMap();
+export function clearVertexPaintCache(geometry) {
+  materialVertices.delete(geometry);
+  blurTopology.delete(geometry);
+}
 
 export function materialVertexIndices(geometry, slotIndex) {
   let slots = materialVertices.get(geometry);
@@ -48,8 +52,74 @@ function hexToLinear(hex) {
   });
 }
 
+function materialBlurTopology(geometry, slotIndex) {
+  let slots = blurTopology.get(geometry);
+  if (!slots) { slots = new Map(); blurTopology.set(geometry, slots); }
+  if (slots.has(slotIndex)) return slots.get(slotIndex);
+
+  const position = geometry.getAttribute('position');
+  const index = geometry.index;
+  const count = index ? index.count : position.count;
+  const parent = new Int32Array(position.count);
+  for (let id = 0; id < parent.length; id++) parent[id] = id;
+  const find = (id) => {
+    while (parent[id] !== id) {
+      parent[id] = parent[parent[id]];
+      id = parent[id];
+    }
+    return id;
+  };
+  const union = (a, b) => { parent[find(a)] = find(b); };
+  const key = (id) => [position.getX(id), position.getY(id), position.getZ(id)]
+    .map((value) => Math.round(value * 1e5)).join(',');
+  const keys = new Map();
+  const vertexKey = (id) => {
+    if (!keys.has(id)) keys.set(id, key(id));
+    return keys.get(id);
+  };
+  const edges = new Map();
+  const faces = [];
+  for (let triangle = 0; triangle + 2 < count; triangle += 3) {
+    if (geometry.groups.length ? !geometry.groups.some((group) =>
+      triangle >= group.start && triangle < group.start + group.count &&
+      group.materialIndex === slotIndex) : slotIndex !== 0) continue;
+    const face = [0, 1, 2].map((corner) => index ?
+      index.getX(triangle + corner) : triangle + corner);
+    faces.push({ triangle: triangle / 3, corners: face });
+    for (const [a, b] of [[face[0], face[1]], [face[1], face[2]],
+      [face[2], face[0]]]) {
+      const ka = vertexKey(a);
+      const kb = vertexKey(b);
+      if (ka === kb) continue;
+      const edgeKey = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+      const previous = edges.get(edgeKey);
+      if (previous) {
+        union(a, vertexKey(previous[0]) === ka ? previous[0] : previous[1]);
+        union(b, vertexKey(previous[1]) === kb ? previous[1] : previous[0]);
+      } else edges.set(edgeKey, [a, b]);
+    }
+  }
+
+  // Blender averages every corner of each face incident to the painted point.
+  // Match split UV vertices across a shared geometric edge, but not points that
+  // merely occupy the same location on disconnected pieces of geometry.
+  const incident = new Map();
+  for (const [faceIndex, face] of faces.entries()) {
+    for (const root of new Set(face.corners.map(find))) {
+      if (!incident.has(root)) incident.set(root, []);
+      incident.get(root).push(faceIndex);
+    }
+  }
+  const vertices = new Map();
+  for (const id of materialVertexIndices(geometry, slotIndex))
+    vertices.set(id, incident.get(find(id)) ?? []);
+  const result = { faces, vertices };
+  slots.set(slotIndex, result);
+  return result;
+}
+
 export function paintVertexColors(geometry, slotIndex, center, radius,
-  kind, options, allowed = null) {
+  kind, options, allowed = null, selectedFaces = null) {
   const position = geometry.getAttribute('position');
   if (!position || !center) return false;
   if (kind === 'vertexBlur' && !geometry.getAttribute('color')) return false;
@@ -61,13 +131,11 @@ export function paintVertexColors(geometry, slotIndex, center, radius,
     options.strength : options.opacity) / 100));
   const target = kind === 'vertexBrush' ? hexToLinear(options.color) : null;
   const candidates = [];
-  const neighbors = [];
   for (const id of indices) {
     const dx = position.getX(id) - center.x;
     const dy = position.getY(id) - center.y;
     const dz = position.getZ(id) - center.z;
     const distance = Math.hypot(dx, dy, dz);
-    if (distance <= size * 2) neighbors.push(id);
     if (distance > size) continue;
     if (allowed && !allowed.has(id)) continue;
     const coverage = distance <= size * hardness ? 1 :
@@ -77,32 +145,34 @@ export function paintVertexColors(geometry, slotIndex, center, radius,
   if (!candidates.length) return false;
   const colors = editableColors(geometry);
   const channels = colors.itemSize;
-  const original = kind === 'vertexBlur' ? new Map(neighbors.map((id) =>
-    [id, [colors.getX(id), colors.getY(id), colors.getZ(id)]])) : null;
+  const original = kind === 'vertexBlur' ? colors.array.slice() : null;
+  const topology = original ? materialBlurTopology(geometry, slotIndex) : null;
   let changed = false;
   for (const { id, coverage } of candidates) {
     const factor = strength * coverage;
     if (!factor) continue;
-    const result = target ?? [0, 0, 0];
-    if (!target) {
-      let total = 0;
-      for (const other of neighbors) {
-        const distance = Math.hypot(position.getX(other) - position.getX(id),
-          position.getY(other) - position.getY(id),
-          position.getZ(other) - position.getZ(id));
-        if (distance > size) continue;
-        const weight = 1 - distance / (size * 1.1);
-        total += weight;
-        for (let channel = 0; channel < 3; channel++)
-          result[channel] += original.get(other)[channel] * weight;
-      }
-      if (!total) continue;
-      for (let channel = 0; channel < 3; channel++) result[channel] /= total;
-    }
-    for (let channel = 0; channel < 3; channel++) {
+    const faceIndices = topology?.vertices.get(id);
+    if (original && !faceIndices?.length) continue;
+    for (let channel = 0; channel < (original ? channels : 3); channel++) {
       const offset = id * channels + channel;
-      const base = original ? original.get(id)[channel] : colors.array[offset];
-      const next = base + (result[channel] - base) * factor;
+      const base = original ? original[offset] : colors.array[offset];
+      let value = target?.[channel];
+      if (original) {
+        let sum = 0;
+        let count = 0;
+        for (const faceIndex of faceIndices) {
+          const face = topology.faces[faceIndex];
+          if (selectedFaces && !selectedFaces.has(face.triangle)) continue;
+          for (const other of face.corners) {
+            const color = original[other * channels + channel];
+            sum += color * color;
+            count++;
+          }
+        }
+        if (!count) continue;
+        value = Math.sqrt(sum / count);
+      }
+      const next = base + (value - base) * factor;
       if (Math.abs(next - colors.array[offset]) > 1e-6) changed = true;
       colors.array[offset] = next;
     }

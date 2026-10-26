@@ -917,7 +917,8 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     const selection = vertexSelections.get(parent.id);
     const allowed = selection?.allowed?.size ? selection.allowed : null;
     const changed = paintVertexColors(geometry, parent.slotIndex, center, radius,
-      kind, options, allowed);
+      kind, options, allowed, selection?.kind === 'face' && selection.ids.size ?
+        selection.ids : null);
     if (changed && activeStroke) activeStroke.vertexChanged = true;
     if (changed) for (const record of surfaces.values()) for (const surface of record.slots)
       if (surface.geometry === geometry) surface.requestComposite();
