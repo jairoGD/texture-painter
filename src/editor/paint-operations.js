@@ -3,6 +3,7 @@ import { rasterizePixelStroke } from './pixel-brush.js';
 import { commandBounds } from './paint-history.js';
 import { blurSurfaceStroke, blurTouchesSeam } from './surface-blur-stroke.js';
 import { smudgeStroke } from './smudge-stroke.js';
+import { strokeWidthAt } from './stroke-profile.js';
 
 const WHITE = '#ffffff';
 
@@ -45,8 +46,26 @@ function rgb(hex) {
   return [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16));
 }
 
-function dab(context, x, y, { color, size, hardness }) {
+function dab(context, x, y, { color, size, hardness, brushProfile }, angle = 0) {
   const radius = Math.max(0.5, size / 2);
+  if (brushProfile === 'square') {
+    context.save();
+    context.translate(x, y);
+    context.rotate(angle);
+    context.fillStyle = color;
+    if (hardness >= 100) context.fillRect(-radius, -radius, radius * 2, radius * 2);
+    else {
+      const inner = radius * Math.max(0, hardness / 100);
+      const bands = Math.max(4, Math.ceil(radius - inner));
+      for (let band = 0; band < bands; band++) {
+        const reach = radius - (radius - inner) * band / bands;
+        context.globalAlpha = 1 / (bands - band);
+        context.fillRect(-reach, -reach, reach * 2, reach * 2);
+      }
+    }
+    context.restore();
+    return;
+  }
   if (hardness >= 100) {
     context.fillStyle = color;
   } else {
@@ -68,7 +87,8 @@ function drawMark({ surface, kind, point, previous, options, mask }) {
   const distance = Math.hypot(point.x - from.x, point.y - from.y);
   const spacing = Math.max(1, settings.size * 0.16);
   const steps = Math.max(1, Math.ceil(distance / spacing));
-  const radius = Math.max(0.5, settings.size / 2);
+  const radius = Math.max(0.5, settings.size / 2) *
+    (settings.brushProfile === 'square' ? Math.SQRT2 : 1);
   if (mask && !strokeTouchesSelection(mask, from, point, radius + 1,
     surface.canvas.width, surface.canvas.height)) return false;
   const left = Math.floor(Math.min(from.x, point.x) - radius - 1);
@@ -76,18 +96,25 @@ function drawMark({ surface, kind, point, previous, options, mask }) {
   const layerWidth = Math.ceil(Math.max(from.x, point.x) + radius + 1) - left;
   const layerHeight = Math.ceil(Math.max(from.y, point.y) + radius + 1) - top;
   const layerContext = markBuffer(layerWidth, layerHeight);
+  const profileFrom = options.profileFrom ?? 0;
+  const profileTo = options.profileTo ?? 1;
+  const angle = Math.atan2(point.y - from.y, point.x - from.x);
   if (settings.antialias === false) {
     const image = layerContext.createImageData(layerWidth, layerHeight);
     image.data.set(rasterizePixelStroke({ width: layerWidth, height: layerHeight,
       left, top, from, to: point, steps, hasPrevious: !!previous,
       size: settings.size, hardness: settings.hardness, color: settings.color,
-      mask, surfaceWidth: surface.canvas.width, surfaceHeight: surface.canvas.height }));
+      brushProfile: settings.brushProfile, taperAmount: settings.taperAmount,
+      profileFrom, profileTo, angle, mask,
+      surfaceWidth: surface.canvas.width, surfaceHeight: surface.canvas.height }));
     layerContext.putImageData(image, 0, 0);
   } else {
     for (let step = previous ? 0 : steps; step <= steps; step++) {
       const t = step / steps;
+      const dabSize = strokeWidthAt(settings.size, settings.brushProfile,
+        settings.taperAmount, profileFrom + (profileTo - profileFrom) * t);
       dab(layerContext, from.x + (point.x - from.x) * t - left,
-        from.y + (point.y - from.y) * t - top, settings);
+        from.y + (point.y - from.y) * t - top, { ...settings, size: dabSize }, angle);
     }
     if (mask) {
       layerContext.globalCompositeOperation = 'destination-in';

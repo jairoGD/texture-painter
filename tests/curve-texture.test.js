@@ -45,3 +45,15 @@ test('antialias averages projected texel coverage without dark transparent edges
   const blended = sampleCurveTexturePixel(edge, 0, 0, [4, 0, 0, 4]);
   assert.deepEqual(blended, [240, 80, 40, 127.5]);
 });
+
+test('texture strip follows tapered width and square end caps', () => {
+  const points = [{ x: 0, y: 0 }, { x: 100, y: 0 }];
+  const tapered = createCurveTextureSampler(points, image,
+    { size: 20, brushProfile: 'tapered', taperAmount: 100, antialias: false });
+  assert.equal(tapered(1, 5), null);
+  assert.ok(tapered(50, 5));
+  const square = createCurveTextureSampler(points, image,
+    { size: 20, brushProfile: 'square', antialias: false });
+  assert.equal(square(-2, 0), null);
+  assert.ok(square(2, 0));
+});

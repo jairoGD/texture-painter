@@ -42,3 +42,23 @@ test('pixel brush thresholds the lasso edge instead of feathering it', () => {
   assert.equal(pixel(data, 6, 2, 2)[3], 0);
   assert.equal(pixel(data, 6, 3, 2)[3], 255);
 });
+
+test('square profile paints corners outside a circular dab', () => {
+  const base = { width: 16, height: 16, left: 0, top: 0,
+    from: { x: 8, y: 8 }, to: { x: 8, y: 8 }, steps: 1,
+    hasPrevious: false, size: 8, hardness: 100, color: '#ffffff' };
+  const circle = rasterizePixelStroke(base);
+  const square = rasterizePixelStroke({ ...base, brushProfile: 'square' });
+  assert.equal(pixel(circle, 16, 11, 11)[3], 0);
+  assert.equal(pixel(square, 16, 11, 11)[3], 255);
+});
+
+test('tapered profile narrows both ends while retaining the middle width', () => {
+  const data = rasterizePixelStroke({ width: 44, height: 22, left: 0, top: 0,
+    from: { x: 6, y: 11 }, to: { x: 38, y: 11 }, steps: 32,
+    hasPrevious: true, size: 12, hardness: 100, color: '#ffffff',
+    brushProfile: 'tapered', taperAmount: 100 });
+  assert.equal(pixel(data, 44, 6, 7)[3], 0);
+  assert.equal(pixel(data, 44, 22, 7)[3], 255);
+  assert.equal(pixel(data, 44, 38, 7)[3], 0);
+});

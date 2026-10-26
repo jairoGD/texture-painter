@@ -9,6 +9,9 @@ import { captureVisibleFaces } from './screen-face-selection.js';
 import { sampleScreenStroke } from './surface-stroke.js';
 import { sampleThroughLine } from './through-line.js';
 import { lineStylePaths, styledPolylinePaths } from './line-style.js';
+import { strokeWidthAt } from './stroke-profile.js';
+import { projectedSurfaceStrokeWidth, projectedUvStrokeWidth } from
+  './curve-preview-width.js';
 import { curveScreenPoints } from './curve-path.js';
 import { stampPlacement, stampScreenSize } from './stamp-texture.js';
 import { preciseCurveScreenPoints } from './precise-curve.js';
@@ -602,21 +605,57 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     painter.updateLine([...hits, ...(mirrorEnabled ? hits.map((path) => path.map(mirrorHitAt)) : [])]);
   }
 
+  function drawProfilePreview(context, path, settings, width, rect) {
+    if (path.length < 2) return;
+    const points = path.map((point) => ({ x: point.x - rect.left,
+      y: point.y - rect.top }));
+    if (settings.brushProfile !== 'tapered') {
+      context.lineCap = settings.brushProfile === 'square' ? 'butt' : 'round';
+      context.lineJoin = settings.brushProfile === 'square' ? 'miter' : 'round';
+      context.lineWidth = width;
+      context.beginPath();
+      context.moveTo(points[0].x, points[0].y);
+      for (const point of points.slice(1)) context.lineTo(point.x, point.y);
+      context.stroke();
+      return;
+    }
+    const lengths = [0];
+    for (let index = 1; index < points.length; index++)
+      lengths.push(lengths.at(-1) + Math.hypot(points[index].x - points[index - 1].x,
+        points[index].y - points[index - 1].y));
+    const total = lengths.at(-1);
+    if (!total) return;
+    const sides = points.map((point, index) => {
+      const before = points[Math.max(0, index - 1)];
+      const after = points[Math.min(points.length - 1, index + 1)];
+      const length = Math.hypot(after.x - before.x, after.y - before.y) || 1;
+      const half = strokeWidthAt(width, 'tapered', settings.taperAmount,
+        lengths[index] / total) / 2;
+      const nx = -(after.y - before.y) / length * half;
+      const ny = (after.x - before.x) / length * half;
+      return [{ x: point.x + nx, y: point.y + ny },
+        { x: point.x - nx, y: point.y - ny }];
+    });
+    context.beginPath();
+    context.moveTo(sides[0][0].x, sides[0][0].y);
+    for (const side of sides.slice(1)) context.lineTo(side[0].x, side[0].y);
+    for (const side of sides.reverse()) context.lineTo(side[1].x, side[1].y);
+    context.closePath();
+    context.fillStyle = settings.color ?? '#ffffff';
+    context.fill();
+  }
+
   function renderLineTexturePreview() {
     if (!lineStartScreen || !lineEndScreen) return;
     const context = curveCanvas.getContext('2d');
     context.clearRect(0, 0, curveCanvas.width, curveCanvas.height);
     const rect = renderer.domElement.getBoundingClientRect();
     context.save();
-    context.lineCap = 'round';
-    context.lineWidth = Math.max(1, toolSettings.line?.size ?? 2);
     context.strokeStyle = toolSettings.line?.color ?? '#ffffff';
     context.shadowColor = '#000000';
     context.shadowBlur = 3;
-    context.beginPath();
-    context.moveTo(lineStartScreen.x - rect.left, lineStartScreen.y - rect.top);
-    context.lineTo(lineEndScreen.x - rect.left, lineEndScreen.y - rect.top);
-    context.stroke();
+    drawProfilePreview(context, [lineStartScreen, lineEndScreen], toolSettings.line,
+      Math.max(1, toolSettings.line?.size ?? 2), rect);
     context.restore();
   }
 
@@ -671,19 +710,39 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     const stride = Math.max(1, Math.ceil(path.samples.length / 2048));
     const scaleByFace = new Map(path.triangles.map((triangle) =>
       [triangle.faceIndex, triangle.worldPerTexel]));
-    const cameraRight = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0)
-      .normalize();
     const size = Math.max(1, toolSettings.curve?.size ?? 2);
-    return path.samples.filter((sample, index) => index % stride === 0 ||
-      index === path.samples.length - 1).map((sample) => {
+    return path.samples.flatMap((sample, index) => {
+      if (index % stride !== 0 && index !== path.samples.length - 1) return [];
       const view = sample.point.clone().project(camera);
-      const edge = sample.point.clone().addScaledVector(cameraRight,
-        size * (scaleByFace.get(sample.faceIndex) || 0)).project(camera);
-      return { x: rect.left + (view.x + 1) * rect.width / 2,
+      const previous = path.samples[Math.max(0, index - 1)].point;
+      const next = path.samples[Math.min(path.samples.length - 1, index + 1)].point;
+      const tangent = next.clone().sub(previous).normalize();
+      const width = projectedSurfaceStrokeWidth(sample.point, sample.normal, tangent,
+        size * (scaleByFace.get(sample.faceIndex) || 0), camera, rect);
+      return [{ x: rect.left + (view.x + 1) * rect.width / 2,
         y: rect.top + (1 - view.y) * rect.height / 2,
-        width: Math.hypot((edge.x - view.x) * rect.width / 2,
-          (edge.y - view.y) * rect.height / 2) };
+        width }];
     });
+  }
+
+  function dynamicCurvePreviewWidth(points, rect) {
+    const size = Math.max(1, toolSettings.curve?.size ?? 2);
+    if (toolSettings.curve?.lineStyle === 'texture' || points.length < 2) return size;
+    const widths = [];
+    const probes = Math.min(7, points.length);
+    for (let probe = 0; probe < probes; probe++) {
+      const index = Math.round((points.length - 1) * probe / Math.max(1, probes - 1));
+      const point = points[index];
+      const before = points[Math.max(0, index - 1)];
+      const after = points[Math.min(points.length - 1, index + 1)];
+      const hit = hitTestAt(point.x, point.y);
+      if (!hit || painter.targetIdAt(hit) !== selectedTargetId) continue;
+      const texelWidth = projectedUvStrokeWidth(hit, camera, rect, textureResolution,
+        { x: after.x - before.x, y: after.y - before.y });
+      if (texelWidth) widths.push(texelWidth * size);
+    }
+    widths.sort((a, b) => a - b);
+    return widths.length ? widths[Math.floor(widths.length / 2)] : size;
   }
 
   function preciseAnchorAt(clientX, clientY) {
@@ -715,23 +774,19 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       curveScreenPoints(curvePoints, curveStep);
     const paths = styledPolylinePaths(points, toolSettings.curve);
     context.save();
-    context.lineCap = 'round';
-    context.lineJoin = 'round';
     const projectedWidths = precise ? points.map((point) => point.width)
       .filter((width) => Number.isFinite(width) && width > 0)
       .sort((a, b) => a - b) : [];
-    context.lineWidth = Math.max(1, projectedWidths.length ?
+    const previewWidth = Math.max(1, projectedWidths.length ?
       projectedWidths[Math.floor(projectedWidths.length / 2)] :
-      (toolSettings.curve?.size ?? 2));
+      precise ? (toolSettings.curve?.size ?? 2) :
+        dynamicCurvePreviewWidth(points, rect));
     context.strokeStyle = toolSettings.curve?.color ?? '#ffffff';
     context.shadowColor = '#000000';
     context.shadowBlur = 3;
     for (const path of paths) {
       if (!path.length) continue;
-      context.beginPath();
-      context.moveTo(path[0].x - rect.left, path[0].y - rect.top);
-      for (const point of path.slice(1)) context.lineTo(point.x - rect.left, point.y - rect.top);
-      context.stroke();
+      drawProfilePreview(context, path, toolSettings.curve, previewWidth, rect);
     }
     context.shadowBlur = 0;
     context.fillStyle = '#70bfff';
@@ -897,7 +952,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         painter.applyCurveTexture(targetId, camera, viewport, localPoints, image,
           { size: settings.size, opacity: settings.opacity,
             antialias: settings.antialias, seamless: settings.seamlessTexture,
-            flip: settings.flipTexture }, visibleUv, mirror));
+            flip: settings.flipTexture, brushProfile: settings.brushProfile,
+            taperAmount: settings.taperAmount }, visibleUv, mirror));
   }
 
   function commitStamp(settings, targetId, startHit, start, end) {

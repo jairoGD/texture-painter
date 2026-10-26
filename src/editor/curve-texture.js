@@ -1,7 +1,10 @@
 // Maps screen-space curve coordinates into an image strip. Each image row is
 // bent around the local curve tangent, rather than stamped as a rotated tile.
+import { strokeWidthAt } from './stroke-profile.js';
+
 export function createCurveTextureSampler(points, image, { size = 16,
-  seamless = false, antialias = true, opacity = 100, flip = false } = {}) {
+  seamless = false, antialias = true, opacity = 100, flip = false,
+  brushProfile = 'circle', taperAmount = 100 } = {}) {
   if (points.length < 2 || !image?.width || !image?.height) return null;
   const width = Math.max(1, size);
   const radius = width / 2;
@@ -63,18 +66,27 @@ export function createCurveTextureSampler(points, image, { size = 16,
     let nearest = null, distanceSquared = Infinity;
     for (const index of candidates) {
       const segment = segments[index];
-      const t = Math.max(0, Math.min(1,
-        ((x - segment.a.x) * segment.dx + (y - segment.a.y) * segment.dy) /
-        (segment.length * segment.length)));
+      const projected = ((x - segment.a.x) * segment.dx +
+        (y - segment.a.y) * segment.dy) / (segment.length * segment.length);
+      const t = Math.max(0, Math.min(1, projected));
       const px = segment.a.x + t * segment.dx, py = segment.a.y + t * segment.dy;
       const distance = (x - px) ** 2 + (y - py) ** 2;
-      if (distance < distanceSquared) { distanceSquared = distance; nearest = { segment, t, px, py }; }
+      if (distance < distanceSquared) {
+        distanceSquared = distance;
+        nearest = { segment, index, t, projected, px, py };
+      }
     }
     if (!nearest || distanceSquared > (radius + (antialias ? 0.5 : 0)) ** 2) return null;
-    const { segment, t, px, py } = nearest;
+    const { segment, index, t, projected, px, py } = nearest;
+    if (brushProfile === 'square' &&
+        ((index === 0 && projected < 0) ||
+        (index === segments.length - 1 && projected > 1))) return null;
     const signed = (segment.dx * (y - py) - segment.dy * (x - px)) / segment.length;
-    const u = (flip ? -signed : signed) / width + 0.5;
     const progress = (segment.start + t * segment.length) / totalLength;
+    const localWidth = strokeWidthAt(width, brushProfile, taperAmount, progress);
+    const localRadius = localWidth / 2;
+    if (Math.abs(signed) > localRadius + (antialias ? 0.5 : 0)) return null;
+    const u = (flip ? -signed : signed) / localWidth + 0.5;
     const phase = (progress * repetitions) % 1;
     const v = phase;
     let color = sampleImage(u, v);
@@ -93,7 +105,8 @@ export function createCurveTextureSampler(points, image, { size = 16,
           component * (1 - weight) + other[channel] * weight);
       }
     }
-    const edge = antialias ? Math.max(0, Math.min(1, radius + 0.5 - Math.abs(signed))) : 1;
+    const edge = antialias ? Math.max(0, Math.min(1,
+      localRadius + 0.5 - Math.abs(signed))) : 1;
     color[3] *= edge * Math.max(0, Math.min(1, opacity / 100));
     return color[3] > 0 ? color : null;
   };

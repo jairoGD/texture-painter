@@ -46,6 +46,16 @@ const textureStyleControls = [
   { type: 'checkbox', key: 'flipTexture', label: 'Flip',
     when: { lineStyle: 'texture' } }
 ];
+const strokeProfileDefaults = { brushProfile: 'circle', taperAmount: 100 };
+const strokeProfileControls = [
+  { type: 'select', key: 'brushProfile', label: 'Brush profile', options: [
+    { value: 'circle', label: 'Circle' },
+    { value: 'square', label: 'Square' },
+    { value: 'tapered', label: 'Tapered' }
+  ] },
+  { type: 'slider', key: 'taperAmount', label: 'Taper', min: 0, max: 100,
+    step: 1, unit: '%', when: { brushProfile: 'tapered' } }
+];
 export const TOOL_DEFINITIONS = [
   { id: 'brush', label: 'Brush', iconUrl: brushIcon,
     usesColor: true, defaults: { size: 10, hardness: 100, opacity: 100, antialias: true },
@@ -58,17 +68,20 @@ export const TOOL_DEFINITIONS = [
     controls: [{ type: 'slider', key: 'tolerance', label: 'Tolerance', min: 0, max: 100, step: 1, unit: '%' }, opacity] },
   { id: 'line', label: 'Line', iconUrl: lineIcon,
     usesColor: true, defaults: { size: 2, hardness: 100, opacity: 100, antialias: true,
-      ...lineStyleDefaults, ...textureStyleDefaults },
-    controls: [fineSize, hardness, opacity, antialias, ...textureStyleControls] },
+      ...lineStyleDefaults, ...textureStyleDefaults, ...strokeProfileDefaults },
+    controls: [fineSize, hardness, opacity, antialias, ...textureStyleControls,
+      ...strokeProfileControls] },
   { id: 'curve', label: 'Curve', iconUrl: curveIcon,
     usesColor: true, defaults: { size: 2, hardness: 100, opacity: 100, antialias: true,
-      ...lineStyleDefaults, ...textureStyleDefaults, curveMethod: 'dynamic' },
+      ...lineStyleDefaults, ...textureStyleDefaults, ...strokeProfileDefaults,
+      curveMethod: 'dynamic' },
     controls: [
       { type: 'select', key: 'curveMethod', label: 'Method', options: [
         { value: 'dynamic', label: 'Dynamic' },
         { value: 'precise', label: 'Precise' }
       ] },
-      fineSize, hardness, opacity, antialias, ...textureStyleControls] },
+      fineSize, hardness, opacity, antialias, ...textureStyleControls,
+      ...strokeProfileControls] },
   { id: 'gradient', label: 'Gradient', iconUrl: gradientIcon,
     defaults: { startColor: { color: '#000000', alpha: 100 },
       endColor: { color: '#000000', alpha: 0 }, xray: false },

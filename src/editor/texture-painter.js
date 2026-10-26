@@ -1291,7 +1291,8 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     const styledUv = mode === 'uv' && !preservePath && options.lineStyle &&
       options.lineStyle !== 'solid';
     linePreview = { options: { ...options }, mode,
-      preservePath: preservePath || styledUv || options.lineStyle === 'wavy',
+      preservePath: preservePath || styledUv || options.lineStyle === 'wavy' ||
+        options.brushProfile === 'tapered',
       styledUv, before: new Map(),
       lastDirty: new Map(), commands: [] };
     updateLine([[hit], mirroredHit ? [mirroredHit] : []]);
@@ -1334,6 +1335,21 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
           } }))
         ]);
       }
+      const profileProgress = new Map();
+      if (options.brushProfile === 'tapered') {
+        let length = 0;
+        let previous = null;
+        for (const hit of hits) {
+          if (!hit) { previous = null; continue; }
+          if (previous) length += styledUv ?
+            Math.hypot(hit.uv.x - previous.uv.x, hit.uv.y - previous.uv.y) :
+            hit.point.distanceTo(previous.point);
+          profileProgress.set(hit, length);
+          previous = hit;
+        }
+        for (const [hit, distance] of profileProgress)
+          profileProgress.set(hit, length ? distance / length : 0.5);
+      }
       let previousHit = null;
       let previousPoint = null;
       let segment = null;
@@ -1351,17 +1367,23 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
             point.y - previousPoint.y) < surface.canvas.width * 0.2)) ||
             canConnectSurfaceHits(previousHit, hit, previousPoint, point,
             surface.canvas.width * 0.2));
+        const profileTo = profileProgress.get(hit) ?? 0.5;
+        const profileFrom = connected ? profileProgress.get(previousHit) ?? profileTo :
+          profileTo;
         if (preservePath) {
           // A curve must retain each short sampled segment. Extending one command to
           // the last hit would replace the curve with a straight stroke on commit.
           if (!connected || Math.hypot(point.x - previousPoint.x, point.y - previousPoint.y) > 0.01) {
             segment = { kind: 'line', surface, point,
-              previous: connected ? previousPoint : point, options,
+              previous: connected ? previousPoint : point,
+              options: options.brushProfile === 'tapered' ?
+                { ...options, profileFrom, profileTo } : options,
               mask: maskEnabled ? selectionMaskForLayer(selection, surface.canvas) : null };
             commands.push(segment);
           }
         } else if (connected) {
           segment.point = point;
+          if (options.brushProfile === 'tapered') segment.options.profileTo = profileTo;
         } else {
           segment = { kind: 'line', surface, point, previous: point, options,
             mask: maskEnabled ? selectionMaskForLayer(selection, surface.canvas) : null };

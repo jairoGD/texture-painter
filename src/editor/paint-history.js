@@ -4,7 +4,8 @@ export function commandBounds(command, width, height) {
   if (command.kind === 'bucket' || command.kind === 'moveSelection')
     return { left: 0, top: 0, right: width, bottom: height };
   const from = command.previous ?? command.point;
-  const reach = Math.max(1, (Number(command.options?.size) || 1) / 2) + 3;
+  const reach = Math.max(1, (Number(command.options?.size) || 1) / 2) *
+    (command.options?.brushProfile === 'square' ? Math.SQRT2 : 1) + 3;
   return {
     left: Math.max(0, Math.floor(Math.min(from.x, command.point.x) - reach)),
     top: Math.max(0, Math.floor(Math.min(from.y, command.point.y) - reach)),
@@ -24,7 +25,8 @@ function touchesTile(command, left, top, right, bottom) {
   const centerY = (top + bottom) / 2;
   const t = lengthSquared ? Math.max(0, Math.min(1,
     ((centerX - from.x) * vx + (centerY - from.y) * vy) / lengthSquared)) : 0;
-  const reach = Math.max(1, (Number(command.options?.size) || 1) / 2) + 3;
+  const reach = Math.max(1, (Number(command.options?.size) || 1) / 2) *
+    (command.options?.brushProfile === 'square' ? Math.SQRT2 : 1) + 3;
   const halfDiagonal = Math.hypot(right - left, bottom - top) / 2;
   return Math.hypot(centerX - from.x - t * vx, centerY - from.y - t * vy) <= reach + halfDiagonal;
 }

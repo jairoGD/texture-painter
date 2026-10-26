@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { strokeWidthAt } from './stroke-profile.js';
 
 function imageSampler(image, antialias) {
   const read = (x, y) => {
@@ -117,9 +118,8 @@ function surfaceSampler(path, image, options, mirrored = false) {
     sample(point, normal, localScale) {
     const candidates = cells.get(`${Math.floor(point.x / cellSize)}:${Math.floor(point.y / cellSize)}:${Math.floor(point.z / cellSize)}`);
     if (!candidates) return null;
-    const band = Math.max(1, options.size || 1) * localScale;
-    const half = band / 2;
-    const reach = half * 1.5 + waveReach * localScale;
+    const maxBand = Math.max(1, options.size || 1) * localScale;
+    const reach = maxBand * 0.75 + waveReach * localScale;
     let nearest = null, nearestDistance = reach * reach;
     for (const index of candidates) {
       const from = samples[index - 1], to = samples[index];
@@ -131,8 +131,8 @@ function surfaceSampler(path, image, options, mirrored = false) {
       const fx = point.x - from.point.x;
       const fy = point.y - from.point.y;
       const fz = point.z - from.point.z;
-      const t = Math.max(0, Math.min(1, (fx * dx + fy * dy + fz * dz) /
-        lengthSquared));
+      const projected = (fx * dx + fy * dy + fz * dz) / lengthSquared;
+      const t = Math.max(0, Math.min(1, projected));
       const rx = fx - t * dx, ry = fy - t * dy, rz = fz - t * dz;
       const distance = rx * rx + ry * ry + rz * rz;
       if (distance >= nearestDistance) continue;
@@ -144,13 +144,16 @@ function surfaceSampler(path, image, options, mirrored = false) {
           (normal.x * nx + normal.y * ny + normal.z * nz) / normalLength < 0.1)
         continue;
       nearestDistance = distance;
-      nearest = { from, to, t, dx, dy, dz, lengthSquared,
+      nearest = { from, to, t, index, projected, dx, dy, dz, lengthSquared,
         nx: nx / normalLength, ny: ny / normalLength, nz: nz / normalLength,
         rx, ry, rz };
     }
     if (!nearest) return null;
-    const { from, to, t, dx, dy, dz, lengthSquared,
+    const { from, to, t, index, projected, dx, dy, dz, lengthSquared,
       nx, ny, nz, rx, ry, rz } = nearest;
+    if (options.brushProfile === 'square' &&
+        ((index === 1 && projected < 0) ||
+        (index === samples.length - 1 && projected > 1))) return null;
     const tangentLength = Math.sqrt(lengthSquared);
     const ax = (ny * dz - nz * dy) / tangentLength;
     const ay = (nz * dx - nx * dz) / tangentLength;
@@ -163,6 +166,9 @@ function surfaceSampler(path, image, options, mirrored = false) {
       acrossLength * (mirrored ? -1 : 1);
     const edge = options.antialias ? localScale * 0.5 : 0;
     const traveled = from.distance + t * (to.distance - from.distance);
+    const band = strokeWidthAt(options.size, options.brushProfile,
+      options.taperAmount, path.length ? traveled / path.length : 0.5) * localScale;
+    const half = band / 2;
     if (options.lineStyle === 'dashed') {
       const dash = Math.max(1, options.dashLength || 1) * scale;
       const gap = Math.max(1, options.dashGap || 1) * scale;
