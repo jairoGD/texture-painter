@@ -24,6 +24,43 @@ export function createBakeDialog({ onBake, onError, onComplete }) {
   strength.addEventListener('input', () => { strengthValue.value = `${strength.value}%`; });
   const shadeSmooth = element('input', { attributes: { type: 'checkbox' } });
   const ignoreNearby = element('input', { attributes: { type: 'checkbox' } });
+  const curvatureMode = element('select', { attributes: { 'aria-label': 'Curvature output' } }, [
+    element('option', { text: 'Convex edges', attributes: { value: 'convex' } }),
+    element('option', { text: 'Cavities', attributes: { value: 'cavity' } }),
+    element('option', { text: 'Both (signed)', attributes: { value: 'signed' } })
+  ]);
+  const edgeWidth = element('input', { attributes: { type: 'range', min: 0.1, max: 10,
+    step: 0.1, value: 2, 'aria-label': 'Curvature edge width' } });
+  const edgeWidthValue = element('output', { text: '2%' });
+  edgeWidth.addEventListener('input', () => { edgeWidthValue.value = `${edgeWidth.value}%`; });
+  const minimumAngle = element('input', { attributes: { type: 'range', min: 0, max: 180,
+    step: 1, value: 10, 'aria-label': 'Minimum edge angle' } });
+  const minimumAngleValue = element('output', { text: '10°' });
+  minimumAngle.addEventListener('input', () => {
+    minimumAngleValue.value = `${minimumAngle.value}°`;
+  });
+  const markedSharpOnly = element('input', { attributes: { type: 'checkbox' } });
+  const aoOptions = element('div', { className: 'bake-dialog__options' }, [
+    element('label', {}, [element('span', { text: 'Samples' }), samples]),
+    element('label', {}, [element('span', { className: 'bake-dialog__label' },
+      [element('span', { text: 'Reach · model size' }), reachValue]), reach]),
+    element('label', { className: 'bake-dialog__checkbox' },
+      [shadeSmooth, element('span', { text: 'Shade smooth' })]),
+    element('label', { className: 'bake-dialog__checkbox', attributes: {
+      title: 'Only the selected material’s mesh can occlude itself.' } },
+    [ignoreNearby, element('span', { text: 'Ignore nearby objects' })])
+  ]);
+  const curvatureOptions = element('div', { className: 'bake-dialog__options',
+    attributes: { hidden: '' } }, [
+    element('label', {}, [element('span', { text: 'Output' }), curvatureMode]),
+    element('label', {}, [element('span', { className: 'bake-dialog__label' },
+      [element('span', { text: 'Edge width · model size' }), edgeWidthValue]), edgeWidth]),
+    element('label', {}, [element('span', { className: 'bake-dialog__label' },
+      [element('span', { text: 'Minimum edge angle' }), minimumAngleValue]), minimumAngle]),
+    element('label', { className: 'bake-dialog__checkbox', attributes: {
+      title: 'Detect sharp edges from splits in the imported vertex normals.' } },
+    [markedSharpOnly, element('span', { text: 'Marked sharp only' })])
+  ]);
   const progress = element('p', { className: 'bake-dialog__progress',
     attributes: { role: 'status', 'aria-live': 'polite' } });
   const cancelButton = button({ label: 'Cancel', variant: 'ghost', onClick: close });
@@ -33,16 +70,9 @@ export function createBakeDialog({ onBake, onError, onComplete }) {
     element('div', { className: 'bake-dialog__header' }, [title, closeButton]),
     element('div', { className: 'bake-dialog__body' }, [target,
       element('label', {}, [element('span', { text: 'Resolution' }), resolution]),
-      element('label', {}, [element('span', { text: 'Samples' }), samples]),
-      element('label', {}, [element('span', { className: 'bake-dialog__label' },
-        [element('span', { text: 'Reach · model size' }), reachValue]), reach]),
+      aoOptions, curvatureOptions,
       element('label', {}, [element('span', { className: 'bake-dialog__label' },
         [element('span', { text: 'Strength' }), strengthValue]), strength]),
-      element('label', { className: 'bake-dialog__checkbox' },
-        [shadeSmooth, element('span', { text: 'Shade smooth' })]),
-      element('label', { className: 'bake-dialog__checkbox', attributes: {
-        title: 'Only the selected material’s mesh can occlude itself.' } },
-      [ignoreNearby, element('span', { text: 'Ignore nearby objects' })]),
       progress
     ]),
     element('div', { className: 'bake-dialog__actions' }, [cancelButton, bakeButton])
@@ -50,6 +80,7 @@ export function createBakeDialog({ onBake, onError, onComplete }) {
   title.id = 'bake-dialog-title';
   const root = element('div', { className: 'bake-dialog', attributes: { hidden: '' } }, [card]);
   let targetId = null;
+  let bakeType = 'ambientOcclusion';
   let controller = null;
 
   function close() {
@@ -61,9 +92,13 @@ export function createBakeDialog({ onBake, onError, onComplete }) {
     progress.textContent = '';
   }
 
-  function open(id, label) {
+  function open(id, label, type = 'ambientOcclusion') {
     if (!id) return false;
     targetId = id;
+    bakeType = type === 'curvature' ? 'curvature' : 'ambientOcclusion';
+    title.textContent = bakeType === 'curvature' ? 'Curvature' : 'Ambient Occlusion';
+    aoOptions.hidden = bakeType !== 'ambientOcclusion';
+    curvatureOptions.hidden = bakeType !== 'curvature';
     target.textContent = `Material: ${label}`;
     progress.textContent = '';
     card.style.left = `${Math.max(12, window.innerWidth - 322)}px`;
@@ -80,16 +115,23 @@ export function createBakeDialog({ onBake, onError, onComplete }) {
     bakeButton.disabled = true;
     progress.textContent = 'Preparing geometry…';
     try {
-      const options = { resolution: Number(resolution.value), samples: Number(samples.value),
+      const type = bakeType;
+      const options = type === 'curvature' ? {
+        resolution: Number(resolution.value), strength: Number(strength.value),
+        width: Number(edgeWidth.value), mode: curvatureMode.value,
+        angle: Number(minimumAngle.value), markedSharpOnly: markedSharpOnly.checked
+      } : {
+        resolution: Number(resolution.value), samples: Number(samples.value),
         distance: Number(reach.value), strength: Number(strength.value),
-        shadeSmooth: shadeSmooth.checked, selfOcclusionOnly: ignoreNearby.checked };
-      const result = await onBake(targetId, options, (fraction) => {
+        shadeSmooth: shadeSmooth.checked, selfOcclusionOnly: ignoreNearby.checked
+      };
+      const result = await onBake(type, targetId, options, (fraction) => {
         if (controller === running)
           progress.textContent = `Baking… ${Math.round(fraction * 100)}%`;
       }, running.signal);
       if (controller !== running) return;
       close();
-      if (result) onComplete?.();
+      if (result) onComplete?.(type);
       else onError?.('Could not create the baked layer.');
     } catch (error) {
       if (controller !== running) return;
@@ -97,7 +139,7 @@ export function createBakeDialog({ onBake, onError, onComplete }) {
       bakeButton.disabled = false;
       if (error.name === 'AbortError') return;
       progress.textContent = 'Bake failed';
-      onError?.(error.message || 'Ambient occlusion bake failed.');
+      onError?.(error.message || 'Bake failed.');
     }
   }
 

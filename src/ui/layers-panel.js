@@ -261,7 +261,7 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     } catch (error) { fail(error); }
   }
 
-  function addBakedLayer(targetId, canvas, name = 'Ambient Occlusion') {
+  function addBakedLayer(targetId, canvas, name = 'Ambient Occlusion', blendMode = 'multiply') {
     const state = current();
     if (!state.graph || state.targetId !== targetId) return false;
     const graph = cloneTextureGraph(state.graph);
@@ -274,7 +274,7 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
       created.source.imageName = asset.name;
       created.source.extension = 'clip';
       created.mix.layerName = name;
-      created.mix.mode = 'multiply';
+      created.mix.mode = blendMode;
       selectedByTarget.set(targetId, created.mix.id);
       nodeEditor.replaceGraph(graph);
       nodeEditor.choosePaintSource(created.source.id);
@@ -581,8 +581,11 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
     nodeEditor.replaceGraph(graph);
   }
 
-  function refreshThumbnails() {
+  function refreshThumbnails(source = null) {
     for (const thumbnail of list.querySelectorAll('.layers-panel__thumbnail')) {
+      if (source && (thumbnail.dataset.targetId !== source.targetId ||
+          thumbnail.dataset.vertexColor !== String(Boolean(source.vertexColor)) ||
+          (!source.vertexColor && thumbnail.dataset.imageKey !== source.imageKey))) continue;
       const context = thumbnail.getContext('2d');
       context.clearRect(0, 0, thumbnail.width, thumbnail.height);
       const image = getImageCanvas?.(thumbnail.dataset.targetId, thumbnail.dataset.imageKey,

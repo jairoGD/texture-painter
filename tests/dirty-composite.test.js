@@ -2,7 +2,98 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { addDirtyRegion, dirtyArea } from '../src/editor/dirty-regions.js';
 import { addGraphLayer, moveGraphLayerTo } from '../src/editor/layer-graph.js';
-import { BLEND_MODES, createTextureGraph, renderTextureGraph } from '../src/editor/texture-graph.js';
+import { BLEND_MODES, createTextureGraph, findStablePaintPrefix,
+  renderTextureGraph } from '../src/editor/texture-graph.js';
+
+test('painting an upper layer reuses the composite of lower layers', () => {
+  const graph = createTextureGraph();
+  const lower = addGraphLayer(graph, 'image');
+  const upper = addGraphLayer(graph, 'image');
+  const prefix = findStablePaintPrefix(graph, upper.source.id);
+  assert.deepEqual(prefix, { id: lower.mix.id, socket: 'Result' });
+  assert.equal(findStablePaintPrefix(graph, lower.source.id), null);
+});
+
+test('painting a mask caches only the layers below its first affected child', () => {
+  const graph = createTextureGraph();
+  const background = addGraphLayer(graph, 'image');
+  const mask = addGraphLayer(graph, 'image');
+  const child = addGraphLayer(graph, 'image');
+  mask.mix.layerIsMask = true;
+  moveGraphLayerTo(graph, child.mix.id, mask.mix.id, 'inside');
+  assert.deepEqual(findStablePaintPrefix(graph, mask.source.id),
+    { id: background.mix.id, socket: 'Result' });
+});
+
+test('the painted region does not redraw unchanged lower images on each update', () => {
+  const oldDocument = globalThis.document;
+  const lowerImage = { width: 256, height: 256 };
+  const upperImage = { width: 256, height: 256 };
+  let lowerDraws = 0;
+  globalThis.document = { createElement: () => {
+    const context = { fillRect() {}, clearRect() {}, save() {}, restore() {},
+      drawImage(image) { if (image === lowerImage) lowerDraws++; } };
+    return { width: 0, height: 0, getContext: () => context };
+  } };
+  try {
+    const graph = createTextureGraph();
+    const lower = addGraphLayer(graph, 'image');
+    const upper = addGraphLayer(graph, 'image');
+    lower.source.imageKey = 'lower';
+    upper.source.imageKey = 'upper';
+    const surface = { graph, canvas: { width: 256, height: 256 },
+      compositeCanvas: { width: 256, height: 256 },
+      imageAssets: new Map([['lower', { canvas: lowerImage }],
+        ['upper', { canvas: upperImage }]]),
+      imageCache: new Map(),
+      compositeContext: { fillRect() {}, drawImage() {}, save() {}, restore() {} } };
+    const region = { left: 124, top: 5, right: 132, bottom: 13 };
+    assert.equal(renderTextureGraph(surface, region, upper.source.id), true);
+    const firstDraws = lowerDraws;
+    assert.equal(surface.graphPaintCache.tiles.size, 2);
+    assert.equal(firstDraws, 2);
+    assert.equal(renderTextureGraph(surface, region, upper.source.id), true);
+    assert.equal(lowerDraws, firstDraws);
+  } finally { globalThis.document = oldDocument; }
+});
+
+test('a static parent mask is reused while painting its child', () => {
+  const oldDocument = globalThis.document;
+  const maskImage = { width: 64, height: 64 };
+  let maskDraws = 0;
+  globalThis.document = { createElement: () => {
+    const context = { fillRect() {}, clearRect() {}, save() {}, restore() {},
+      drawImage(image) { if (image === maskImage) maskDraws++; },
+      getImageData(_x, _y, width, height) {
+        return { data: new Uint8ClampedArray(width * height * 4) };
+      },
+      putImageData() {} };
+    return { width: 0, height: 0, getContext: () => context };
+  } };
+  try {
+    const graph = createTextureGraph();
+    const background = addGraphLayer(graph, 'image');
+    const mask = addGraphLayer(graph, 'image');
+    const child = addGraphLayer(graph, 'image');
+    background.source.imageKey = 'background';
+    mask.source.imageKey = 'mask';
+    child.source.imageKey = 'child';
+    mask.mix.layerIsMask = true;
+    moveGraphLayerTo(graph, child.mix.id, mask.mix.id, 'inside');
+    const surface = { graph, canvas: { width: 64, height: 64 },
+      compositeCanvas: { width: 64, height: 64 }, imageCache: new Map(),
+      imageAssets: new Map([['background', { canvas: { width: 64, height: 64 } }],
+        ['mask', { canvas: maskImage }],
+        ['child', { canvas: { width: 64, height: 64 } }]]),
+      compositeContext: { fillRect() {}, drawImage() {}, save() {}, restore() {} } };
+    const region = { left: 4, top: 4, right: 12, bottom: 12 };
+    assert.equal(renderTextureGraph(surface, region, child.source.id), true);
+    const firstDraws = maskDraws;
+    assert.ok(firstDraws > 0);
+    assert.equal(renderTextureGraph(surface, region, child.source.id), true);
+    assert.equal(maskDraws, firstDraws);
+  } finally { globalThis.document = oldDocument; }
+});
 
 test('neighboring brush marks merge while distant mirrored marks stay separate', () => {
   const regions = [];

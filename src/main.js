@@ -76,7 +76,11 @@ const scene = createScene(viewport, {
     markDirty();
   },
   onContentChanged: () => {
-    layersPanel?.refreshThumbnails(); nodeEditor?.refreshHistoryButtons(); markDirty();
+    const state = nodeEditor?.getState();
+    const source = state?.graph?.nodes.find((node) => node.id === state.paintSource);
+    layersPanel?.refreshThumbnails(source ? { targetId: state.targetId,
+      imageKey: source.imageKey, vertexColor: source.vertexColor } : null);
+    nodeEditor?.refreshHistoryButtons(); markDirty();
   }, onColorPicked: (color) => {
   palette.setColor(color);
   setStatus(`Sampled ${color.toUpperCase()}`);
@@ -302,14 +306,18 @@ const filterMenu = dropdown({ label: 'Filter', items: FILTER_CATEGORIES.map((cat
   onSelect: () => filterDialog.open(category.id)
 })) });
 const bakeDialog = createBakeDialog({
-  onBake: async (targetId, settings, onProgress, signal) => {
-    const image = await scene.bakeAmbientOcclusion(targetId, settings, onProgress, signal);
-    return layersPanel.addBakedLayer(targetId, image);
+  onBake: async (type, targetId, settings, onProgress, signal) => {
+    const image = type === 'curvature' ?
+      await scene.bakeCurvature(targetId, settings, onProgress, signal) :
+      await scene.bakeAmbientOcclusion(targetId, settings, onProgress, signal);
+    return layersPanel.addBakedLayer(targetId, image,
+      type === 'curvature' ? 'Curvature' : 'Ambient Occlusion',
+      type === 'curvature' ? 'mix' : 'multiply');
   },
-  onComplete: () => {
+  onComplete: (type) => {
     markDirty();
     nodeEditor.refreshHistoryButtons();
-    setStatus('Ambient occlusion baked into a new layer');
+    setStatus(`${type === 'curvature' ? 'Curvature' : 'Ambient occlusion'} baked into a new layer`);
   },
   onError: (message) => setStatus(message, true)
 });
@@ -411,6 +419,12 @@ const bakeMenu = dropdown({ label: 'Bake', items: [
       const state = nodeEditor.getState();
       const material = state.targets.find((item) => item.id === state.targetId);
       bakeDialog.open(state.targetId, material?.label ?? 'Selected material');
+    } },
+  { label: 'Curvature', getDisabled: () => !nodeEditor.getState().targetId,
+    onSelect: () => {
+      const state = nodeEditor.getState();
+      const material = state.targets.find((item) => item.id === state.targetId);
+      bakeDialog.open(state.targetId, material?.label ?? 'Selected material', 'curvature');
     } }
 ] });
 

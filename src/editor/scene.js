@@ -61,6 +61,42 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   controls.mouseButtons.RIGHT = null;
   controls.target.set(0, 0.65, 0);
   controls.update();
+  let rightGesture = null;
+  const rightOrbitOffset = new THREE.Vector3();
+  const rightOrbitSpherical = new THREE.Spherical();
+  const rightPanOffset = new THREE.Vector3();
+  const rightPanAxis = new THREE.Vector3();
+  const rightPanUp = new THREE.Vector3();
+  function orbitWithRightButton(dx, dy) {
+    rightOrbitOffset.copy(camera.position).sub(controls.target);
+    rightOrbitSpherical.setFromVector3(rightOrbitOffset);
+    rightOrbitSpherical.theta -= 2 * Math.PI * dx * controls.rotateSpeed /
+      renderer.domElement.clientHeight;
+    rightOrbitSpherical.phi -= 2 * Math.PI * dy * controls.rotateSpeed /
+      renderer.domElement.clientHeight;
+    rightOrbitSpherical.theta = Math.max(controls.minAzimuthAngle,
+      Math.min(controls.maxAzimuthAngle, rightOrbitSpherical.theta));
+    rightOrbitSpherical.phi = Math.max(controls.minPolarAngle,
+      Math.min(controls.maxPolarAngle, rightOrbitSpherical.phi));
+    rightOrbitSpherical.makeSafe();
+    camera.position.copy(controls.target).add(
+      rightOrbitOffset.setFromSpherical(rightOrbitSpherical));
+    controls.update();
+  }
+  function panWithRightButton(dx, dy) {
+    if (!controls.enablePan) return;
+    const distance = camera.position.distanceTo(controls.target);
+    const scale = 2 * distance * Math.tan(camera.fov * Math.PI / 360) *
+      controls.panSpeed / renderer.domElement.clientHeight;
+    rightPanAxis.setFromMatrixColumn(camera.matrix, 0);
+    if (controls.screenSpacePanning) rightPanUp.setFromMatrixColumn(camera.matrix, 1);
+    else rightPanUp.crossVectors(camera.up, rightPanAxis);
+    rightPanOffset.copy(rightPanAxis).multiplyScalar(-dx * scale)
+      .addScaledVector(rightPanUp, dy * scale);
+    camera.position.add(rightPanOffset);
+    controls.target.add(rightPanOffset);
+    controls.update();
+  }
 
   const warpControls = new TransformControls(camera, renderer.domElement);
   warpControls.setSize(0.8);
@@ -1222,10 +1258,11 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     if (event.button === 2) {
       event.preventDefault();
       event.stopImmediatePropagation();
-      if (activePointer === null) {
-        const color = painter.sample(hitTestAt(event.clientX, event.clientY, false));
-        if (color) onColorPicked?.(color);
-      }
+      if (activePointer !== null || !controls.enabled) return;
+      rightGesture = { pointerId: event.pointerId, startX: event.clientX,
+        startY: event.clientY, lastX: event.clientX, lastY: event.clientY,
+        dragging: false, mode: event.shiftKey ? 'pan' : 'orbit' };
+      renderer.domElement.setPointerCapture(event.pointerId);
       return;
     }
     if (warpTarget && (warpControls.axis || warpControls.dragging)) return;
@@ -1391,6 +1428,26 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     renderer.domElement.setPointerCapture(event.pointerId);
   }
   function onPointerMove(event) {
+    if (rightGesture?.pointerId === event.pointerId) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const gesture = rightGesture;
+      if (!gesture.dragging && Math.hypot(event.clientX - gesture.startX,
+        event.clientY - gesture.startY) >= 4) {
+        gesture.dragging = true;
+        gesture.lastX = gesture.startX;
+        gesture.lastY = gesture.startY;
+      }
+      if (gesture.dragging && controls.enabled) {
+        const dx = event.clientX - gesture.lastX;
+        const dy = event.clientY - gesture.lastY;
+        if (gesture.mode === 'pan') panWithRightButton(dx, dy);
+        else orbitWithRightButton(dx, dy);
+      }
+      gesture.lastX = event.clientX;
+      gesture.lastY = event.clientY;
+      return;
+    }
     if (event.pointerId !== activePointer) return;
     event.preventDefault();
     event.stopImmediatePropagation();
@@ -1417,6 +1474,19 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     else if (activeTool === 'line' || activeTool === 'brush' ||
         activeTool === 'eraser' || activeTool === 'blur' ||
         activeTool === 'vertexBrush' || activeTool === 'vertexBlur') queueDraw(event);
+  }
+  function onRightGestureEnd(event) {
+    if (rightGesture?.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const gesture = rightGesture;
+    rightGesture = null;
+    if (renderer.domElement.hasPointerCapture(event.pointerId))
+      renderer.domElement.releasePointerCapture(event.pointerId);
+    if (event.type === 'pointerup' && !gesture.dragging) {
+      const color = painter.sample(hitTestAt(event.clientX, event.clientY, false));
+      if (color) onColorPicked?.(color);
+    }
   }
   function endStroke(event) {
     if (event.pointerId !== activePointer) {
@@ -1593,6 +1663,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     canvas.addEventListener('pointercancel', onWarpHandleEnd, true);
     canvas.addEventListener('pointerdown', onPointerDown, true);
     canvas.addEventListener('pointermove', onPointerMove, true);
+    canvas.addEventListener('pointerup', onRightGestureEnd, true);
+    canvas.addEventListener('pointercancel', onRightGestureEnd, true);
     canvas.addEventListener('pointerup', endStroke, true);
     canvas.addEventListener('pointercancel', endStroke, true);
   }
@@ -1750,16 +1822,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         lightRotation: { yaw: lightYaw, pitch: lightPitch } } };
   }
 
-  async function bakeAmbientOcclusion(targetId, options, onProgress, signal) {
-    if (signal?.aborted) throw new DOMException('Bake cancelled', 'AbortError');
-    const target = painter.getFaceTarget(targetId);
-    if (!target) throw new Error('Select a material before baking.');
-    const source = collectAmbientOcclusionGeometry(painter.getMeshes(),
-      target.mesh, target.materialIndex, options);
+  async function runBakeWorker(createWorker, source, options, onProgress, signal) {
     if (signal?.aborted) throw new DOMException('Bake cancelled', 'AbortError');
     const image = await new Promise((resolve, reject) => {
-      const worker = new Worker(new URL('./ambient-occlusion-worker.js', import.meta.url),
-        { type: 'module' });
+      const worker = createWorker();
       const finish = () => {
         signal?.removeEventListener('abort', abort);
         worker.terminate();
@@ -1772,11 +1838,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         else if (data.type === 'error') { finish(); reject(new Error(data.message)); }
       };
       worker.onerror = (event) => {
-        finish(); reject(new Error(event.message || 'Ambient occlusion bake failed.'));
+        finish(); reject(new Error(event.message || 'Bake failed.'));
       };
-      worker.postMessage({ source, options }, [source.positions.buffer,
-        source.targetTriangles.buffer, source.targetUvs.buffer,
-        source.targetNormals.buffer]);
+      worker.postMessage({ source, options }, Object.values(source)
+        .filter((value) => ArrayBuffer.isView(value)).map((value) => value.buffer));
     });
     const canvas = document.createElement('canvas');
     canvas.width = image.width;
@@ -1784,6 +1849,26 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     canvas.getContext('2d').putImageData(new ImageData(image.data,
       image.width, image.height), 0, 0);
     return canvas;
+  }
+
+  function bakeAmbientOcclusion(targetId, options, onProgress, signal) {
+    const target = painter.getFaceTarget(targetId);
+    if (!target) throw new Error('Select a material before baking.');
+    const source = collectAmbientOcclusionGeometry(painter.getMeshes(),
+      target.mesh, target.materialIndex, options);
+    return runBakeWorker(() => new Worker(new URL('./ambient-occlusion-worker.js', import.meta.url),
+      { type: 'module' }),
+      source, options, onProgress, signal);
+  }
+
+  function bakeCurvature(targetId, options, onProgress, signal) {
+    const target = painter.getFaceTarget(targetId);
+    if (!target) throw new Error('Select a material before baking.');
+    const source = collectAmbientOcclusionGeometry([target.mesh],
+      target.mesh, target.materialIndex, { includeCornerNormals: true });
+    return runBakeWorker(() => new Worker(new URL('./curvature-worker.js', import.meta.url),
+      { type: 'module' }),
+      source, options, onProgress, signal);
   }
 
   async function restoreProjectData(saved, file = null) {
@@ -1866,6 +1951,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     importModel,
     newProject, exportProjectData, restoreProjectData,
     bakeAmbientOcclusion,
+    bakeCurvature,
     frame: () => frame(model),
     setGridVisible: (visible) => { grid.visible = visible; },
     setWireframeVisible: (visible) => {

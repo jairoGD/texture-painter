@@ -300,13 +300,12 @@ export function evaluateTextureNode(surface, nodeId, socket = 'Color', graph = s
       }
     }
     else if (node.type === 'blend') {
-      const base = input(node, 'A') ?? (surface.transparentBase && node.layerSourceId &&
-        node.colorA === '#ffffff' ? newCanvas(size) : solidCanvas(size, node.colorA));
-      const top = input(node, 'B') ?? solidCanvas(size, node.colorB);
-      const mask = input(node, 'Factor');
       const factor = !layerVisibleInHierarchy(node, nodes) || node.layerIsMask ? 0 :
         Math.max(0, Math.min(1, Number(node.factor) || 0));
-      result = blendCanvases(base, top, node.mode, factor, size, mask);
+      const base = input(node, 'A') ?? (surface.transparentBase && node.layerSourceId &&
+        node.colorA === '#ffffff' ? newCanvas(size) : solidCanvas(size, node.colorA));
+      result = factor ? blendCanvases(base, input(node, 'B') ?? solidCanvas(size, node.colorB),
+        node.mode, factor, size, input(node, 'Factor')) : base;
     } else if (node.type === 'layerMask')
       result = multiplyFactorCanvases(input(node, 'Base'), input(node, 'Mask'), size);
     else if (node.type === 'output') result = input(node, 'Color');
@@ -359,10 +358,63 @@ export function vertexColorImage(surface) {
 // The graph can be evaluated in UV-space tiles while painting. Every intermediate
 // canvas has the dirty rectangle's dimensions, so a mask no longer forces a
 // full-resolution graph render for each brush dab.
-function renderGraphRegion(surface, region) {
+function paintGraphImpact(graph, paintSourceId) {
+  if (!paintSourceId) return { prefix: null, affected: new Set() };
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const outgoing = new Map();
+  const incoming = new Map();
+  for (const link of graph.links) {
+    if (!outgoing.has(link.from)) outgoing.set(link.from, []);
+    outgoing.get(link.from).push(link.to);
+    incoming.set(`${link.to}:${link.toSocket}`, link);
+  }
+  const affected = new Set([paintSourceId]);
+  const queue = [paintSourceId];
+  for (let index = 0; index < queue.length; index++) {
+    for (const next of outgoing.get(queue[index]) ?? []) {
+      if (affected.has(next)) continue;
+      affected.add(next);
+      queue.push(next);
+    }
+  }
+  let link = incoming.get('output:Color');
+  let prefix = null;
+  const visited = new Set();
+  while (link && !visited.has(link.from)) {
+    const node = nodes.get(link.from);
+    if (node?.type !== 'blend' || link.fromSocket !== 'Result') break;
+    visited.add(node.id);
+    const base = incoming.get(`${node.id}:A`);
+    if (affected.has(node.id) && base && !affected.has(base.from))
+      prefix = { id: base.from, socket: base.fromSocket };
+    link = base;
+  }
+  return { prefix, affected };
+}
+
+export function findStablePaintPrefix(graph, paintSourceId) {
+  return paintGraphImpact(graph, paintSourceId).prefix;
+}
+
+function paintPrefix(surface, paintSourceId) {
+  const previous = surface.graphPaintCache;
+  if (previous?.graph === surface.graph && previous.paintSourceId === paintSourceId)
+    return previous;
+  const { prefix, affected } = paintGraphImpact(surface.graph, paintSourceId);
+  if (!prefix) return null;
+  // The A input below the first affected blend cannot change during this stroke.
+  // Keep only recently touched tiles instead of retaining a full-resolution copy.
+  const cache = { graph: surface.graph, paintSourceId, ...prefix, affected,
+    tiles: new Map() };
+  surface.graphPaintCache = cache;
+  return cache;
+}
+
+function evaluateGraphCanvasRegion(surface, region, rootId = 'output',
+  rootSocket = 'Color', prefix = null, allowProjectionBake = false) {
   const width = region.right - region.left;
   const height = region.bottom - region.top;
-  if (width <= 0 || height <= 0) return true;
+  if (width <= 0 || height <= 0) return { supported: true, result: null };
   const { graph } = surface;
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   const links = new Map(graph.links.map((link) => [`${link.to}:${link.toSocket}`, link]));
@@ -376,9 +428,35 @@ function renderGraphRegion(surface, region) {
   const evaluate = (id, socket = 'Color') => {
     const key = `${id}:${socket}`;
     if (cache.has(key)) return cache.get(key);
+    if (prefix?.id === id && prefix.socket === socket) {
+      const result = newCanvas(width, height);
+      result.getContext('2d').drawImage(prefix.canvas,
+        region.left - prefix.left, region.top - prefix.top,
+        width, height, 0, 0, width, height);
+      cache.set(key, result);
+      return result;
+    }
     if (visiting.has(id)) { supported = false; return null; }
     const node = nodes.get(id);
     if (!node) return null;
+    if (prefix?.branches && !prefix.affected.has(id) &&
+        (node.type === 'invert' || node.type === 'layerMask')) {
+      let stable = prefix.branches.get(key);
+      if (!stable) {
+        const fullTile = { left: prefix.left, top: prefix.top,
+          right: prefix.right, bottom: prefix.bottom };
+        const evaluated = evaluateGraphCanvasRegion(surface, fullTile, id, socket,
+          null, true);
+        if (!evaluated.supported || !evaluated.result) { supported = false; return null; }
+        stable = evaluated.result;
+        prefix.branches.set(key, stable);
+      }
+      const cropped = newCanvas(width, height);
+      cropped.getContext('2d').drawImage(stable, region.left - prefix.left,
+        region.top - prefix.top, width, height, 0, 0, width, height);
+      cache.set(key, cropped);
+      return cropped;
+    }
     visiting.add(id);
     let result = null;
     if (node.type === 'color') result = solidCanvas(width, node.color, height);
@@ -389,7 +467,7 @@ function renderGraphRegion(surface, region) {
         const projection = node.projection ?? 'flat';
         const vertexImage = node.vertexColor ? vertexColorImage(surface) : null;
         const projected = vertexImage ?? (projection === 'flat' ? null :
-          projectedImage(surface, node, asset, false));
+          projectedImage(surface, node, asset, allowProjectionBake));
         if (!node.vertexColor && projection !== 'flat' && !projected) supported = false;
         else {
           const image = newCanvas(width, height);
@@ -411,12 +489,14 @@ function renderGraphRegion(surface, region) {
         }
       }
     } else if (node.type === 'blend') {
-      const base = input(node, 'A') ?? solidCanvas(width, node.colorA, height);
-      const top = input(node, 'B') ?? solidCanvas(width, node.colorB, height);
-      const mask = input(node, 'Factor');
       const factor = !layerVisibleInHierarchy(node, nodes) || node.layerIsMask ? 0 :
         Math.max(0, Math.min(1, Number(node.factor) || 0));
-      result = blendCanvases(base, top, node.mode, factor, width, mask, height);
+      const base = input(node, 'A') ?? (surface.transparentBase && node.layerSourceId &&
+        node.colorA === '#ffffff' ? newCanvas(width, height) :
+        solidCanvas(width, node.colorA, height));
+      result = factor ? blendCanvases(base,
+        input(node, 'B') ?? solidCanvas(width, node.colorB, height), node.mode,
+        factor, width, input(node, 'Factor'), height) : base;
     } else if (node.type === 'layerMask')
       result = multiplyFactorCanvases(input(node, 'Base'), input(node, 'Mask'), width, height);
     else if (node.type === 'output') result = input(node, 'Color');
@@ -425,7 +505,16 @@ function renderGraphRegion(surface, region) {
     cache.set(key, result);
     return result;
   };
-  const result = evaluate('output');
+  const result = evaluate(rootId, rootSocket);
+  return { supported, result };
+}
+
+function renderGraphRegion(surface, region, prefix = null) {
+  const width = region.right - region.left;
+  const height = region.bottom - region.top;
+  if (width <= 0 || height <= 0) return true;
+  const { supported, result } = evaluateGraphCanvasRegion(surface, region,
+    'output', 'Color', prefix);
   if (!supported) return false;
   const context = surface.compositeContext;
   context.save();
@@ -438,6 +527,42 @@ function renderGraphRegion(surface, region) {
   }
   if (result) context.drawImage(result, region.left, region.top);
   context.restore();
+  return true;
+}
+
+const PAINT_TILE_SIZE = 128;
+const MAX_PAINT_TILES = 128;
+
+function renderCachedPaintRegion(surface, region, paintSourceId) {
+  const prefix = paintPrefix(surface, paintSourceId);
+  if (!prefix) return false;
+  const size = surface.canvas.width;
+  const startX = Math.floor(region.left / PAINT_TILE_SIZE) * PAINT_TILE_SIZE;
+  const startY = Math.floor(region.top / PAINT_TILE_SIZE) * PAINT_TILE_SIZE;
+  for (let y = startY; y < region.bottom; y += PAINT_TILE_SIZE) {
+    for (let x = startX; x < region.right; x += PAINT_TILE_SIZE) {
+      const key = `${x}:${y}`;
+      let tile = prefix.tiles.get(key);
+      if (tile) {
+        prefix.tiles.delete(key);
+        prefix.tiles.set(key, tile);
+      } else {
+        const bounds = { left: x, top: y, right: Math.min(size, x + PAINT_TILE_SIZE),
+          bottom: Math.min(size, y + PAINT_TILE_SIZE) };
+        const { supported, result } = evaluateGraphCanvasRegion(surface, bounds,
+          prefix.id, prefix.socket, null, true);
+        if (!supported || !result) return false;
+        tile = { ...bounds, canvas: result, branches: new Map() };
+        prefix.tiles.set(key, tile);
+        if (prefix.tiles.size > MAX_PAINT_TILES)
+          prefix.tiles.delete(prefix.tiles.keys().next().value);
+      }
+      const clipped = { left: Math.max(x, region.left), top: Math.max(y, region.top),
+        right: Math.min(tile.right, region.right),
+        bottom: Math.min(tile.bottom, region.bottom) };
+      if (!renderGraphRegion(surface, clipped, { ...prefix, ...tile })) return false;
+    }
+  }
   return true;
 }
 
@@ -555,9 +680,11 @@ function renderSimpleLayerStack(surface, region = null) {
   return true;
 }
 
-export function renderTextureGraph(surface, region = null) {
+export function renderTextureGraph(surface, region = null, paintSourceId = null) {
   const { canvas, compositeCanvas, compositeContext } = surface;
   const size = canvas.width;
+  if (region && paintSourceId && renderCachedPaintRegion(surface, region, paintSourceId))
+    return true;
   if (renderSimpleLayerStack(surface, region)) {
     if (!region) surface.texture.needsUpdate = true;
     return Boolean(region);

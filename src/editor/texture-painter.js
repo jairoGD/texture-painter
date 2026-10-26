@@ -171,6 +171,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       overlayCanvas, overlayContext, overlayTexture, overlayMaterial, graph: createTextureGraph(),
       imageAssets: new Map(), imageCache: new Map(), compositeFrame: null,
       compositeDirty: [], compositeLastDirty: null, compositeRevision: 0,
+      compositeSource: null, graphPaintCache: null,
       transparencyMode: 'opaque', transparentBase: false };
     function deferMipmaps() {
       if (!antialiasEnabled) return;
@@ -218,20 +219,31 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       if (surface.compositeFrame !== null) cancelAnimationFrame(surface.compositeFrame);
       surface.compositeFrame = null;
       surface.compositeDirty = [];
+      surface.compositeSource = null;
+      surface.graphPaintCache = null;
       renderTextureGraph(surface);
       surface.compositeLastDirty = null;
       surface.compositeRevision++;
     };
-    surface.requestComposite = (region = null) => {
-      if (surface.compositeFrame === null) surface.compositeDirty = [];
-      if (!region) surface.compositeDirty = null;
+    surface.requestComposite = (region = null, sourceNodeId = null) => {
+      if (surface.compositeFrame === null) {
+        surface.compositeDirty = [];
+        surface.compositeSource = sourceNodeId;
+      } else if (surface.compositeSource !== sourceNodeId) surface.compositeSource = null;
+      if (!region) {
+        surface.compositeDirty = null;
+        surface.compositeSource = null;
+      }
+      if (!surface.compositeSource) surface.graphPaintCache = null;
       else if (surface.compositeDirty) addDirtyRegion(surface.compositeDirty, region,
         compositeCanvas.width, compositeCanvas.height);
       if (surface.compositeFrame !== null) return;
       surface.compositeFrame = requestAnimationFrame(() => {
         surface.compositeFrame = null;
         const dirty = surface.compositeDirty;
+        const sourceNodeId = surface.compositeSource;
         surface.compositeDirty = [];
+        surface.compositeSource = null;
         let partial = false;
         if (!renderer || !dirty?.length || dirtyArea(dirty) > SIZE * SIZE * 0.4) {
           renderTextureGraph(surface);
@@ -239,7 +251,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
           try {
             partial = true;
             for (const region of dirty) {
-              if (!renderTextureGraph(surface, region)) { partial = false; break; }
+              if (!renderTextureGraph(surface, region, sourceNodeId)) { partial = false; break; }
               deferMipmaps();
               uploadRegion(region);
             }
@@ -1809,7 +1821,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       refreshComposite: parent.refreshComposite,
       requestComposite: (region = null) => {
         asset.revision++;
-        parent.requestComposite(scaleLayerRegion(region, canvas, parent.canvas));
+        parent.requestComposite(scaleLayerRegion(region, canvas, parent.canvas), nodeId);
       },
       resetPaint: () => {
         context.clearRect(0, 0, canvas.width, canvas.height);
