@@ -43,14 +43,7 @@ export function createLayerImageProperties({ onEdit, getImageInfo }) {
       });
       fields.append(element('label', {}, [element('span', { text: label }), field]));
     }
-    const vertexColor = element('input', { attributes: {
-      type: 'checkbox', 'aria-label': 'Vertex Color'
-    } });
-    vertexColor.checked = Boolean(node.vertexColor);
-    vertexColor.addEventListener('change', () => onEdit?.(node.id, 'vertexColor', vertexColor.checked));
-    const vertexColorOption = element('label', { className: 'layer-image-properties__vertex-color' },
-      [vertexColor, element('span', { text: 'Vertex Color' })]);
-    content.replaceChildren(heading, fields, vertexColorOption);
+    content.replaceChildren(heading, fields);
   }
 
   render(null);

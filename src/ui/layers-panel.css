@@ -57,6 +57,4 @@
 .layer-image-properties__fields label { display: grid; gap: 3px; min-width: 0; color: var(--text-muted); font-size: 10px; }
 .layer-image-properties__fields select, .layer-image-properties__fields input { width: 100%; min-width: 0; height: 26px; padding: 0 5px; border: 1px solid var(--border-control); border-radius: 4px; color: var(--text-primary); background: var(--surface-control); font-size: 10px; }
 .layer-image-properties__fields select:focus-visible, .layer-image-properties__fields input:focus-visible { outline: 1px solid var(--accent); }
-.layer-image-properties__vertex-color { display: flex; align-items: center; gap: 6px; margin-top: 12px; color: var(--text-primary); font-size: 11px; cursor: pointer; }
-.layer-image-properties__vertex-color input { margin: 0; accent-color: var(--accent); }
 @media (max-width: 900px) { .layer-image-properties { flex-basis: 115px; } }

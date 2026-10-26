@@ -15,6 +15,7 @@ import eyeIcon from './icons/layer-eye.svg';
 import hiddenIcon from './icons/layer-hidden.svg';
 import maskIcon from './icons/mask.svg';
 import invertIcon from './icons/invert_color.svg';
+import vertexColorIcon from './icons/vertex-color.svg';
 import './layers-panel.css';
 
 export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, onMergeLayer,
@@ -60,7 +61,14 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
       const selected = selectedLayer(current());
       if (selected) editSpecificLayer(selected.id, (node) => { node.layerInvert = checked; });
     } });
-  const optionsPanel = element('div', { className: 'layers-panel__options' }, [maskToggle, invertToggle]);
+  const vertexColorToggle = toggleButton({ label: 'Vertex Color', iconUrl: vertexColorIcon,
+    className: 'layers-panel__option-toggle', onChange: (checked) => {
+      const source = selectedLayer(current())?.source;
+      if (source?.type === 'image')
+        editImageNode(source.id, (node) => { node.vertexColor = checked; });
+    } });
+  const optionsPanel = element('div', { className: 'layers-panel__options' },
+    [vertexColorToggle, maskToggle, invertToggle]);
   const rootDrop = element('div', { className: 'layers-panel__root-drop',
     text: 'Drop here to move out of group' });
   const imageProperties = createLayerImageProperties({
@@ -489,6 +497,8 @@ export function createLayersPanel({ nodeEditor, onCreateImage, onImportImage, on
   }
 
   function renderOptions(selected) {
+    vertexColorToggle.disabled = selected?.source.type !== 'image';
+    vertexColorToggle.setPressed(Boolean(selected?.source.vertexColor));
     maskToggle.disabled = invertToggle.disabled = !selected;
     maskToggle.setPressed(Boolean(selected?.mix.layerIsMask));
     invertToggle.setPressed(Boolean(selected?.mix.layerInvert));
