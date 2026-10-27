@@ -154,8 +154,9 @@ export const TOOL_DEFINITIONS = [
       { type: 'button', action: 'clearSelection', label: 'Clear Selection' }
     ] },
   { id: 'faces', label: 'Face Select', iconUrl: wireIcon,
-    defaults: { maskEnabled: true, isolateBlur: true },
+    defaults: { maskEnabled: true, isolateBlur: true, geometry: false },
     controls: [
+      { type: 'checkbox', key: 'geometry', label: 'Geometry' },
       { type: 'checkbox', key: 'maskEnabled', label: 'Mask painting to selection' },
       { type: 'checkbox', key: 'isolateBlur', label: 'Keep blur inside selection' },
       { type: 'button', action: 'clearSelection', label: 'Clear Selection' }

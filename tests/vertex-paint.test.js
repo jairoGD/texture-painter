@@ -106,6 +106,27 @@ test('vertex brush colors coincident vertices on both sides of a seam', () => {
   assert.equal(colors.getX(1), 0);
 });
 
+test('mirrored sides with overlapping UVs keep independent vertex colors', () => {
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new Float32BufferAttribute([
+    -2, 0, 0, -1, 0, 0, -2, 1, 0,
+    1, 0, 0, 2, 0, 0, 2, 1, 0
+  ], 3));
+  geometry.setAttribute('uv', new Float32BufferAttribute([
+    0, 0, 1, 0, 0, 1,
+    0, 0, 1, 0, 0, 1
+  ], 2));
+  assert.equal(paintVertexColors(geometry, 0, new Vector3(-2, 0, 0),
+    0.1, 'vertexBrush', { color: '#ff0000', opacity: 100, hardness: 100 }), true);
+  const colors = geometry.getAttribute('color');
+  assert.equal(colors.getY(0), 0);
+  assert.equal(colors.getY(3), 1);
+  assert.equal(paintVertexColors(geometry, 0, new Vector3(1, 0, 0),
+    0.1, 'vertexBrush', { color: '#0000ff', opacity: 100, hardness: 100 }), true);
+  assert.equal(colors.getZ(3), 1);
+  assert.equal(colors.getZ(0), 0);
+});
+
 test('selection limits vertex brush and bucket to chosen vertices', () => {
   const geometry = square();
   const selected = new Set([0]);

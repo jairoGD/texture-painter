@@ -43,6 +43,10 @@ function editableColors(geometry) {
   return result;
 }
 
+export function ensureVertexColors(geometry) {
+  return editableColors(geometry);
+}
+
 function hexToLinear(hex) {
   const value = Number.parseInt(String(hex).replace('#', ''), 16);
   if (!Number.isFinite(value)) return [0, 0, 0];

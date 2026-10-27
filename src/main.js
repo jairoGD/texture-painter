@@ -164,6 +164,7 @@ let lightingMode = 'shaded';
 let gridVisible = true;
 let wireframeVisible = false;
 let antialiasEnabled = true;
+let backfaceCullingEnabled = true;
 function setStatus(message, error = false) {
   status.textContent = message;
   status.classList.toggle('is-error', error);
@@ -406,6 +407,12 @@ const renderingMenu = dropdown({ label: 'Rendering', items: [
     markDirty();
   } },
   { type: 'separator' },
+  { type: 'checkbox', label: 'Backface Culling',
+    getChecked: () => backfaceCullingEnabled, keepOpen: true, onSelect: () => {
+      backfaceCullingEnabled = !backfaceCullingEnabled;
+      scene.setBackfaceCullingEnabled(backfaceCullingEnabled);
+      markDirty();
+    } },
   { type: 'checkbox', label: 'Antialiasing', getChecked: () => antialiasEnabled,
     keepOpen: true, onSelect: () => {
       antialiasEnabled = !antialiasEnabled;
@@ -485,7 +492,7 @@ function renderProperties() {
       if (control.key === 'lineStyle' || control.key === 'stroke' ||
           control.key === 'proportionalStroke' ||
           control.type === 'imageImport') renderProperties();
-      if (['curveMethod', 'stroke', 'proportionalStroke'].includes(control.key))
+      if (['curveMethod', 'stroke', 'proportionalStroke', 'geometry'].includes(control.key))
         renderToolHint();
       markDirty();
     }
@@ -624,10 +631,12 @@ function restoreEditorSettings(saved = {}, view = {}) {
   gridVisible = view.grid !== false;
   wireframeVisible = view.wireframe === true;
   antialiasEnabled = view.antialias !== false;
+  backfaceCullingEnabled = view.backfaceCulling !== false;
   applyLightingMode(restoredLighting);
   scene.setGridVisible(gridVisible);
   scene.setWireframeVisible(wireframeVisible);
   scene.setAntialiasEnabled(antialiasEnabled);
+  scene.setBackfaceCullingEnabled(backfaceCullingEnabled);
   scene.setMirrorEnabled(view.mirror === true);
   mirrorButton.setPressed(scene.getMirrorEnabled());
   scene.setSamplingMode(view.sampling === 'uv' ? 'uv' : 'surface');

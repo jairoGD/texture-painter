@@ -6,6 +6,9 @@ import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { createTexturePainter } from './texture-painter.js';
 import { captureVisibleUv, decodeVisibleUv, projectLassoToUv } from './screen-lasso.js';
 import { captureVisibleFaces } from './screen-face-selection.js';
+import { hideGeometryFaces, invertVisibleGeometryFaces, showAllGeometryFaces,
+  visibleGeometryFaces } from './face-visibility.js';
+import { connectedVertexFaces, meshFaces } from './vertex-face-selection.js';
 import { sampleScreenStroke } from './surface-stroke.js';
 import { sampleThroughLine } from './through-line.js';
 import { lineStylePaths, styledPolylinePaths } from './line-style.js';
@@ -17,10 +20,16 @@ import { stampPlacement, stampScreenSize } from './stamp-texture.js';
 import { preciseCurveScreenPoints } from './precise-curve.js';
 import { buildSurfaceCurvePath } from './surface-curve-path.js';
 import { createModelMirror, reflectedCamera } from './model-mirror.js';
+import { isDuplicateMirrorHit } from './mirror-hit-filter.js';
 import { setTextureResolution, textureResolution } from './texture-resolution.js';
 import { collectAmbientOcclusionGeometry } from './ambient-occlusion-source.js';
 import { resizeWarpProjection, warpProjectionTransform } from './image-projection.js';
 import { resolveTemporaryPaintTool } from './temporary-paint-tool.js';
+import { bitmapBrushDiameter, vertexBrushDiameter } from './brush-cursor-size.js';
+
+const BRUSH_CURSOR_TOOLS = new Set([
+  'brush', 'eraser', 'blur', 'line', 'curve', 'vertexBrush', 'vertexBlur'
+]);
 
 export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTargetsChanged,
   onContentChanged, onLightViewChanged, onProjectionStart, onProjectionPreview,
@@ -53,6 +62,11 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   gradientCanvas.className = 'gradient-overlay';
   gradientCanvas.setAttribute('aria-hidden', 'true');
   host.append(gradientCanvas);
+  const brushCursor = document.createElement('div');
+  brushCursor.className = 'brush-cursor';
+  brushCursor.setAttribute('aria-hidden', 'true');
+  brushCursor.hidden = true;
+  host.append(brushCursor);
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = false;
@@ -296,7 +310,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       vertexSelectionOverlay.material.dispose();
       vertexSelectionOverlay = null;
     }
-    if (!vertexSelectionVisible) return;
+    if (!vertexSelectionVisible && !(activeTool === 'faces' && toolSettings.faces?.geometry)) return;
     const selected = painter.getVertexSelection(selectedTargetId);
     if (!selected?.mesh || !selected.ids.size) return;
     const position = selected.geometry.getAttribute('position');
@@ -314,7 +328,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(values, 3));
     vertexSelectionOverlay = selected.kind === 'face' ?
       new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color: '#70bfff',
-        side: THREE.DoubleSide, transparent: true, opacity: 0.38,
+        side: backfaceCullingEnabled ? THREE.FrontSide : THREE.DoubleSide,
+        transparent: true, opacity: 0.38,
         depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 })) :
       new THREE.Points(geometry, new THREE.PointsMaterial({ color: '#70bfff',
         size: 8, sizeAttenuation: false, depthTest: true, depthWrite: false }));
@@ -325,6 +340,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   let mirrorEnabled = false;
   let samplingMode = 'surface';
   let antialiasEnabled = true;
+  let backfaceCullingEnabled = true;
   let gestureSamplingMode = 'surface';
   let resolveMirrorHit = createModelMirror(model, paintMeshes);
   const raycaster = new THREE.Raycaster();
@@ -361,6 +377,8 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   let pendingDraw = null;
   let drawFrame = null;
   let activeTool = 'brush';
+  let cursorInside = false;
+  let cursorClient = null;
   let pointerAction = null;
   let lastLassoScreen = null;
   let lassoStartScreen = null;
@@ -371,20 +389,64 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   let faceStart = null;
   let faceEnd = null;
   let faceMode = 'replace';
+  let lastGeometryFaceClick = null;
   let spacePressed = false;
   const toolSettings = {};
+
+  function refreshBrushCursor() {
+    if (!cursorInside || !cursorClient || !BRUSH_CURSOR_TOOLS.has(activeTool) ||
+        rightGesture || spacePressed || warpControls.dragging || warpHandleDrag) {
+      brushCursor.hidden = true;
+      return;
+    }
+    const rect = renderer.domElement.getBoundingClientRect();
+    const x = cursorClient.x - rect.left, y = cursorClient.y - rect.top;
+    if (x < 0 || y < 0 || x > rect.width || y > rect.height) {
+      brushCursor.hidden = true;
+      return;
+    }
+    const hit = hitTestAt(cursorClient.x, cursorClient.y);
+    if (!hit || !painter.canPaintAt(hit)) {
+      brushCursor.hidden = true;
+      return;
+    }
+    const size = toolSettings[activeTool]?.size;
+    const viewport = { width: rect.width, height: rect.height };
+    const diameter = activeTool === 'vertexBrush' || activeTool === 'vertexBlur' ?
+      vertexBrushDiameter(hit, camera, viewport, size) :
+      bitmapBrushDiameter(hit, camera, viewport, painter.paintCanvasSizeAt(hit), size);
+    if (!diameter) { brushCursor.hidden = true; return; }
+    brushCursor.style.left = `${x}px`;
+    brushCursor.style.top = `${y}px`;
+    const reach = toolSettings[activeTool]?.brushProfile === 'square' ? Math.SQRT2 : 1;
+    brushCursor.style.width = brushCursor.style.height = `${diameter * reach}px`;
+    brushCursor.hidden = false;
+  }
+
+  function moveBrushCursor(event) {
+    if (event.pointerType === 'touch') { brushCursor.hidden = true; return; }
+    cursorInside = true;
+    cursorClient = { x: event.clientX, y: event.clientY };
+    refreshBrushCursor();
+  }
 
   document.addEventListener('keydown', (event) => {
     if (event.code !== 'Space' || event.target.closest?.('input, textarea, select, [contenteditable]')) return;
     spacePressed = true;
+    refreshBrushCursor();
     event.preventDefault();
   });
   document.addEventListener('keyup', (event) => {
     if (event.code !== 'Space') return;
     spacePressed = false;
+    refreshBrushCursor();
     event.preventDefault();
   });
-  window.addEventListener('blur', () => { spacePressed = false; });
+  window.addEventListener('blur', () => {
+    spacePressed = false;
+    cursorInside = false;
+    brushCursor.hidden = true;
+  });
 
   function hitTestAt(clientX, clientY, selectedOnly = true) {
     const rect = strokeRect ?? renderer.domElement.getBoundingClientRect();
@@ -548,18 +610,11 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       gradientEnd, options, visibleUv, mirror);
   }
 
-  function mirrorHitAt(hit) {
+  function mirrorHitAt(hit, geometric = false) {
     if (!mirrorEnabled || !hit) return null;
     const mirrored = resolveMirrorHit(hit);
     if (!mirrored || painter.targetIdAt(mirrored) !== selectedTargetId) return null;
-    const sameSlot = mirrored.object === hit.object &&
-      mirrored.face?.materialIndex === hit.face?.materialIndex;
-    const uvGap = (a, b) => {
-      const difference = Math.abs(a - b) % 1;
-      return Math.min(difference, 1 - difference);
-    };
-    if (sameSlot && uvGap(hit.uv.x, mirrored.uv.x) < 1 / textureResolution &&
-        uvGap(hit.uv.y, mirrored.uv.y) < 1 / textureResolution) return null;
+    if (isDuplicateMirrorHit(hit, mirrored, textureResolution, geometric)) return null;
     return mirrored;
   }
 
@@ -584,7 +639,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       if (vertexTool) {
         if (hit) painter.paintVertex(hit, kind, options, camera,
           renderer.domElement.getBoundingClientRect().height);
-        const mirrored = mirrorHitAt(hit);
+        const mirrored = mirrorHitAt(hit, true);
         if (mirrored) painter.paintVertex(mirrored, kind, options, camera,
           renderer.domElement.getBoundingClientRect().height);
         continue;
@@ -1072,30 +1127,62 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   function finishFaceSelection(event) {
     if (event.type !== 'pointerup' || !faceStart) return;
     const end = viewportPoint(event);
+    const dragged = Math.hypot(end.x - faceStart.x, end.y - faceStart.y) > 4;
     const target = painter.getFaceTarget(selectedTargetId);
     if (!target || !painter.isMaterialVisible(selectedTargetId)) return;
     let faces = new Set();
-    if (Math.hypot(end.x - faceStart.x, end.y - faceStart.y) > 4) {
+    let clickedFace = null;
+    if (dragged) {
       const rect = { left: faceStart.x, top: faceStart.y,
         right: end.x, bottom: end.y };
       faces = captureVisibleFaces(renderer, camera, target.mesh,
-        target.materialIndex, paintMeshes, rect);
+        toolSettings.faces?.geometry ? null : target.materialIndex, paintMeshes, rect);
       if (mirrorEnabled) {
         const width = renderer.domElement.getBoundingClientRect().width;
         const mirrorCamera = reflectedCamera(camera, resolveMirrorHit.planePoint,
           resolveMirrorHit.planeNormal);
         const mirrored = captureVisibleFaces(renderer, mirrorCamera, target.mesh,
-          target.materialIndex, paintMeshes,
+          toolSettings.faces?.geometry ? null : target.materialIndex, paintMeshes,
           { left: width - rect.right, top: rect.top,
             right: width - rect.left, bottom: rect.bottom });
         for (const index of mirrored) faces.add(index);
       }
     } else {
       const hit = hitTest(event);
-      if (hit?.faceIndex !== undefined) faces.add(hit.faceIndex);
-      const mirrored = mirrorHitAt(hit);
-      if (mirrored?.faceIndex !== undefined) faces.add(mirrored.faceIndex);
+      if (hit?.faceIndex !== undefined &&
+          (!toolSettings.faces?.geometry || hit.object === target.mesh)) {
+        faces.add(hit.faceIndex);
+        clickedFace = hit.faceIndex;
+      }
+      const mirrored = toolSettings.faces?.geometry && mirrorEnabled && hit ?
+        resolveMirrorHit(hit) : mirrorHitAt(hit);
+      if (mirrored?.faceIndex !== undefined &&
+          (!toolSettings.faces?.geometry || mirrored.object === target.mesh))
+        faces.add(mirrored.faceIndex);
     }
+    if (toolSettings.faces?.geometry) {
+      const available = visibleGeometryFaces(target.mesh.geometry,
+        new Set(meshFaces(target.mesh.geometry)));
+      const elapsed = event.timeStamp - (lastGeometryFaceClick?.time ?? -Infinity);
+      const doubleClick = clickedFace !== null && !dragged &&
+        lastGeometryFaceClick?.targetId === selectedTargetId &&
+        lastGeometryFaceClick.face === clickedFace && elapsed >= 0 && elapsed <= 350 &&
+        Math.hypot(end.x - lastGeometryFaceClick.x,
+          end.y - lastGeometryFaceClick.y) <= 6;
+      lastGeometryFaceClick = clickedFace !== null && !dragged && !doubleClick ?
+        { targetId: selectedTargetId, face: clickedFace,
+          x: end.x, y: end.y, time: event.timeStamp } : null;
+      const ids = doubleClick ? connectedVertexFaces(target.mesh.geometry,
+        null, faces, available) :
+        visibleGeometryFaces(target.mesh.geometry, faces);
+      painter.selectVertexElements(selectedTargetId, 'face', ids, faceMode);
+      painter.refreshWireGeometry(target.mesh);
+      updateVertexSelectionOverlay();
+      onSelectionChanged?.(ids.size ? doubleClick ? 'Connected faces selected' :
+        'Geometry faces selected' : 'Geometry selection cleared');
+      return;
+    }
+    lastGeometryFaceClick = null;
     const selected = painter.selectFaces(selectedTargetId, faces, faceMode);
     onSelectionChanged?.(selected ?
       (faceMode === 'subtract' ? 'Faces deselected' : 'Faces selected') :
@@ -1161,11 +1248,11 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       const hit = hitTest(event);
       if (kind === 'face') {
         if (hit?.faceIndex != null) ids.add(hit.faceIndex);
-        const mirrored = mirrorHitAt(hit);
+        const mirrored = mirrorHitAt(hit, true);
         if (mirrored?.faceIndex != null) ids.add(mirrored.faceIndex);
       } else {
         for (const id of pickedVertexIds(hit)) ids.add(id);
-        for (const id of pickedVertexIds(mirrorHitAt(hit))) ids.add(id);
+        for (const id of pickedVertexIds(mirrorHitAt(hit, true))) ids.add(id);
       }
     }
     painter.selectVertexElements(selectedTargetId, kind, ids, faceMode);
@@ -1262,6 +1349,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       rightGesture = { pointerId: event.pointerId, startX: event.clientX,
         startY: event.clientY, lastX: event.clientX, lastY: event.clientY,
         dragging: false, mode: event.shiftKey ? 'pan' : 'orbit' };
+      brushCursor.hidden = true;
       renderer.domElement.setPointerCapture(event.pointerId);
       return;
     }
@@ -1418,7 +1506,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       painter.beginStroke();
       if (activeTool === 'vertexBucket') {
         painter.fillVertex(hit, toolSettings.vertexBucket);
-        if (mirrorEnabled) painter.fillVertex(mirrorHitAt(hit), toolSettings.vertexBucket);
+        if (mirrorEnabled) painter.fillVertex(mirrorHitAt(hit, true), toolSettings.vertexBucket);
       } else if (activeTool === 'bucket') {
         painter.fill(hit, toolSettings.bucket);
         if (mirrorEnabled) painter.fill(mirrorHitAt(hit), toolSettings.bucket);
@@ -1481,6 +1569,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     event.stopImmediatePropagation();
     const gesture = rightGesture;
     rightGesture = null;
+    refreshBrushCursor();
     if (renderer.domElement.hasPointerCapture(event.pointerId))
       renderer.domElement.releasePointerCapture(event.pointerId);
     if (event.type === 'pointerup' && !gesture.dragging) {
@@ -1657,6 +1746,12 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   function bindRendererCanvas(canvas) {
     canvas.tabIndex = -1;
     canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+    canvas.addEventListener('pointerenter', moveBrushCursor);
+    canvas.addEventListener('pointermove', moveBrushCursor, true);
+    canvas.addEventListener('pointerleave', () => {
+      cursorInside = false;
+      brushCursor.hidden = true;
+    });
     canvas.addEventListener('pointerdown', onWarpHandleDown, true);
     canvas.addEventListener('pointermove', onWarpHandleMove, true);
     canvas.addEventListener('pointerup', onWarpHandleEnd, true);
@@ -1670,6 +1765,37 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   }
   bindRendererCanvas(renderer.domElement);
   document.addEventListener('keydown', (event) => {
+    if (activeTool === 'faces' && toolSettings.faces?.geometry &&
+        event.key.toLowerCase() === 'h' && !event.ctrlKey && !event.metaKey &&
+        !event.target.closest?.('input, textarea, select, [contenteditable], .node-editor')) {
+      if (event.altKey) {
+        let changed = false;
+        for (const mesh of painter.getMeshes()) {
+          if (showAllGeometryFaces(mesh.geometry)) {
+            painter.refreshWireGeometry(mesh);
+            changed = true;
+          }
+        }
+        if (changed) {
+          event.preventDefault();
+          onSelectionChanged?.('All geometry faces shown');
+        }
+      } else {
+        const target = painter.getFaceTarget(selectedTargetId);
+        if (!target) return;
+        const selected = painter.getVertexSelection(selectedTargetId);
+        if (selected?.kind === 'face' && selected.ids.size &&
+            hideGeometryFaces(target.mesh.geometry, selected.ids)) {
+          painter.refreshWireGeometry(target.mesh);
+          painter.clearVertexSelection(selectedTargetId);
+          updateVertexSelectionOverlay();
+          lastGeometryFaceClick = null;
+          event.preventDefault();
+          onSelectionChanged?.('Selected geometry faces hidden');
+        }
+      }
+      return;
+    }
     if (event.key === 'Enter' && activeTool === 'curve' &&
         toolSettings.curve?.curveMethod === 'precise' && preciseAnchors.length >= 2 &&
         activePointer === null &&
@@ -1815,6 +1941,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       view: { camera: camera.position.toArray(), target: controls.target.toArray(),
         lighting: currentLightingMode, grid: grid.visible, mirror: mirrorEnabled,
         sampling: samplingMode, antialias: antialiasEnabled,
+        backfaceCulling: backfaceCullingEnabled,
         wireframe: wireframeVisible,
         materials: { visible: visibility.items.map((item) => item.visible),
           transparency: visibility.items.map((item) => item.transparency),
@@ -1916,12 +2043,14 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     if (['faces', 'vertexFaces', 'vertexSelect'].includes(pointerAction))
       renderFaceRectangle();
     else renderLassoPath();
+    refreshBrushCursor();
   }
   new ResizeObserver(resize).observe(host);
   resize();
   const renderFrame = () => { controls.update(); updateLightView(); renderer.render(scene, camera); };
   controls.addEventListener('change', () => {
     if (activeTool === 'curve' && preciseAnchors.length) renderCurvePreview();
+    refreshBrushCursor();
   });
   renderer.setAnimationLoop(renderFrame);
 
@@ -1959,6 +2088,11 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       painter.setWireframeEnabled(wireframeVisible);
     },
     setAntialiasEnabled,
+    setBackfaceCullingEnabled: (enabled) => {
+      backfaceCullingEnabled = Boolean(enabled);
+      painter.setBackfaceCullingEnabled(backfaceCullingEnabled);
+      updateVertexSelectionOverlay();
+    },
     setProjectionTarget,
     beginProjectionPreview: painter.beginProjectionPreview,
     previewProjectionGraph: painter.previewProjectionGraph,
@@ -1995,6 +2129,9 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         lassoMode = 'replace'; renderLassoPath();
       }
       activeTool = tool;
+      lastGeometryFaceClick = null;
+      updateVertexSelectionOverlay();
+      refreshBrushCursor();
       if ((tool === 'lasso' || tool === 'wand' || tool === 'faces') && toolSettings[tool]) {
         painter.setMaskEnabled(toolSettings[tool].maskEnabled);
         painter.setBlurSelectionIsolation(toolSettings[tool].isolateBlur);
@@ -2003,7 +2140,11 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     setToolSettings: (tool, settings) => {
       if (tool === 'curve' && toolSettings.curve?.curveMethod !== settings.curveMethod)
         resetCurve(true);
+      const geometryChanged = tool === 'faces' && toolSettings.faces?.geometry !== settings.geometry;
       toolSettings[tool] = { ...settings };
+      if (geometryChanged) lastGeometryFaceClick = null;
+      if (geometryChanged) updateVertexSelectionOverlay();
+      if (tool === activeTool) refreshBrushCursor();
       if (tool === 'stamp' && pointerAction === 'stamp') renderStampPreview();
       if (tool === 'curve' && (curvePoints.length || preciseAnchors.length))
         renderCurvePreview();
@@ -2014,25 +2155,50 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     },
     clearSelection: () => {
       lassoSourceHit = null; lassoPath = []; renderLassoPath();
+      if (activeTool === 'faces' && toolSettings.faces?.geometry) {
+        const changed = painter.clearVertexSelection(selectedTargetId);
+        updateVertexSelectionOverlay();
+        return changed;
+      }
       return painter.clearSelection();
     },
     invertSelection: () => {
+      if (activeTool === 'faces' && toolSettings.faces?.geometry) {
+        const target = painter.getFaceTarget(selectedTargetId);
+        if (!target || !painter.isMaterialVisible(selectedTargetId)) return false;
+        const selected = painter.getVertexSelection(selectedTargetId);
+        const ids = invertVisibleGeometryFaces(target.mesh.geometry,
+          new Set(meshFaces(target.mesh.geometry)),
+          selected?.kind === 'face' ? selected.ids : new Set());
+        painter.selectVertexElements(selectedTargetId, 'face', ids);
+        painter.refreshWireGeometry(target.mesh);
+        updateVertexSelectionOverlay();
+        lastGeometryFaceClick = null;
+        return true;
+      }
       if (!vertexSelectionVisible) return painter.invertSelection();
       const changed = painter.editVertexSelection(selectedTargetId);
       if (changed) updateVertexSelectionOverlay();
       return changed;
     },
-    canInvertSelection: () => vertexSelectionVisible ?
+    canInvertSelection: () => activeTool === 'faces' && toolSettings.faces?.geometry ?
+      !!painter.getFaceTarget(selectedTargetId) && painter.isMaterialVisible(selectedTargetId) :
+      vertexSelectionVisible ?
       painter.canEditVertexSelection(selectedTargetId, false) : painter.canInvertSelection(),
     resizeSelection: (amount, expand) => {
-      if (!vertexSelectionVisible) return painter.resizeSelection(amount, expand);
-      const changed = painter.editVertexSelection(selectedTargetId, amount, expand);
+      if (!vertexSelectionVisible &&
+          !(activeTool === 'faces' && toolSettings.faces?.geometry))
+        return painter.resizeSelection(amount, expand);
+      const changed = painter.editVertexSelection(selectedTargetId, amount, expand,
+        activeTool === 'faces' && Boolean(toolSettings.faces?.geometry));
       if (changed) updateVertexSelectionOverlay();
       return changed;
     },
-    canResizeSelection: () => vertexSelectionVisible ?
+    canResizeSelection: () => vertexSelectionVisible ||
+      (activeTool === 'faces' && toolSettings.faces?.geometry) ?
       painter.canEditVertexSelection(selectedTargetId) : painter.canResizeSelection(),
-    getSelectionUnit: () => vertexSelectionVisible ?
+    getSelectionUnit: () => activeTool === 'faces' && toolSettings.faces?.geometry ? 'faces' :
+      vertexSelectionVisible ?
       painter.getVertexSelection(selectedTargetId)?.kind === 'vertex' ? 'vertices' : 'faces' :
       'pixels',
     undo: () => warpControls.dragging || warpHandleDrag ? false : painter.undo(),

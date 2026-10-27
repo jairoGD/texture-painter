@@ -42,6 +42,9 @@ export function rasterizeVertexColors(geometry, slotIndex, size) {
       const w2 = 1 - w0 - w1;
       if (w0 < -0.00001 || w1 < -0.00001 || w2 < -0.00001) continue;
       const pixel = y * size + x;
+      // Mirror modifiers append generated faces after the original mesh.
+      // Keep the first face at a shared UV pixel when converting to a bitmap.
+      if (coverage[pixel]) continue;
       coverage[pixel] = 1;
       const offset = pixel * 4;
       pixels[offset] = encode(color.getX(a) * w0 + color.getX(b) * w1 + color.getX(c) * w2);

@@ -39,6 +39,42 @@ test('vertex color bake respects indexed material groups and vertex alpha', () =
   assert.ok(second[upperLeft + 3] > 0);
 });
 
+test('overlapping UVs keep the original first face without changing UVs', () => {
+  const geometry = new BufferGeometry();
+  const originalUv = [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1];
+  geometry.setAttribute('uv', new Float32BufferAttribute(originalUv, 2));
+  geometry.setAttribute('color', new Float32BufferAttribute([
+    1, 0, 0, 1, 0, 0, 1, 0, 0,
+    0, 0, 1, 0, 0, 1, 0, 0, 1
+  ], 3));
+  const pixels = rasterizeVertexColors(geometry, 0, 32);
+  const center = (24 * 32 + 8) * 4;
+  assert.equal(pixels[center], 255);
+  assert.equal(pixels[center + 2], 0);
+  assert.deepEqual(Array.from(geometry.getAttribute('uv').array), originalUv);
+  assert.equal(geometry.getAttribute('uv1'), undefined);
+});
+
+test('the original half wins regardless of its X orientation', () => {
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new Float32BufferAttribute([
+    1, 0, 0, 2, 0, 0, 1, 1, 0,
+    -2, 0, 0, -1, 0, 0, -2, 1, 0
+  ], 3));
+  const originalUv = [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1];
+  geometry.setAttribute('uv', new Float32BufferAttribute(originalUv, 2));
+  geometry.setAttribute('color', new Float32BufferAttribute([
+    1, 0, 0, 1, 0, 0, 1, 0, 0,
+    0, 0, 1, 0, 0, 1, 0, 0, 1
+  ], 3));
+  const pixel = (24 * 32 + 8) * 4;
+  const pixels = rasterizeVertexColors(geometry, 0, 32);
+  assert.equal(pixels[pixel], 255);
+  assert.equal(pixels[pixel + 2], 0);
+  assert.deepEqual(Array.from(geometry.getAttribute('uv').array), originalUv);
+  assert.equal(geometry.getAttribute('uv1'), undefined);
+});
+
 test('vertex color bake pads UV island edges without filling the empty atlas', () => {
   const geometry = new BufferGeometry();
   geometry.setAttribute('uv', new Float32BufferAttribute([

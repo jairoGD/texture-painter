@@ -26,8 +26,9 @@ import { createCurveTextureSampler, sampleCurveTexturePixel } from './curve-text
 import { createStampTextureSampler } from './stamp-texture.js';
 import { projectSurfaceCurve } from './surface-curve-paint.js';
 import { clearTriplanarLookup } from './triplanar-raster.js';
-import { clearVertexPaintCache, fillVertexColors, materialVertexIndices,
+import { clearVertexPaintCache, ensureVertexColors, fillVertexColors, materialVertexIndices,
   paintVertexColors } from './vertex-paint.js';
+import { graphBelowVertexLayer, vertexDisplayPlan } from './vertex-display.js';
 import { invertVertexFaces, resizeVertexFaces } from './vertex-face-selection.js';
 import { invertVertexPoints, resizeVertexPoints } from './vertex-point-selection.js';
 import { applyMaterialTransparency, normalizeMaterialTransparency } from
@@ -46,6 +47,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
   let renderer = initialRenderer;
   const surfaces = new Map();
   let lightingMode = 'shaded';
+  let backfaceCullingEnabled = true;
   let antialiasEnabled = true;
   let wireframeEnabled = false;
   let undoStack = [];
@@ -136,7 +138,8 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     if (!projectionPreview) return;
     const { surface, texture, frame } = projectionPreview;
     if (frame !== null) cancelAnimationFrame(frame);
-    surface.shaded.map = surface.unlit.map = surface.texture;
+    surface.shaded.map = surface.unlit.map =
+      surface.vertexPlan ? surface.vertexBaseTexture : surface.texture;
     surface.shaded.needsUpdate = surface.unlit.needsUpdate = true;
     texture.dispose();
     projectionPreview = null;
@@ -153,8 +156,25 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
     configureTextureSampling(texture, antialiasEnabled);
-    const shaded = new THREE.MeshStandardMaterial({ map: texture, color: '#ffffff', roughness: 0.8, metalness: 0, side: original?.side ?? THREE.FrontSide });
-    const unlit = new THREE.MeshBasicMaterial({ map: texture, color: '#ffffff', side: original?.side ?? THREE.FrontSide, toneMapped: false });
+    const side = backfaceCullingEnabled ? THREE.FrontSide : THREE.DoubleSide;
+    const shaded = new THREE.MeshStandardMaterial({ map: texture, color: '#ffffff', roughness: 0.8, metalness: 0, side });
+    const unlit = new THREE.MeshBasicMaterial({ map: texture, color: '#ffffff', side, toneMapped: false });
+    const vertexBlend = { value: 0 };
+    for (const material of [shaded, unlit]) material.onBeforeCompile = (shader) => {
+      shader.uniforms.vertexPaintFactor = vertexBlend;
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <color_fragment>', [
+          '#if defined( USE_COLOR ) || defined( USE_COLOR_ALPHA )',
+          'diffuseColor.rgb = mix(diffuseColor.rgb, vColor.rgb, vertexPaintFactor);',
+          '#endif',
+          '#ifdef USE_COLOR_ALPHA',
+          'diffuseColor.a = mix(diffuseColor.a, vColor.a, vertexPaintFactor);',
+          '#endif'
+        ].join(String.fromCharCode(10)));
+      shader.fragmentShader = shader.fragmentShader.replace('#include <common>', [
+        '#include <common>', 'uniform float vertexPaintFactor;'
+      ].join(String.fromCharCode(10)));
+    };
     const overlayCanvas = document.createElement('canvas');
     overlayCanvas.width = overlayCanvas.height = SIZE;
     const overlayContext = overlayCanvas.getContext('2d');
@@ -166,8 +186,9 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       blendEquation: THREE.AddEquation, blendSrc: THREE.OneMinusDstColorFactor,
       blendDst: THREE.ZeroFactor, blendSrcAlpha: THREE.ZeroFactor,
       blendDstAlpha: THREE.OneFactor, depthWrite: false, polygonOffset: true,
-      polygonOffsetFactor: -2, side: THREE.DoubleSide, toneMapped: false });
+      polygonOffsetFactor: -2, side, toneMapped: false });
     const surface = { canvas, context, compositeCanvas, compositeContext, texture, shaded, unlit,
+      vertexBlend, vertexPlan: null, vertexBaseKey: null, vertexBaseTexture: null,
       overlayCanvas, overlayContext, overlayTexture, overlayMaterial, graph: createTextureGraph(),
       imageAssets: new Map(), imageCache: new Map(), compositeFrame: null,
       compositeDirty: [], compositeLastDirty: null, compositeRevision: 0,
@@ -222,6 +243,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       surface.compositeSource = null;
       surface.graphPaintCache = null;
       renderTextureGraph(surface);
+      updateVertexBase(surface);
       surface.compositeLastDirty = null;
       surface.compositeRevision++;
     };
@@ -258,11 +280,47 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
           } catch { partial = false; renderTextureGraph(surface); }
         }
         surface.compositeLastDirty = partial ? dirty : null;
+        updateVertexBase(surface);
         surface.compositeRevision++;
       });
     };
     surface.refreshComposite();
     return surface;
+  }
+
+  function updateVertexBase(surface) {
+    if (!surface.vertexPlan) return;
+    const key = JSON.stringify(surface.graph) + ':' +
+      [...surface.imageAssets].map(([id, asset]) => `${id}:${asset.revision}`).join('|');
+    if (key === surface.vertexBaseKey) return;
+    if (!surface.vertexBaseTexture) {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = SIZE;
+      surface.vertexBaseTexture = new THREE.CanvasTexture(canvas);
+      surface.vertexBaseTexture.colorSpace = THREE.SRGBColorSpace;
+      surface.vertexBaseTexture.wrapS = surface.vertexBaseTexture.wrapT = THREE.RepeatWrapping;
+      configureTextureSampling(surface.vertexBaseTexture, antialiasEnabled);
+    }
+    const compositeCanvas = surface.vertexBaseTexture.image;
+    renderTextureGraph({ ...surface, graph: graphBelowVertexLayer(surface.graph, surface.vertexPlan),
+      compositeCanvas, compositeContext: compositeCanvas.getContext('2d'),
+      texture: surface.vertexBaseTexture, graphPaintCache: null });
+    surface.vertexBaseKey = key;
+  }
+
+  function updateVertexDisplay(surface) {
+    surface.vertexPlan = vertexDisplayPlan(surface.graph);
+    surface.vertexBaseKey = null;
+    if (surface.vertexPlan) {
+      ensureVertexColors(surface.geometry);
+      surface.vertexBlend.value = surface.vertexPlan.factor;
+      updateVertexBase(surface);
+    } else surface.vertexBlend.value = 0;
+    for (const material of [surface.shaded, surface.unlit]) {
+      material.vertexColors = Boolean(surface.vertexPlan);
+      material.map = surface.vertexPlan ? surface.vertexBaseTexture : surface.texture;
+      material.needsUpdate = true;
+    }
   }
 
   function setMeshMaterial(record) {
@@ -284,7 +342,8 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       for (const surface of record.slots) {
         if (surface.compositeFrame !== null) cancelAnimationFrame(surface.compositeFrame);
         clearTimeout(surface.mipmapIdleTimer);
-        surface.texture.dispose(); surface.shaded.dispose(); surface.unlit.dispose();
+        surface.texture.dispose(); surface.vertexBaseTexture?.dispose();
+        surface.shaded.dispose(); surface.unlit.dispose();
         surface.uploadTexture?.dispose();
         surface.overlayUploadTexture?.dispose();
         surface.overlayTexture.dispose(); surface.overlayMaterial.dispose();
@@ -387,9 +446,35 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     for (const record of surfaces.values()) setMeshMaterial(record);
   }
 
+  function setBackfaceCullingEnabled(enabled) {
+    backfaceCullingEnabled = Boolean(enabled);
+    const side = backfaceCullingEnabled ? THREE.FrontSide : THREE.DoubleSide;
+    for (const record of surfaces.values()) {
+      for (const surface of record.slots)
+        for (const material of [surface.shaded, surface.unlit, surface.overlayMaterial]) {
+          material.side = side;
+          material.needsUpdate = true;
+        }
+      const wireMaterials = Array.isArray(record.wireMaterial) ?
+        record.wireMaterial : [record.wireMaterial];
+      for (const material of wireMaterials) if (material.isMeshBasicMaterial) {
+        material.side = side;
+        material.needsUpdate = true;
+      }
+    }
+  }
+
   function setWireframeEnabled(enabled) {
     wireframeEnabled = Boolean(enabled);
     updateMaterialVisibility();
+  }
+
+  function refreshWireGeometry(mesh) {
+    const record = surfaces.get(mesh);
+    if (!record?.wireGeometry) return;
+    record.wireGeometry.dispose();
+    record.wireGeometry = new THREE.EdgesGeometry(mesh.geometry, 1);
+    record.wire.geometry = record.wireGeometry;
   }
 
   function setAntialiasEnabled(enabled) {
@@ -399,6 +484,8 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       surface.mipmapIdleTimer = null;
       surface.mipmapDeferred = false;
       configureTextureSampling(surface.texture, antialiasEnabled);
+      if (surface.vertexBaseTexture)
+        configureTextureSampling(surface.vertexBaseTexture, antialiasEnabled);
     }
     if (projectionPreview) configureTextureSampling(projectionPreview.texture, antialiasEnabled);
   }
@@ -409,6 +496,10 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
 
   function surfaceAt(hit) {
     return hit?.uv ? surfaces.get(hit.object)?.slots[hit.face?.materialIndex ?? 0]?.activePaint ?? null : null;
+  }
+  function paintCanvasSizeAt(hit) {
+    const canvas = surfaceAt(hit)?.canvas;
+    return canvas ? { width: canvas.width, height: canvas.height } : null;
   }
   function topologyFor(parent, canvas) {
     parent.topologies ??= new Map();
@@ -924,6 +1015,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     else geometry.deleteAttribute('color');
     for (const record of surfaces.values()) for (const surface of record.slots)
       if (surface.geometry === geometry) {
+        if (surface.vertexPlan) ensureVertexColors(geometry);
         for (const key of surface.imageCache.keys())
           if (key.startsWith('vertex-color:')) surface.imageCache.delete(key);
         surface.requestComposite();
@@ -1013,7 +1105,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       (!requireSelected || selected.ids.size > 0) &&
       !lassoDraft && !movePreview && !activeStroke && !linePreview && !filterSession;
   }
-  function editVertexSelection(targetId, amount = 0, expand = true) {
+  function editVertexSelection(targetId, amount = 0, expand = true, meshWide = false) {
     if (!canEditVertexSelection(targetId, amount !== 0) ||
         (amount !== 0 && (!Number.isInteger(amount) || amount < 1 || amount > 100)))
       return false;
@@ -1023,7 +1115,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     const geometry = parent.geometry, slotIndex = parent.slotIndex;
     let next;
     if (selected.kind === 'face') next = amount ?
-      resizeVertexFaces(geometry, slotIndex, selected.ids, amount, expand) :
+      resizeVertexFaces(geometry, meshWide ? null : slotIndex, selected.ids, amount, expand) :
       invertVertexFaces(geometry, slotIndex, selected.ids);
     else next = amount ?
       resizeVertexPoints(geometry, slotIndex, selected.ids, amount, expand) :
@@ -1853,6 +1945,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     const surface = findSurface(targetId);
     if (!surface) return false;
     surface.graph = cloneTextureGraph(graph);
+    updateVertexDisplay(surface);
     if (surface.activePaint && !surface.graph.nodes.some((node) =>
       node.type === 'image' && surface.imageAssets.get(node.imageKey)?.paintSurface === surface.activePaint)) {
       const next = readLayerStack(surface.graph).layers[0]?.source;
@@ -1946,7 +2039,12 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
         createImage(surface.id, asset.key.split(':')[0], image, asset.name, asset.key,
           asset.imported ?? (image.width !== SIZE || image.height !== SIZE));
       }
-      setGraph(surface.id, saved.graph);
+      const graph = cloneTextureGraph(saved.graph);
+      for (const node of graph.nodes) if (node.specialUv === 'mirror-split') {
+        node.vertexColor = true;
+        delete node.specialUv;
+      }
+      setGraph(surface.id, graph);
     }
   }
 
@@ -1967,6 +2065,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     canResizeSelection: () => !!selection?.indices.length && !lassoDraft && !movePreview,
     canCopySelection: () => !!selection?.indices.length && !lassoDraft && !movePreview,
     canPasteSelection: () => !!clipboard, getLayerImage, getImageInfo, getCompositePreview,
+    paintCanvasSizeAt,
     getExportTextures, exportProjectVertexColors, restoreProjectVertexColors,
     canFilter, beginFilter, previewFilter, applyFilter, cancelFilter,
     setMaskEnabled: (enabled) => { maskEnabled = enabled; },
@@ -1974,7 +2073,8 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     beginStroke, endStroke, recordCurveDraftChange, undo, redo,
     canUndo: () => undoStack.length > 0 && !filterSession,
     canRedo: () => redoStack.length > 0 && !filterSession, setLightingMode,
-    setWireframeEnabled, setAntialiasEnabled,
+    setBackfaceCullingEnabled,
+    setWireframeEnabled, refreshWireGeometry, setAntialiasEnabled,
     setRenderer: (nextRenderer) => { renderer = nextRenderer; },
     getMeshes: () => [...surfaces.keys()], getFaceTarget,
     getMaterialVisibilityState, setMaterialVisibility, toggleMaterialIsolation,

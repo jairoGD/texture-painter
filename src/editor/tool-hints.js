@@ -17,6 +17,8 @@ const TOOL_HINTS = {
 };
 
 export function toolHint(toolId, settings = {}) {
+  if (toolId === 'faces' && settings.geometry)
+    return 'Click/Drag: select faces · Double-click: connected faces · Ctrl+I: invert · H: hide · Alt+H: show all';
   if (toolId === 'stamp') return settings.stroke ?
     settings.proportionalStroke === false ?
       'Drag: stretch length · Size: fixed width · Right-click: pick color' :

@@ -21,14 +21,28 @@ const faceIdMaterial = new THREE.ShaderMaterial({
   side: THREE.DoubleSide,
   toneMapped: false
 });
+const frontFaceIdMaterial = faceIdMaterial.clone();
+frontFaceIdMaterial.side = THREE.FrontSide;
 const occluderMaterial = new THREE.MeshBasicMaterial({
   color: 0xffffff, side: THREE.DoubleSide, toneMapped: false
 });
+const frontOccluderMaterial = occluderMaterial.clone();
+frontOccluderMaterial.side = THREE.FrontSide;
 const invisibleMaterial = new THREE.MeshBasicMaterial({ visible: false });
+
+function pickingMaterial(material, selected) {
+  if (material?.visible === false) return invisibleMaterial;
+  const front = material?.side === THREE.FrontSide;
+  return selected ? front ? frontFaceIdMaterial : faceIdMaterial :
+    front ? frontOccluderMaterial : occluderMaterial;
+}
 
 function indexedFacesGeometry(source) {
   const cached = faceGeometryCache.get(source);
-  if (cached) return cached;
+  const position = source.getAttribute('position');
+  const version = position?.version;
+  if (cached?.position === position && cached.version === version) return cached.geometry;
+  cached?.geometry.dispose();
   const geometry = source.index ? source.toNonIndexed() : source.clone();
   const count = Math.floor(geometry.getAttribute('position').count / 3);
   if (count >= 0xfffffe) throw new Error('This mesh has too many faces for box selection.');
@@ -43,7 +57,7 @@ function indexedFacesGeometry(source) {
     }
   }
   geometry.setAttribute('faceCode', new THREE.Uint8BufferAttribute(colors, 3, true));
-  faceGeometryCache.set(source, geometry);
+  faceGeometryCache.set(source, { geometry, position, version });
   return geometry;
 }
 
@@ -91,10 +105,10 @@ export function captureVisibleFaces(renderer, camera, targetMesh, materialIndex,
     const selected = candidate === targetMesh;
     const geometry = selected ? indexedFacesGeometry(candidate.geometry) : candidate.geometry;
     const materials = Array.isArray(candidate.material) ?
-      candidate.material.map((material, index) => material.visible === false ? invisibleMaterial :
-        selected && index === materialIndex ? faceIdMaterial : occluderMaterial) :
-      candidate.material.visible === false ? invisibleMaterial :
-        selected && materialIndex === 0 ? faceIdMaterial : occluderMaterial;
+      candidate.material.map((material, index) => pickingMaterial(material,
+        selected && (materialIndex == null || index === materialIndex))) :
+      pickingMaterial(candidate.material,
+        selected && (materialIndex == null || materialIndex === 0));
     pickScene.add(proxyFor(candidate, geometry, materials));
   }
   const previousTarget = renderer.getRenderTarget();
