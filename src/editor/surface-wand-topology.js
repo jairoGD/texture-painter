@@ -1,3 +1,5 @@
+import { hiddenGeometryFaces } from './face-visibility.js';
+
 // Maps texture pixels to mesh faces and joins the two sides of UV seams.
 // Built once per material and texture size; pixel colors are read separately per click.
 export function surfaceWandTopology(geometry, materialIndex, width, height = width) {
@@ -5,6 +7,7 @@ export function surfaceWandTopology(geometry, materialIndex, width, height = wid
   const position = geometry.getAttribute('position');
   const index = geometry.getIndex();
   const faceCount = Math.floor((index?.count ?? uv?.count ?? 0) / 3);
+  const hiddenFaces = hiddenGeometryFaces(geometry);
   const owners = new Uint32Array(width * height);
   const adjacent = new Map();
   const portals = new Map();
@@ -31,7 +34,7 @@ export function surfaceWandTopology(geometry, materialIndex, width, height = wid
   const wrap = (value) => ((value % 1) + 1) % 1;
 
   for (let face = 0; face < faceCount; face++) {
-    if (!belongs(face)) continue;
+    if (!belongs(face) || hiddenFaces?.has(face)) continue;
     const vertices = [0, 1, 2].map((corner) => vertex(face, corner));
     const points = vertices.map((v) => ({ x: uv.getX(v), y: 1 - uv.getY(v) }));
     triangles.set(face, points);

@@ -12,7 +12,7 @@ const TOOL_HINTS = {
   blur: 'Drag: soften painted pixels · A selection limits the effect',
   lasso: 'Drag: select area · Shift+Drag: add · Alt+Drag: subtract · Drag inside: move',
   wand: 'Click: select matching pixels · Shift+Click: add · Alt+Click: subtract',
-  faces: 'Click: select face · Drag: box select · Shift+Click/Drag: add · Alt+Click/Drag: subtract',
+  faces: 'Click: select face · Double-click: connected faces · Drag: box select · Shift: add · Alt: subtract',
   eyedropper: 'Click: pick color from the model'
 };
 

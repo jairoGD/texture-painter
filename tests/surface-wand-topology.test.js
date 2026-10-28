@@ -3,6 +3,7 @@ import test from 'node:test';
 import * as THREE from 'three';
 import { surfaceWandTopology } from '../src/editor/surface-wand-topology.js';
 import { wandSelectionMask } from '../src/editor/wand-selection.js';
+import { hideGeometryFaces } from '../src/editor/face-visibility.js';
 
 function triangleGeometry() {
   const geometry = new THREE.BufferGeometry();
@@ -54,4 +55,13 @@ test('surface wand stops at a painted boundary on the neighboring UV island', ()
     first % width, Math.floor(first / width), 0, false, topology, 0);
   assert.equal(mask[first], 255);
   assert.equal(mask[second], 0);
+});
+
+test('surface wand excludes faces hidden by Geometry selection', () => {
+  const geometry = triangleGeometry();
+  assert.equal(hideGeometryFaces(geometry, new Set([1])), true);
+  const topology = surfaceWandTopology(geometry, 0, 64);
+  assert.ok(topology.owners.includes(1));
+  assert.equal(topology.owners.includes(2), false);
+  assert.ok(topology.owners.includes(3));
 });

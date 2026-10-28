@@ -8,7 +8,7 @@ import { captureVisibleUv, decodeVisibleUv, projectLassoToUv } from './screen-la
 import { captureVisibleFaces } from './screen-face-selection.js';
 import { hideGeometryFaces, invertVisibleGeometryFaces, showAllGeometryFaces,
   visibleGeometryFaces } from './face-visibility.js';
-import { connectedVertexFaces, meshFaces } from './vertex-face-selection.js';
+import { connectedVertexFaces, materialFaces, meshFaces } from './vertex-face-selection.js';
 import { sampleScreenStroke } from './surface-stroke.js';
 import { sampleThroughLine } from './through-line.js';
 import { lineStylePaths, styledPolylinePaths } from './line-style.js';
@@ -389,7 +389,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   let faceStart = null;
   let faceEnd = null;
   let faceMode = 'replace';
-  let lastGeometryFaceClick = null;
+  let lastFaceClick = null;
   let spacePressed = false;
   const toolSettings = {};
 
@@ -1160,18 +1160,18 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
           (!toolSettings.faces?.geometry || mirrored.object === target.mesh))
         faces.add(mirrored.faceIndex);
     }
+    const elapsed = event.timeStamp - (lastFaceClick?.time ?? -Infinity);
+    const doubleClick = clickedFace !== null && !dragged &&
+      lastFaceClick?.targetId === selectedTargetId &&
+      lastFaceClick?.geometry === Boolean(toolSettings.faces?.geometry) &&
+      lastFaceClick.face === clickedFace && elapsed >= 0 && elapsed <= 350 &&
+      Math.hypot(end.x - lastFaceClick.x, end.y - lastFaceClick.y) <= 6;
+    lastFaceClick = clickedFace !== null && !dragged && !doubleClick ?
+      { targetId: selectedTargetId, geometry: Boolean(toolSettings.faces?.geometry),
+        face: clickedFace, x: end.x, y: end.y, time: event.timeStamp } : null;
     if (toolSettings.faces?.geometry) {
       const available = visibleGeometryFaces(target.mesh.geometry,
         new Set(meshFaces(target.mesh.geometry)));
-      const elapsed = event.timeStamp - (lastGeometryFaceClick?.time ?? -Infinity);
-      const doubleClick = clickedFace !== null && !dragged &&
-        lastGeometryFaceClick?.targetId === selectedTargetId &&
-        lastGeometryFaceClick.face === clickedFace && elapsed >= 0 && elapsed <= 350 &&
-        Math.hypot(end.x - lastGeometryFaceClick.x,
-          end.y - lastGeometryFaceClick.y) <= 6;
-      lastGeometryFaceClick = clickedFace !== null && !dragged && !doubleClick ?
-        { targetId: selectedTargetId, face: clickedFace,
-          x: end.x, y: end.y, time: event.timeStamp } : null;
       const ids = doubleClick ? connectedVertexFaces(target.mesh.geometry,
         null, faces, available) :
         visibleGeometryFaces(target.mesh.geometry, faces);
@@ -1182,10 +1182,13 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         'Geometry faces selected' : 'Geometry selection cleared');
       return;
     }
-    lastGeometryFaceClick = null;
+    if (doubleClick) faces = connectedVertexFaces(target.mesh.geometry,
+      target.materialIndex, faces, visibleGeometryFaces(target.mesh.geometry,
+        new Set(materialFaces(target.mesh.geometry, target.materialIndex))));
     const selected = painter.selectFaces(selectedTargetId, faces, faceMode);
     onSelectionChanged?.(selected ?
-      (faceMode === 'subtract' ? 'Faces deselected' : 'Faces selected') :
+      (doubleClick ? 'Connected faces selected' :
+        faceMode === 'subtract' ? 'Faces deselected' : 'Faces selected') :
       faceMode === 'replace' ? 'Selection cleared' : 'Selection unchanged');
   }
 
@@ -1773,6 +1776,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         for (const mesh of painter.getMeshes()) {
           if (showAllGeometryFaces(mesh.geometry)) {
             painter.refreshWireGeometry(mesh);
+            painter.geometryVisibilityChanged(mesh);
             changed = true;
           }
         }
@@ -1787,9 +1791,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         if (selected?.kind === 'face' && selected.ids.size &&
             hideGeometryFaces(target.mesh.geometry, selected.ids)) {
           painter.refreshWireGeometry(target.mesh);
+          painter.geometryVisibilityChanged(target.mesh);
           painter.clearVertexSelection(selectedTargetId);
           updateVertexSelectionOverlay();
-          lastGeometryFaceClick = null;
+          lastFaceClick = null;
           event.preventDefault();
           onSelectionChanged?.('Selected geometry faces hidden');
         }
@@ -2129,7 +2134,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         lassoMode = 'replace'; renderLassoPath();
       }
       activeTool = tool;
-      lastGeometryFaceClick = null;
+      lastFaceClick = null;
       updateVertexSelectionOverlay();
       refreshBrushCursor();
       if ((tool === 'lasso' || tool === 'wand' || tool === 'faces') && toolSettings[tool]) {
@@ -2142,7 +2147,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         resetCurve(true);
       const geometryChanged = tool === 'faces' && toolSettings.faces?.geometry !== settings.geometry;
       toolSettings[tool] = { ...settings };
-      if (geometryChanged) lastGeometryFaceClick = null;
+      if (geometryChanged) lastFaceClick = null;
       if (geometryChanged) updateVertexSelectionOverlay();
       if (tool === activeTool) refreshBrushCursor();
       if (tool === 'stamp' && pointerAction === 'stamp') renderStampPreview();
@@ -2173,7 +2178,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
         painter.selectVertexElements(selectedTargetId, 'face', ids);
         painter.refreshWireGeometry(target.mesh);
         updateVertexSelectionOverlay();
-        lastGeometryFaceClick = null;
+        lastFaceClick = null;
         return true;
       }
       if (!vertexSelectionVisible) return painter.invertSelection();

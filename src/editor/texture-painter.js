@@ -3,6 +3,8 @@ import { executePaintCommand, samplePaintColor } from './paint-operations.js';
 import { combineSelectionAlpha, combineSelectionParts, containsSelection, invertSelectionAlpha, moveSelectionInView, selectionFromAlpha,
   selectionFromMask, visibleSelectionSamples } from './lasso-selection.js';
 import { faceUvMask } from './face-uv-mask.js';
+import { hiddenGeometryFaces, visibleGeometryFaces,
+  visibleVertexPaintScope } from './face-visibility.js';
 import { addTextureNode, blendCanvases, cloneTextureGraph, connectTextureNodes,
   createTextureGraph, evaluateTextureNode, removeTextureNode, renderTextureGraph,
   vertexColorImage } from './texture-graph.js';
@@ -29,7 +31,7 @@ import { clearTriplanarLookup } from './triplanar-raster.js';
 import { clearVertexPaintCache, ensureVertexColors, fillVertexColors, materialVertexIndices,
   paintVertexColors } from './vertex-paint.js';
 import { graphBelowVertexLayer, vertexDisplayPlan } from './vertex-display.js';
-import { invertVertexFaces, resizeVertexFaces } from './vertex-face-selection.js';
+import { invertVertexFaces, materialFaces, resizeVertexFaces } from './vertex-face-selection.js';
 import { invertVertexPoints, resizeVertexPoints } from './vertex-point-selection.js';
 import { applyMaterialTransparency, normalizeMaterialTransparency } from
   './material-transparency.js';
@@ -54,6 +56,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
   let redoStack = [];
   let activeStroke = null;
   const vertexSelections = new Map();
+  const visibilityMasks = new Map();
   let linePreview = null;
   let filterSession = null;
   let selection = null;
@@ -330,6 +333,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
 
   function clear() {
     vertexSelections.clear();
+    visibilityMasks.clear();
     clearTriplanarLookup();
     endProjectionPreview();
     for (const record of surfaces.values()) {
@@ -477,6 +481,21 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     record.wire.geometry = record.wireGeometry;
   }
 
+  function geometryVisibilityChanged(mesh) {
+    const record = surfaces.get(mesh);
+    if (!record) return;
+    clearVertexPaintCache(mesh.geometry);
+    for (const surface of record.slots) {
+      surface.topologies?.clear();
+      for (const key of visibilityMasks.keys())
+        if (key.startsWith(`${surface.id}:`)) visibilityMasks.delete(key);
+    }
+    if (selection && record.slots.some((surface) => surface.id === selection.surface.id)) {
+      const next = constrainSelectionToVisibleFaces(selection);
+      if (next !== selection) { selection = next; renderOverlay(); }
+    }
+  }
+
   function setAntialiasEnabled(enabled) {
     antialiasEnabled = Boolean(enabled);
     for (const record of surfaces.values()) for (const surface of record.slots) {
@@ -494,6 +513,67 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     return uvToLayerPixel(uv, canvas);
   }
 
+  function maskPixels(canvas) {
+    const pixels = canvas.getContext('2d', { willReadFrequently: true })
+      .getImageData(0, 0, canvas.width, canvas.height).data;
+    const alpha = new Uint8Array(canvas.width * canvas.height);
+    for (let index = 0; index < alpha.length; index++) alpha[index] = pixels[index * 4 + 3];
+    return { canvas, alpha, bounds: { left: 0, top: 0,
+      right: canvas.width, bottom: canvas.height } };
+  }
+
+  function visibilityMaskForLayer(parent, canvas) {
+    const hidden = parent && hiddenGeometryFaces(parent.geometry);
+    if (!hidden?.size) return null;
+    const key = `${parent.id}:${canvas.width}:${canvas.height}`;
+    const cached = visibilityMasks.get(key);
+    if (cached?.hidden === hidden && cached.hiddenCount === hidden.size) return cached.mask;
+    const materialFaceIds = materialFaces(parent.geometry, parent.slotIndex);
+    const hiddenInMaterial = new Set(materialFaceIds.filter((face) => hidden.has(face)));
+    if (!hiddenInMaterial.size) {
+      visibilityMasks.set(key, { hidden, hiddenCount: hidden.size, mask: null });
+      return null;
+    }
+    const faces = visibleGeometryFaces(parent.geometry, new Set(materialFaceIds));
+    const source = faceUvMask(parent.geometry, faces, SIZE);
+    const excluded = faceUvMask(parent.geometry, hiddenInMaterial, SIZE);
+    const target = document.createElement('canvas');
+    target.width = canvas.width;
+    target.height = canvas.height;
+    const context = target.getContext('2d');
+    context.imageSmoothingEnabled = false;
+    context.drawImage(source, 0, 0, target.width, target.height);
+    context.globalCompositeOperation = 'destination-out';
+    context.drawImage(excluded, 0, 0, target.width, target.height);
+    context.globalCompositeOperation = 'source-over';
+    const pixels = context.getImageData(0, 0, target.width, target.height);
+    for (let offset = 3; offset < pixels.data.length; offset += 4)
+      pixels.data[offset] = pixels.data[offset] === 255 ? 255 : 0;
+    context.putImageData(pixels, 0, 0);
+    const mask = maskPixels(target);
+    mask.combined = new WeakMap();
+    visibilityMasks.set(key, { hidden, hiddenCount: hidden.size, mask });
+    return mask;
+  }
+
+  function paintMaskForLayer(parent, surface) {
+    const chosen = maskEnabled ? selectionMaskForLayer(selection, surface.canvas) : null;
+    const visible = visibilityMaskForLayer(parent, surface.canvas);
+    if (!visible || !chosen) return visible ?? chosen;
+    let combined = visible.combined.get(chosen);
+    if (combined) return combined;
+    const canvas = document.createElement('canvas');
+    canvas.width = surface.canvas.width;
+    canvas.height = surface.canvas.height;
+    const image = canvas.getContext('2d').createImageData(canvas.width, canvas.height);
+    for (let index = 0; index < visible.alpha.length; index++)
+      image.data[index * 4 + 3] = Math.round(visible.alpha[index] * chosen.alpha[index] / 255);
+    canvas.getContext('2d').putImageData(image, 0, 0);
+    combined = maskPixels(canvas);
+    visible.combined.set(chosen, combined);
+    return combined;
+  }
+
   function surfaceAt(hit) {
     return hit?.uv ? surfaces.get(hit.object)?.slots[hit.face?.materialIndex ?? 0]?.activePaint ?? null : null;
   }
@@ -504,9 +584,13 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
   function topologyFor(parent, canvas) {
     parent.topologies ??= new Map();
     const key = `${canvas.width}:${canvas.height}`;
-    if (!parent.topologies.has(key)) parent.topologies.set(key,
-      surfaceWandTopology(parent.geometry, parent.slotIndex, canvas.width, canvas.height));
-    return parent.topologies.get(key);
+    const hidden = hiddenGeometryFaces(parent.geometry);
+    const cached = parent.topologies.get(key);
+    if (cached?.hidden !== hidden || cached?.hiddenCount !== (hidden?.size ?? 0))
+      parent.topologies.set(key, { hidden, hiddenCount: hidden?.size ?? 0,
+        value: surfaceWandTopology(parent.geometry, parent.slotIndex,
+          canvas.width, canvas.height) });
+    return parent.topologies.get(key).value;
   }
   function uploadOverlayRegion(surface, region) {
     if (!renderer) { surface.overlayTexture.needsUpdate = true; return; }
@@ -561,7 +645,25 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     overlayRegions = next;
   }
 
+  function constrainSelectionToVisibleFaces(next) {
+    if (next) {
+      const parent = findSurface(next.surface.id);
+      const visible = visibilityMaskForLayer(parent, { width: SIZE, height: SIZE });
+      if (visible) {
+        const alpha = next.alpha.slice();
+        let changed = false;
+        for (let index = 0; index < alpha.length; index++) {
+          const value = Math.round(alpha[index] * visible.alpha[index] / 255);
+          if (value !== alpha[index]) { alpha[index] = value; changed = true; }
+        }
+        if (changed) return selectionFromAlpha(next.surface, alpha);
+      }
+    }
+    return next;
+  }
+
   function recordSelection(next) {
+    next = constrainSelectionToVisibleFaces(next);
     const before = selection;
     selection = next;
     undoStack.push({ patches: [], selectionBefore: before, selectionAfter: next });
@@ -698,7 +800,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     if (mode === 'subtract' && !old) return false;
     commitFloatingSelection();
     const picked = selectionFromMask(surface,
-      faceUvMask(parent.geometry, faceIds, SIZE));
+      faceUvMask(parent.geometry, visibleGeometryFaces(parent.geometry, faceIds), SIZE));
     if (!picked) return false;
     if (mode === 'replace' || !old) {
       recordSelection(picked);
@@ -767,6 +869,11 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
 
   function writeMovePreview(preview, output, nextRegions) {
     const surface = preview.before.surface;
+    const visible = visibilityMaskForLayer(findSurface(surface.id),
+      { width: SIZE, height: SIZE });
+    if (visible) for (let index = 0; index < visible.alpha.length; index++)
+      if (!visible.alpha[index])
+        output.data.set(preview.image.data.subarray(index * 4, index * 4 + 4), index * 4);
     if (surface.canvas.width !== SIZE || surface.canvas.height !== SIZE) {
       writeAtlasImage(surface, output);
       surface.requestComposite();
@@ -846,9 +953,15 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     const before = readAtlasImage(surface);
     const after = surface.context.createImageData(SIZE, SIZE);
     after.data.set(pasteSelectedPixels(before, clipboard));
+    const visible = visibilityMaskForLayer(findSurface(targetId),
+      { width: SIZE, height: SIZE });
+    if (visible) for (let index = 0; index < visible.alpha.length; index++)
+      if (!visible.alpha[index])
+        after.data.set(before.data.subarray(index * 4, index * 4 + 4), index * 4);
     writeAtlasImage(surface, after);
     surface.requestComposite();
-    const next = selectionFromAlpha(surface, clipboard.alpha.slice(), null, clipboard.indices);
+    const next = constrainSelectionToVisibleFaces(
+      selectionFromAlpha(surface, clipboard.alpha.slice(), null, clipboard.indices));
     if (!next) return false;
     if (clipboard.parts) next.parts = clipboard.parts.map((part) => ({
       alpha: part.alpha.slice(), indices: Uint32Array.from(part.indices) }));
@@ -1037,10 +1150,15 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     const radius = worldRadius / Math.max(1e-6, hit.object.getWorldScale(
       new THREE.Vector3()).length() / Math.sqrt(3));
     const selection = vertexSelections.get(parent.id);
-    const allowed = selection?.allowed?.size ? selection.allowed : null;
+    const visible = visibleVertexPaintScope(geometry, parent.slotIndex);
+    const selectedVertices = selection?.allowed?.size ? selection.allowed : null;
+    const allowed = visible ? new Set([...visible.vertices].filter((id) =>
+      !selectedVertices || selectedVertices.has(id))) : selectedVertices;
+    const selectedFaces = selection?.kind === 'face' && selection.ids.size ?
+      selection.ids : null;
     const changed = paintVertexColors(geometry, parent.slotIndex, center, radius,
-      kind, options, allowed, selection?.kind === 'face' && selection.ids.size ?
-        selection.ids : null);
+      kind, options, allowed, visible ? new Set([...visible.faces].filter((face) =>
+        !selectedFaces || selectedFaces.has(face))) : selectedFaces);
     if (changed && activeStroke) activeStroke.vertexChanged = true;
     if (changed) for (const record of surfaces.values()) for (const surface of record.slots)
       if (surface.geometry === geometry) surface.requestComposite();
@@ -1053,7 +1171,11 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       node.vertexColor && parent.imageAssets.get(node.imageKey)?.paintSurface === parent.activePaint);
     if (!activeNode) return false;
     const selection = vertexSelections.get(parent.id);
-    const allowed = selection?.allowed?.size ? selection.allowed : null;
+    const selectedVertices = selection?.allowed?.size ? selection.allowed : null;
+    const visible = visibleVertexPaintScope(parent.geometry, parent.slotIndex);
+    const allowed = visible ? new Set([...visible.vertices].filter((id) =>
+      !selectedVertices || selectedVertices.has(id))) : selectedVertices;
+    if (allowed && !allowed.size) return false;
     if (activeStroke && !activeStroke.vertexBefore.has(parent.geometry))
       activeStroke.vertexBefore.set(parent.geometry, vertexSnapshot(parent.geometry));
     const changed = fillVertexColors(parent.geometry, parent.slotIndex, options, allowed);
@@ -1156,7 +1278,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
         previousHit.smudgeState ?? {} : {};
     }
     apply({ kind, surface, point, previous: continuous ? previous : null,
-      options: { ...options }, mask: maskEnabled ? selectionMaskForLayer(selection, surface.canvas) : null,
+      options: { ...options }, mask: paintMaskForLayer(findSurface(surface.id), surface),
       isolateBlur, smudgeState, faceIndex: hit.faceIndex,
       topology: kind === 'blur' && !smudge && mode === 'surface' ?
         topologyFor(findSurface(surface.id), surface.canvas) : null });
@@ -1167,7 +1289,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     const surface = surfaceAt(hit);
     if (!surface || (selection && maskEnabled && surface !== selection.surface)) return false;
     return apply({ kind: 'bucket', surface, point: toPixel(hit.uv, surface.canvas), options: { ...options },
-      mask: maskEnabled ? selectionMaskForLayer(selection, surface.canvas) : null });
+      mask: paintMaskForLayer(findSurface(surface.id), surface) });
   }
 
   function applyGradient(targetId, camera, viewport, start, end, options, visibleUv,
@@ -1178,7 +1300,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     if (!surface || !face || !materialVisible(parent) || activeStroke || linePreview || filterSession ||
         (selection && maskEnabled && selection.surface !== surface)) return false;
     const { canvas, context } = surface;
-    const mask = selection && maskEnabled ? selectionMaskForLayer(selection, canvas)?.alpha : null;
+    const mask = paintMaskForLayer(parent, surface)?.alpha ?? null;
     const projectionOptions = { mesh: face.mesh, materialIndex: face.materialIndex,
       width: canvas.width, height: canvas.height,
       viewportWidth: viewport.width, viewportHeight: viewport.height,
@@ -1286,7 +1408,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     if (!surface || !face || !materialVisible(parent) || activeStroke || linePreview ||
         filterSession || (selection && maskEnabled && selection.surface !== surface)) return false;
     const { canvas, context } = surface;
-    const mask = selection && maskEnabled ? selectionMaskForLayer(selection, canvas)?.alpha : null;
+    const mask = paintMaskForLayer(parent, surface)?.alpha ?? null;
     const before = context.getImageData(0, 0, canvas.width, canvas.height);
     const after = new ImageData(new Uint8ClampedArray(before.data), canvas.width, canvas.height);
     const bounds = { left: canvas.width, top: canvas.height, right: 0, bottom: 0 };
@@ -1350,7 +1472,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     if (!surface || !materialVisible(parent) || activeStroke || linePreview || filterSession ||
         (selection && maskEnabled && selection.surface !== surface)) return false;
     const { canvas, context } = surface;
-    const mask = selection && maskEnabled ? selectionMaskForLayer(selection, canvas)?.alpha : null;
+    const mask = paintMaskForLayer(parent, surface)?.alpha ?? null;
     const projected = projectSurfaceCurve(path, image, options, canvas.width,
       canvas.height, mask, mirror);
     if (!projected.size) return false;
@@ -1500,7 +1622,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
               previous: connected ? previousPoint : point,
               options: options.brushProfile === 'tapered' ?
                 { ...options, profileFrom, profileTo } : options,
-              mask: maskEnabled ? selectionMaskForLayer(selection, surface.canvas) : null };
+              mask: paintMaskForLayer(findSurface(surface.id), surface) };
             commands.push(segment);
           }
         } else if (connected) {
@@ -1508,7 +1630,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
           if (options.brushProfile === 'tapered') segment.options.profileTo = profileTo;
         } else {
           segment = { kind: 'line', surface, point, previous: point, options,
-            mask: maskEnabled ? selectionMaskForLayer(selection, surface.canvas) : null };
+            mask: paintMaskForLayer(findSurface(surface.id), surface) };
           commands.push(segment);
         }
         previousHit = hit;
@@ -1814,7 +1936,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     const sameRect = sourceRect.left === rect.left && sourceRect.top === rect.top &&
       sourceRect.right === rect.right && sourceRect.bottom === rect.bottom;
     snapshot = { rect, sourceRect, before,
-      mask: session.mask ? selectionMaskForLayer(selection, surface.canvas)?.alpha : null,
+      mask: paintMaskForLayer(session.parent, surface)?.alpha ?? null,
       source: sameRect ? before : surface.context.getImageData(sourceRect.left, sourceRect.top,
         sourceRect.right - sourceRect.left, sourceRect.bottom - sourceRect.top),
       fullSource: session.mode === 'surface' && category === 'blur' ?
@@ -2074,7 +2196,8 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     canUndo: () => undoStack.length > 0 && !filterSession,
     canRedo: () => redoStack.length > 0 && !filterSession, setLightingMode,
     setBackfaceCullingEnabled,
-    setWireframeEnabled, refreshWireGeometry, setAntialiasEnabled,
+    setWireframeEnabled, refreshWireGeometry, geometryVisibilityChanged,
+    setAntialiasEnabled,
     setRenderer: (nextRenderer) => { renderer = nextRenderer; },
     getMeshes: () => [...surfaces.keys()], getFaceTarget,
     getMaterialVisibilityState, setMaterialVisibility, toggleMaterialIsolation,

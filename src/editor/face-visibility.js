@@ -1,6 +1,32 @@
+import { materialFaces } from './vertex-face-selection.js';
+
 // Keep face indices stable for picking and selection while hiding triangles.
 // UVs, vertex colors and every other attribute stay untouched.
 const hiddenByGeometry = new WeakMap();
+const paintScopeCache = new WeakMap();
+
+export function hiddenGeometryFaces(geometry) {
+  return hiddenByGeometry.get(geometry)?.hidden ?? null;
+}
+
+export function visibleVertexPaintScope(geometry, slotIndex) {
+  const hidden = hiddenGeometryFaces(geometry);
+  if (!hidden?.size) return null;
+  let slots = paintScopeCache.get(geometry);
+  if (!slots) { slots = new Map(); paintScopeCache.set(geometry, slots); }
+  const cached = slots.get(slotIndex);
+  if (cached?.hidden === hidden && cached.hiddenCount === hidden.size)
+    return cached.scope;
+  const faces = visibleGeometryFaces(geometry,
+    new Set(materialFaces(geometry, slotIndex)));
+  const index = geometry.index;
+  const vertices = new Set();
+  for (const face of faces) for (let corner = 0; corner < 3; corner++)
+    vertices.add(index ? index.getX(face * 3 + corner) : face * 3 + corner);
+  const scope = { faces, vertices };
+  slots.set(slotIndex, { hidden, hiddenCount: hidden.size, scope });
+  return scope;
+}
 
 export function hideGeometryFaces(geometry, faces) {
   const position = geometry.getAttribute('position');
