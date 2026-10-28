@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { FBXLoader } from '../src/editor/vendor/FBXLoader.js';
-import { expandSourceFaces, sourceFaceRange, sourcePolygonWireGeometry } from
+import { hideGeometryFaces } from '../src/editor/face-visibility.js';
+import { bitmapSourceFaces, expandSourceFaces, sourceFaceRange, sourcePolygonWireGeometry } from
   '../src/editor/source-polygons.js';
 
 test('a triangulated FBX quad remains one selectable polygon', () => {
@@ -15,9 +16,13 @@ test('a triangulated FBX quad remains one selectable polygon', () => {
   geometry.addGroup(0, 6, 1);
   assert.deepEqual(sourceFaceRange(geometry, 1), [0, 2]);
   assert.deepEqual([...expandSourceFaces(geometry, new Set([1]))], [0, 1]);
+  assert.deepEqual([...bitmapSourceFaces(geometry, 1, new Set([1]))], [0, 1]);
+  assert.deepEqual([...bitmapSourceFaces(geometry, 0, new Set([1]))], []);
   const wire = sourcePolygonWireGeometry(geometry);
   assert.equal(wire.getAttribute('position').count, 8);
   assert.equal(wire.groups[0].materialIndex, 1);
+  hideGeometryFaces(geometry, new Set([0]));
+  assert.deepEqual([...bitmapSourceFaces(geometry, 1, new Set([1]))], [1]);
   wire.dispose();
   geometry.dispose();
 });
@@ -62,5 +67,8 @@ Connections:  {
   assert.ok(mesh);
   assert.equal(mesh.geometry.getAttribute('position').count, 6);
   assert.deepEqual(mesh.geometry.userData.sourceFaceRanges, [[0, 2]]);
+  assert.deepEqual(mesh.geometry.userData.sourceFaceVertices, [[0, 1, 2, 3]]);
+  assert.deepEqual(mesh.geometry.userData.sourceVertexPositions,
+    [0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]);
   assert.equal(mesh.geometry.getAttribute('uv').count, 6);
 });

@@ -34,7 +34,8 @@ import { clearVertexPaintCache, ensureVertexColors, fillVertexColors, materialVe
 import { graphBelowVertexLayer, vertexDisplayPlan } from './vertex-display.js';
 import { invertVertexFaces, materialFaces, resizeVertexFaces } from './vertex-face-selection.js';
 import { invertVertexPoints, resizeVertexPoints } from './vertex-point-selection.js';
-import { expandSourceFaces, sourcePolygonWireGeometry } from './source-polygons.js';
+import { bitmapSourceFaces, expandSourceFaces, sourcePolygonWireGeometry } from
+  './source-polygons.js';
 import { applyMaterialTransparency, normalizeMaterialTransparency } from
   './material-transparency.js';
 
@@ -808,7 +809,8 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     if (mode === 'subtract' && !old) return false;
     commitFloatingSelection();
     const picked = selectionFromMask(surface,
-      faceUvMask(parent.geometry, visibleGeometryFaces(parent.geometry, faceIds), SIZE));
+      faceUvMask(parent.geometry,
+        bitmapSourceFaces(parent.geometry, parent.slotIndex, faceIds), SIZE));
     if (!picked) return false;
     if (mode === 'replace' || !old) {
       recordSelection(picked);

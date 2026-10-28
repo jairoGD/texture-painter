@@ -1690,6 +1690,10 @@ class GeometryParser {
 		// Keep original polygon boundaries for quad-aware editing. Three.js
 		// still renders the triangles produced below.
 		geo.userData.sourceFaceRanges = buffers.sourceFaceRanges;
+		geo.userData.sourceFaceVertices = buffers.sourceFaceVertices;
+		geo.userData.sourceVertexPositions = Array.from(
+			new Float32BufferAttribute( geoInfo.vertexPositions, 3 ).applyMatrix4( preTransform ).array
+		);
 
 		const positionAttribute = new Float32BufferAttribute( buffers.vertex, 3 );
 
@@ -1867,6 +1871,7 @@ class GeometryParser {
 			vertexWeights: [],
 			weightsIndices: [],
 			sourceFaceRanges: [],
+			sourceFaceVertices: [],
 		};
 
 		let polygonIndex = 0;
@@ -2031,6 +2036,7 @@ class GeometryParser {
 				const firstTriangle = buffers.vertex.length / 9;
 				scope.genFace( buffers, geoInfo, facePositionIndexes, materialIndex, faceNormals, faceColors, faceUVs, faceWeights, faceWeightIndices, faceLength );
 				buffers.sourceFaceRanges.push( [ firstTriangle, buffers.vertex.length / 9 - firstTriangle ] );
+				buffers.sourceFaceVertices.push( facePositionIndexes.filter( ( _, index ) => index % 3 === 0 ).map( index => index / 3 ) );
 
 				polygonIndex ++;
 				faceLength = 0;

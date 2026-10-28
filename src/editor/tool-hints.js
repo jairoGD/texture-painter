@@ -12,13 +12,13 @@ const TOOL_HINTS = {
   blur: 'Drag: soften painted pixels · A selection limits the effect',
   lasso: 'Drag: select area · Shift+Drag: add · Alt+Drag: subtract · Drag inside: move',
   wand: 'Click: select matching pixels · Shift+Click: add · Alt+Click: subtract',
-  faces: 'Click: select face · Double-click: connected faces · Drag: box select · Shift: add · Alt: subtract',
+  faces: 'Click: select face · Ctrl+Click: shortest path · Double-click: connected faces · Alt+Click edge: face loop · Shift+Alt+Click edge: add loop · Drag: box select · Alt+Click face: subtract',
   eyedropper: 'Click: pick color from the model'
 };
 
 export function toolHint(toolId, settings = {}) {
   if (toolId === 'faces' && settings.geometry)
-    return 'Click/Drag: select faces · Double-click: connected faces · Ctrl+I: invert · H: hide · Alt+H: show all';
+    return 'Click/Drag: select faces · Ctrl+Click: shortest path · Alt+Click edge: face loop · Shift+Alt+Click: add loop · Double-click: connected faces · Ctrl+I: invert · H: hide · Alt+H: show all';
   if (toolId === 'stamp') return settings.stroke ?
     settings.proportionalStroke === false ?
       'Drag: stretch length · Size: fixed width · Right-click: pick color' :

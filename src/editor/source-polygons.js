@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { hiddenGeometryFaces } from './face-visibility.js';
+import { hiddenGeometryFaces, visibleGeometryFaces } from './face-visibility.js';
+import { materialFaces } from './vertex-face-selection.js';
 
 // FBXLoader renders polygons as triangles. These ranges retain the original
 // polygon membership without changing positions, UVs, or triangle indices.
@@ -27,6 +28,15 @@ export function expandSourceFaces(geometry, triangles) {
     else result.add(triangle);
   }
   return result;
+}
+
+export function bitmapSourceFaces(geometry, slotIndex, triangles) {
+  const expanded = expandSourceFaces(geometry, triangles);
+  const materialScope = geometry.groups.length ?
+    new Set(materialFaces(geometry, slotIndex)) : null;
+  const scoped = materialScope ?
+    new Set([...expanded].filter((face) => materialScope.has(face))) : expanded;
+  return visibleGeometryFaces(geometry, scoped);
 }
 
 export function sourcePolygonWireGeometry(geometry) {
