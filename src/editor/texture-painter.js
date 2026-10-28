@@ -34,6 +34,7 @@ import { clearVertexPaintCache, ensureVertexColors, fillVertexColors, materialVe
 import { graphBelowVertexLayer, vertexDisplayPlan } from './vertex-display.js';
 import { invertVertexFaces, materialFaces, resizeVertexFaces } from './vertex-face-selection.js';
 import { invertVertexPoints, resizeVertexPoints } from './vertex-point-selection.js';
+import { expandSourceFaces, sourcePolygonWireGeometry } from './source-polygons.js';
 import { applyMaterialTransparency, normalizeMaterialTransparency } from
   './material-transparency.js';
 
@@ -391,15 +392,18 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       record.overlay.raycast = () => {};
       mesh.add(record.overlay);
       const animated = mesh.isSkinnedMesh || !!mesh.morphTargetInfluences?.length;
-      record.wireGeometry = animated || isArray ? null : new THREE.EdgesGeometry(mesh.geometry, 1);
+      const triangleWire = animated || (isArray && !mesh.geometry.userData.sourceFaceRanges);
+      record.wireGeometry = triangleWire ? null :
+        sourcePolygonWireGeometry(mesh.geometry);
       const wireOptions = { color: '#18202a',
         transparent: true, opacity: 0.8, depthTest: true, depthWrite: false,
         toneMapped: false };
-      record.wireMaterial = isArray ? record.slots.map(() =>
-        new THREE.MeshBasicMaterial({ ...wireOptions, wireframe: true })) : animated ?
+      record.wireMaterial = isArray ? record.slots.map(() => triangleWire ?
+        new THREE.MeshBasicMaterial({ ...wireOptions, wireframe: true }) :
+        new THREE.LineBasicMaterial(wireOptions)) : animated ?
           new THREE.MeshBasicMaterial({ ...wireOptions, wireframe: true }) :
           new THREE.LineBasicMaterial(wireOptions);
-      record.wire = animated || isArray ?
+      record.wire = triangleWire ?
         (mesh.isSkinnedMesh ? new THREE.SkinnedMesh(mesh.geometry, record.wireMaterial) :
           new THREE.Mesh(mesh.geometry, record.wireMaterial)) :
         new THREE.LineSegments(record.wireGeometry, record.wireMaterial);
@@ -478,7 +482,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     const record = surfaces.get(mesh);
     if (!record?.wireGeometry) return;
     record.wireGeometry.dispose();
-    record.wireGeometry = new THREE.EdgesGeometry(mesh.geometry, 1);
+    record.wireGeometry = sourcePolygonWireGeometry(mesh.geometry);
     record.wire.geometry = record.wireGeometry;
   }
 
@@ -1190,10 +1194,34 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     }
     return changed;
   }
+
+  function vertexSelectionSnapshot(targetId) {
+    const selected = vertexSelections.get(targetId);
+    return selected ? { kind: selected.kind, ids: new Set(selected.ids) } : null;
+  }
+
+  function applyVertexSelection(targetId, next, recordHistory = true) {
+    const before = vertexSelectionSnapshot(targetId);
+    const same = before?.kind === next?.kind &&
+      (before?.ids.size ?? 0) === (next?.ids.size ?? 0) &&
+      (!before || [...before.ids].every((id) => next.ids.has(id)));
+    if (same) return false;
+    if (!next) vertexSelections.delete(targetId);
+    else vertexSelections.set(targetId, { kind: next.kind, ids: new Set(next.ids),
+      allowed: next.kind === 'vertex' ? new Set(next.ids) :
+        new Set([...next.ids].flatMap((face) => [face * 3, face * 3 + 1, face * 3 + 2])) });
+    if (recordHistory) {
+      undoStack.push({ vertexSelection: { targetId, before,
+        after: vertexSelectionSnapshot(targetId) } });
+      redoStack = [];
+    }
+    return true;
+  }
+
   function selectVertexElements(targetId, kind, ids, mode = 'replace') {
     const parent = findSurface(targetId);
     if (!parent || !['face', 'vertex'].includes(kind)) return false;
-    if (mode === 'replace' && !ids.size) return vertexSelections.delete(targetId);
+    if (mode === 'replace' && !ids.size) return applyVertexSelection(targetId, null);
     if (kind === 'face' && parent.geometry.index) {
       const expanded = parent.geometry.toNonIndexed();
       parent.geometry.copy(expanded);
@@ -1207,15 +1235,11 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     if (mode === 'subtract' && current?.kind !== kind) return false;
     const result = mode === 'replace' || current?.kind !== kind ? new Set() :
       new Set(current.ids);
-    for (const id of ids) {
+    for (const id of kind === 'face' ? expandSourceFaces(parent.geometry, ids) : ids) {
       if (mode === 'subtract') result.delete(id);
       else result.add(id);
     }
-    if (!result.size) return vertexSelections.delete(targetId);
-    const allowed = kind === 'vertex' ? result :
-      new Set([...result].flatMap((face) => [face * 3, face * 3 + 1, face * 3 + 2]));
-    vertexSelections.set(targetId, { kind, ids: result, allowed });
-    return true;
+    return applyVertexSelection(targetId, result.size ? { kind, ids: result } : null);
   }
   function getVertexSelection(targetId) {
     const parent = findSurface(targetId);
@@ -1224,7 +1248,9 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       record.slots.includes(parent))?.[0], geometry: parent.geometry,
       slotIndex: parent.slotIndex, kind: selection.kind, ids: new Set(selection.ids) } : null;
   }
-  function clearVertexSelection(targetId) { return vertexSelections.delete(targetId); }
+  function clearVertexSelection(targetId, recordHistory = true) {
+    return applyVertexSelection(targetId, null, recordHistory);
+  }
   function canEditVertexSelection(targetId, requireSelected = true) {
     const selected = vertexSelections.get(targetId);
     return ['face', 'vertex'].includes(selected?.kind) &&
@@ -1249,7 +1275,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     if (next.size === selected.ids.size && [...next].every((id) => selected.ids.has(id)))
       return false;
     if (next.size) selectVertexElements(targetId, selected.kind, next);
-    else vertexSelections.set(targetId, { kind: selected.kind, ids: next, allowed: new Set() });
+    else applyVertexSelection(targetId, { kind: selected.kind, ids: next });
     return true;
   }
   function apply(command) {
@@ -1714,6 +1740,13 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     } else if (entry.patches) applyPaintPatches(entry.patches, 'before');
     else if (entry.vertices) for (const item of entry.vertices)
       restoreVertexSnapshot(item.geometry, item.before);
+    if (entry.vertexSelection) {
+      const { targetId, before } = entry.vertexSelection;
+      const parent = findSurface(targetId);
+      const visible = before?.kind === 'face' && parent ?
+        { kind: 'face', ids: visibleGeometryFaces(parent.geometry, before.ids) } : before;
+      applyVertexSelection(targetId, visible, false);
+    }
     if ('selectionBefore' in entry) {
       const previous = entry.selectionBefore;
       selection = selectionOnPaintSurface(previous, findSurface(previous?.surface.id)?.activePaint);
@@ -1732,6 +1765,13 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     } else if (entry.patches) applyPaintPatches(entry.patches, 'after');
     else if (entry.vertices) for (const item of entry.vertices)
       restoreVertexSnapshot(item.geometry, item.after);
+    if (entry.vertexSelection) {
+      const { targetId, after } = entry.vertexSelection;
+      const parent = findSurface(targetId);
+      const visible = after?.kind === 'face' && parent ?
+        { kind: 'face', ids: visibleGeometryFaces(parent.geometry, after.ids) } : after;
+      applyVertexSelection(targetId, visible, false);
+    }
     if ('selectionAfter' in entry) {
       const next = entry.selectionAfter;
       selection = selectionOnPaintSurface(next, findSurface(next?.surface.id)?.activePaint);

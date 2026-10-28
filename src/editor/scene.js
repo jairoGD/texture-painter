@@ -2,13 +2,14 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { FBXLoader } from './vendor/FBXLoader.js';
 import { createTexturePainter } from './texture-painter.js';
 import { captureVisibleUv, decodeVisibleUv, projectLassoToUv } from './screen-lasso.js';
 import { captureVisibleFaces } from './screen-face-selection.js';
 import { hideGeometryFaces, invertVisibleGeometryFaces, showAllGeometryFaces,
   visibleGeometryFaces } from './face-visibility.js';
 import { connectedVertexFaces, materialFaces, meshFaces } from './vertex-face-selection.js';
+import { sourceFaceRange } from './source-polygons.js';
 import { sampleScreenStroke } from './surface-stroke.js';
 import { sampleThroughLine } from './through-line.js';
 import { lineStylePaths, styledPolylinePaths } from './line-style.js';
@@ -288,6 +289,10 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
   const gltfLoader = new GLTFLoader();
   const fbxLoader = new FBXLoader();
   const painter = createTexturePainter(renderer, onGraphHistoryApplied, (entry, action) => {
+    if (entry.vertexSelection) {
+      updateVertexSelectionOverlay();
+      return;
+    }
     const state = entry.curveDraft?.[action === 'undo' ? 'before' : 'after'] ??
       (action === 'undo' ? entry.curveHistory : null);
     if (!entry.curveDraft && !entry.curveHistory) return;
@@ -1164,11 +1169,13 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     const doubleClick = clickedFace !== null && !dragged &&
       lastFaceClick?.targetId === selectedTargetId &&
       lastFaceClick?.geometry === Boolean(toolSettings.faces?.geometry) &&
-      lastFaceClick.face === clickedFace && elapsed >= 0 && elapsed <= 350 &&
+      lastFaceClick.face === (sourceFaceRange(target.mesh.geometry, clickedFace)?.[0] ?? clickedFace) &&
+      elapsed >= 0 && elapsed <= 350 &&
       Math.hypot(end.x - lastFaceClick.x, end.y - lastFaceClick.y) <= 6;
     lastFaceClick = clickedFace !== null && !dragged && !doubleClick ?
       { targetId: selectedTargetId, geometry: Boolean(toolSettings.faces?.geometry),
-        face: clickedFace, x: end.x, y: end.y, time: event.timeStamp } : null;
+        face: sourceFaceRange(target.mesh.geometry, clickedFace)?.[0] ?? clickedFace,
+        x: end.x, y: end.y, time: event.timeStamp } : null;
     if (toolSettings.faces?.geometry) {
       const available = visibleGeometryFaces(target.mesh.geometry,
         new Set(meshFaces(target.mesh.geometry)));
@@ -1792,7 +1799,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
             hideGeometryFaces(target.mesh.geometry, selected.ids)) {
           painter.refreshWireGeometry(target.mesh);
           painter.geometryVisibilityChanged(target.mesh);
-          painter.clearVertexSelection(selectedTargetId);
+          painter.clearVertexSelection(selectedTargetId, false);
           updateVertexSelectionOverlay();
           lastFaceClick = null;
           event.preventDefault();
