@@ -3,6 +3,7 @@ import { executePaintCommand, samplePaintColor } from './paint-operations.js';
 import { combineSelectionAlpha, combineSelectionParts, containsSelection, invertSelectionAlpha, moveSelectionInView, selectionFromAlpha,
   selectionFromMask, visibleSelectionSamples } from './lasso-selection.js';
 import { faceUvMask } from './face-uv-mask.js';
+import { uvMaskWithGutter } from './uv-mask-gutter.js';
 import { hiddenGeometryFaces, visibleGeometryFaces,
   visibleVertexPaintScope } from './face-visibility.js';
 import { addTextureNode, blendCanvases, cloneTextureGraph, connectTextureNodes,
@@ -522,10 +523,10 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
       right: canvas.width, bottom: canvas.height } };
   }
 
-  function visibilityMaskForLayer(parent, canvas) {
+  function visibilityMaskForLayer(parent, canvas, gutter = 0) {
     const hidden = parent && hiddenGeometryFaces(parent.geometry);
     if (!hidden?.size) return null;
-    const key = `${parent.id}:${canvas.width}:${canvas.height}`;
+    const key = `${parent.id}:${canvas.width}:${canvas.height}:${gutter}`;
     const cached = visibilityMasks.get(key);
     if (cached?.hidden === hidden && cached.hiddenCount === hidden.size) return cached.mask;
     const materialFaceIds = materialFaces(parent.geometry, parent.slotIndex);
@@ -543,12 +544,15 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     const context = target.getContext('2d');
     context.imageSmoothingEnabled = false;
     context.drawImage(source, 0, 0, target.width, target.height);
-    context.globalCompositeOperation = 'destination-out';
+    const sourcePixels = maskPixels(target).alpha;
+    context.clearRect(0, 0, target.width, target.height);
     context.drawImage(excluded, 0, 0, target.width, target.height);
-    context.globalCompositeOperation = 'source-over';
-    const pixels = context.getImageData(0, 0, target.width, target.height);
-    for (let offset = 3; offset < pixels.data.length; offset += 4)
-      pixels.data[offset] = pixels.data[offset] === 255 ? 255 : 0;
+    const hiddenPixels = maskPixels(target).alpha;
+    const alpha = uvMaskWithGutter(sourcePixels, hiddenPixels,
+      target.width, target.height, gutter);
+    const pixels = context.createImageData(target.width, target.height);
+    for (let index = 0; index < alpha.length; index++)
+      pixels.data[index * 4 + 3] = alpha[index];
     context.putImageData(pixels, 0, 0);
     const mask = maskPixels(target);
     mask.combined = new WeakMap();
@@ -556,9 +560,9 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     return mask;
   }
 
-  function paintMaskForLayer(parent, surface) {
+  function paintMaskForLayer(parent, surface, gutter = 0) {
     const chosen = maskEnabled ? selectionMaskForLayer(selection, surface.canvas) : null;
-    const visible = visibilityMaskForLayer(parent, surface.canvas);
+    const visible = visibilityMaskForLayer(parent, surface.canvas, gutter);
     if (!visible || !chosen) return visible ?? chosen;
     let combined = visible.combined.get(chosen);
     if (combined) return combined;
@@ -1936,7 +1940,7 @@ export function createTexturePainter(initialRenderer, onGraphHistoryApplied,
     const sameRect = sourceRect.left === rect.left && sourceRect.top === rect.top &&
       sourceRect.right === rect.right && sourceRect.bottom === rect.bottom;
     snapshot = { rect, sourceRect, before,
-      mask: paintMaskForLayer(session.parent, surface)?.alpha ?? null,
+      mask: paintMaskForLayer(session.parent, surface, 16)?.alpha ?? null,
       source: sameRect ? before : surface.context.getImageData(sourceRect.left, sourceRect.top,
         sourceRect.right - sourceRect.left, sourceRect.bottom - sourceRect.top),
       fullSource: session.mode === 'surface' && category === 'blur' ?
