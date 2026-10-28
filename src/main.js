@@ -165,6 +165,7 @@ let gridVisible = true;
 let wireframeVisible = false;
 let antialiasEnabled = true;
 let backfaceCullingEnabled = true;
+let backgroundColor = '#252b34';
 function setStatus(message, error = false) {
   status.textContent = message;
   status.classList.toggle('is-error', error);
@@ -407,6 +408,12 @@ const renderingMenu = dropdown({ label: 'Rendering', items: [
     markDirty();
   } },
   { type: 'separator' },
+  { type: 'color', label: 'Background Color', getValue: () => backgroundColor,
+    onChange: (color) => {
+      backgroundColor = color;
+      scene.setBackgroundColor(color);
+      markDirty();
+    } },
   { type: 'checkbox', label: 'Backface Culling',
     getChecked: () => backfaceCullingEnabled, keepOpen: true, onSelect: () => {
       backfaceCullingEnabled = !backfaceCullingEnabled;
@@ -632,7 +639,10 @@ function restoreEditorSettings(saved = {}, view = {}) {
   wireframeVisible = view.wireframe === true;
   antialiasEnabled = view.antialias !== false;
   backfaceCullingEnabled = view.backfaceCulling !== false;
+  backgroundColor = /^#[0-9a-f]{6}$/i.test(view.backgroundColor) ?
+    view.backgroundColor.toLowerCase() : '#252b34';
   applyLightingMode(restoredLighting);
+  scene.setBackgroundColor(backgroundColor);
   scene.setGridVisible(gridVisible);
   scene.setWireframeVisible(wireframeVisible);
   scene.setAntialiasEnabled(antialiasEnabled);

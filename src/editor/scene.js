@@ -2047,6 +2047,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
       vertexColors: painter.exportProjectVertexColors(),
       view: { camera: camera.position.toArray(), target: controls.target.toArray(),
         lighting: currentLightingMode, grid: grid.visible, mirror: mirrorEnabled,
+        backgroundColor: `#${scene.background.getHexString()}`,
         sampling: samplingMode, antialias: antialiasEnabled,
         backfaceCulling: backfaceCullingEnabled,
         wireframe: wireframeVisible,
@@ -2190,6 +2191,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     bakeCurvature,
     frame: () => frame(model),
     setGridVisible: (visible) => { grid.visible = visible; },
+    setBackgroundColor: (color) => { scene.background.set(color); },
     setWireframeVisible: (visible) => {
       wireframeVisible = Boolean(visible);
       painter.setWireframeEnabled(wireframeVisible);

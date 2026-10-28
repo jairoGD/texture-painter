@@ -198,9 +198,22 @@ export function dropdown({ label, items }) {
   const trigger = button({ label, variant: 'menu' });
   trigger.setAttribute('aria-haspopup', 'menu');
   trigger.setAttribute('aria-expanded', 'false');
-  const menu = element('div', { className: 'ui-dropdown__menu', attributes: { role: 'menu' } },
+  const menu = element('div', { className: `ui-dropdown__menu${items.some((item) => item.type === 'color') ? ' ui-dropdown__menu--has-color' : ''}`,
+    attributes: { role: 'menu' } },
     items.map((item) => {
       if (item.type === 'separator') return element('hr', { className: 'ui-dropdown__separator', attributes: { role: 'separator' } });
+      if (item.type === 'color') {
+        const input = element('input', { className: 'ui-dropdown__color-input',
+          attributes: { type: 'color', 'aria-label': item.label },
+          on: { input: (event) => item.onChange(event.target.value) } });
+        const option = element('label', { className: 'ui-dropdown__color' }, [
+          element('span', { className: 'ui-dropdown__check', attributes: { 'aria-hidden': 'true' } }),
+          element('span', { text: item.label }), input
+        ]);
+        option._menuItem = item;
+        option._colorInput = input;
+        return option;
+      }
       const option = button({ label: item.label, icon: item.icon, variant: 'menu-item', onClick: () => {
         item.onSelect();
         refresh();
@@ -219,6 +232,7 @@ export function dropdown({ label, items }) {
   const refresh = () => {
     for (const option of menu.children) {
       const item = option._menuItem;
+      if (item?.getValue && option._colorInput) option._colorInput.value = item.getValue();
       if (item?.getChecked) option.setAttribute('aria-checked', String(item.getChecked()));
       if (item?.getDisabled) option.disabled = item.getDisabled();
     }
