@@ -29,6 +29,7 @@ import { collectAmbientOcclusionGeometry } from './ambient-occlusion-source.js';
 import { resizeWarpProjection, warpProjectionTransform } from './image-projection.js';
 import { resolveTemporaryPaintTool } from './temporary-paint-tool.js';
 import { bitmapBrushDiameter, vertexBrushDiameter } from './brush-cursor-size.js';
+import { createBakeWorker } from './worker-factory.js';
 
 const BRUSH_CURSOR_TOOLS = new Set([
   'brush', 'eraser', 'blur', 'line', 'curve', 'vertexBrush', 'vertexBlur'
@@ -2091,8 +2092,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     if (!target) throw new Error('Select a material before baking.');
     const source = collectAmbientOcclusionGeometry(painter.getMeshes(),
       target.mesh, target.materialIndex, options);
-    return runBakeWorker(() => new Worker(new URL('./ambient-occlusion-worker.js', import.meta.url),
-      { type: 'module' }),
+    return runBakeWorker(() => createBakeWorker('ambient-occlusion'),
       source, options, onProgress, signal);
   }
 
@@ -2101,8 +2101,7 @@ export function createScene(host, { onColorPicked, onSelectionChanged, onGraphTa
     if (!target) throw new Error('Select a material before baking.');
     const source = collectAmbientOcclusionGeometry([target.mesh],
       target.mesh, target.materialIndex, { includeCornerNormals: true });
-    return runBakeWorker(() => new Worker(new URL('./curvature-worker.js', import.meta.url),
-      { type: 'module' }),
+    return runBakeWorker(() => createBakeWorker('curvature'),
       source, options, onProgress, signal);
   }
 
