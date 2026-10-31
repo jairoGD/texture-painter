@@ -1,6 +1,6 @@
 # Texture Painter
 
-Texture painting editor, directly on the 3D model, with various image editing features. Built with [three.js](https://threejs.org/).
+Texture painting editor directly on the 3D model, with various image editing features. Built with [three.js](https://threejs.org/).
 Doesn't generate PBR maps; it's geared more toward hand-painting.
 
 **[Open Texture Painter](https://jairogd.github.io/texture-painter/)**
