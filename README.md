@@ -11,12 +11,3 @@ Your files stay on your device. The editor runs in Chrome or Edge and uses the b
 ## Use offline
 
 Download the repository and double-click `index.html`. Keep the `app` folder beside it. No server or Node.js is needed to use the editor.
-
-## Develop
-
-```sh
-npm install
-npm run dev
-```
-
-Run `npm run build` after changing the source to update the files used by `index.html` and the online version.
