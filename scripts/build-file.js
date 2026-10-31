@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 const workers = {};
@@ -25,12 +25,21 @@ await build({
   target: 'es2022',
   minify: true,
   outfile: 'app/editor.js',
-  loader: { '.svg': 'dataurl' },
   plugins: [{
     name: 'file-worker-factory',
     setup(bundler) {
       bundler.onResolve({ filter: /^\.\/worker-factory\.js$/ }, (args) => ({
         path: resolve(args.resolveDir, 'worker-factory-file.js')
+      }));
+    }
+  }, {
+    name: 'svg-data-urls',
+    setup(bundler) {
+      bundler.onLoad({ filter: /\.svg$/ }, async (args) => ({
+        contents: `export default ${JSON.stringify(
+          `data:image/svg+xml;base64,${(await readFile(args.path)).toString('base64')}`
+        )};`,
+        loader: 'js'
       }));
     }
   }],
