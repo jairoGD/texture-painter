@@ -2,7 +2,7 @@ import { planTextureExport, textureFileName } from '../editor/texture-export.js'
 import { button, element } from './index.js';
 import './texture-export-dialog.css';
 
-export function createTextureExportDialog({ getTextures, chooseDirectory, onExport, onComplete,
+export function createTextureExportDialog({ getTextures, chooseDirectory, canChooseDirectory, onExport, onComplete,
   onError }) {
   const list = element('div', { className: 'texture-export__list',
     attributes: { role: 'listbox', 'aria-label': 'Material textures' } });
@@ -95,6 +95,9 @@ export function createTextureExportDialog({ getTextures, chooseDirectory, onExpo
       return row;
     });
     list.replaceChildren(...rows);
+    directory = canChooseDirectory() ? null : { name: 'ZIP download', download: true };
+    folderButton.hidden = Boolean(directory);
+    folderName.textContent = directory ? 'Downloads as a ZIP file' : 'No folder selected';
     root.hidden = false;
     if (entries.length) showSelected();
     validate();
@@ -112,7 +115,8 @@ export function createTextureExportDialog({ getTextures, chooseDirectory, onExpo
       const next = await chooseDirectory();
       if (!next) return;
       directory = next;
-      folderName.textContent = next.name;
+      folderButton.hidden = Boolean(next.download);
+      folderName.textContent = next.download ? 'Downloads as a ZIP file' : next.name;
       validate();
     } catch (error) {
       if (error.name !== 'AbortError') {

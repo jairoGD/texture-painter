@@ -16,7 +16,8 @@ import { createSelectionSizeDialog } from './ui/selection-size-dialog.js';
 import { createFilterDialog } from './ui/filter-dialog.js';
 import { createBakeDialog } from './ui/bake-dialog.js';
 import { FILTER_CATEGORIES } from './editor/filter-definitions.js';
-import { writeTexturePngs } from './editor/texture-export.js';
+import { createTextureZip, writeTexturePngs } from './editor/texture-export.js';
+import { downloadBlob } from './editor/download.js';
 import { dropdown, element, notice, panel, renderControl, renderPanel, toggleButton, toolbar } from './ui/index.js';
 import mirrorIcon from './ui/icons/mirror.svg';
 import samplingIcon from './ui/icons/sampling.svg';
@@ -160,13 +161,21 @@ texturePreview = createTexturePreview({ getTexture: (id) => scene.getTexturePrev
   onClose: () => displayMenu.refresh() });
 const textureExportDialog = createTextureExportDialog({
   getTextures: () => scene.getExportTextures(),
+  canChooseDirectory: () => typeof window.showDirectoryPicker === 'function',
   chooseDirectory: () => {
-    if (!window.showDirectoryPicker)
-      throw new Error('Folder export requires a browser with the File System Access API.');
-    return window.showDirectoryPicker({ mode: 'readwrite', id: 'texture-export' });
+    return window.showDirectoryPicker({ mode: 'readwrite', id: 'texture-export' })
+      .catch((error) => {
+        if (error.name === 'AbortError') throw error;
+        return { name: 'ZIP download', download: true };
+      });
   },
-  onExport: writeTexturePngs,
-  onComplete: (count, folder) => setStatus(`${count} texture${count === 1 ? '' : 's'} exported to ${folder}`),
+  onExport: async (directory, textures, onProgress) => {
+    if (!directory.download) return writeTexturePngs(directory, textures, onProgress);
+    const zip = await createTextureZip(textures, onProgress);
+    downloadBlob(zip, `${projectFileName(projectName).slice(0, -5)}-textures.zip`);
+    return textures.length;
+  },
+  onComplete: (count, folder) => setStatus(`${count} texture${count === 1 ? '' : 's'} ${folder === 'ZIP download' ? 'download started' : `exported to ${folder}`}`),
   onError: (message) => setStatus(message, true)
 });
 lightGizmo = createLightGizmo({
@@ -816,29 +825,47 @@ async function saveProject(saveAs = false) {
     return;
   }
   let handle = saveAs ? null : projectHandle;
+  let download = false;
   if (handle) {
     try {
       if (handle.requestPermission && await handle.requestPermission({ mode: 'readwrite' }) !== 'granted') {
-        setStatus('Write access denied. Use File → Save Project As to choose another file.', true);
-        return;
+        handle = null;
+        download = true;
       }
-    } catch (error) { setStatus(error.message || 'Could not access the project file.', true); return; }
+    } catch { handle = null; download = true; }
   } else {
-    if (!window.showSaveFilePicker) {
-      setStatus('Choose a browser that supports saving to a folder, such as Chrome or Edge.', true);
-      return;
+    if (typeof window.showSaveFilePicker === 'function') {
+      try {
+        handle = await window.showSaveFilePicker({
+          id: 'texture-painter-project',
+          suggestedName: projectFileName(projectName),
+          types: [{ description: 'Texture Painter Project', accept: { 'application/json': ['.tp3d'] } }],
+          excludeAcceptAllOption: true
+        });
+      } catch (error) {
+        if (error.name === 'AbortError') return;
+        download = true;
+      }
+    } else {
+      download = true;
     }
+  }
+  if (download) {
+    const fileName = projectFileName(projectName);
     try {
-      handle = await window.showSaveFilePicker({
-        id: 'texture-painter-project',
-        suggestedName: projectFileName(projectName),
-        types: [{ description: 'Texture Painter Project', accept: { 'application/json': ['.tp3d'] } }],
-        excludeAcceptAllOption: true
-      });
-    } catch (error) {
-      if (error.name !== 'AbortError') setStatus(error.message || 'Could not open the save dialog.', true);
-      return;
-    }
+      const project = projectDocument(projectId, projectName);
+      downloadBlob(new Blob([JSON.stringify(project)], { type: 'application/json' }), fileName);
+      clearTimeout(draftTimer);
+      draftTimer = null;
+      await draftSave.catch(() => {});
+      projectHandle = null;
+      localDraft = true;
+      await saveRecent(project, null, scene.getModelFile(), true);
+      dirty = false;
+      await refreshRecent();
+      setStatus(`${fileName} download started · local copy kept in Recent Projects`);
+    } catch (error) { setStatus(error.message || 'Could not download project.', true); }
+    return;
   }
   setStatus(`Saving ${handle.name}…`);
   try {

@@ -21,6 +21,7 @@
 .texture-export__filename { min-height: 15px; color: var(--text-subtle); font-size: 10px; }
 .texture-export__footer { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border-panel); }
 .texture-export__folder { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.texture-export__folder .ui-button[hidden] { display: none; }
 .texture-export__folder-name { max-width: 145px; overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .texture-export__message { flex: 1; min-width: 0; margin: 0; color: var(--text-muted); font-size: 11px; text-align: right; }
 .texture-export__message.is-error { color: #ff9ca3; }
