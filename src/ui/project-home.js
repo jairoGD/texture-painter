@@ -1,5 +1,5 @@
 import { TEXTURE_RESOLUTIONS } from '../editor/texture-resolution.js';
-import { MODEL_ACCEPT, MODEL_PICKER } from './model-relink.js';
+import { MODEL_ACCEPT } from './model-relink.js';
 import { button, element } from './index.js';
 import './project-home.css';
 
@@ -63,15 +63,7 @@ export function createProjectHome({ onNew, onOpen, onRecent, onRemoveRecent }) {
     modelName.title = file.name;
     setMessage('');
   }
-  async function selectModel() {
-    if (!window.showOpenFilePicker) { modelInput.click(); return; }
-    try {
-      const [handle] = await window.showOpenFilePicker(MODEL_PICKER);
-      if (handle) setModel(await handle.getFile(), handle);
-    } catch (error) {
-      if (error.name !== 'AbortError') setMessage(error.message || 'Could not open model.');
-    }
-  }
+  function selectModel() { modelInput.click(); }
   modelInput.addEventListener('change', () => {
     setModel(modelInput.files?.[0]);
     modelInput.value = '';
@@ -96,6 +88,9 @@ export function createProjectHome({ onNew, onOpen, onRecent, onRemoveRecent }) {
       const date = new Date(record.updatedAt);
       const control = button({ label: record.name, variant: 'ghost', onClick: () => onRecent(record) });
       control.classList.add('project-home__recent');
+      if (record.local) control.append(element('span', {
+        className: 'project-home__recent-local', text: 'Local'
+      }));
       control.append(element('span', { className: 'project-home__recent-date',
         text: Number.isNaN(date.getTime()) ? '' : date.toLocaleString() }));
       const remove = button({ label: `Remove ${record.name} from recent projects`, icon: '×',

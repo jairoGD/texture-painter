@@ -47,9 +47,41 @@ let projectId = null;
 let projectName = '';
 let projectHandle = null;
 let currentModelHandle = null;
+let localDraft = false;
+let draftTimer = null;
+let draftSave = Promise.resolve();
+let draftRevision = 0;
 let dirty = false;
 let loadingProject = false;
-function markDirty() { if (projectId && !loadingProject) dirty = true; }
+function markDirty() {
+  if (!projectId || loadingProject) return;
+  dirty = true;
+  if (localDraft) {
+    draftRevision++;
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(() => { persistDraft().catch(showDraftError); }, 1000);
+  }
+}
+function showDraftError(error) {
+  setStatus(error.message || 'Could not save the local project.', true);
+}
+function persistDraft() {
+  clearTimeout(draftTimer);
+  draftTimer = null;
+  if (!localDraft || !projectId) return draftSave;
+  const id = projectId;
+  const revision = draftRevision;
+  const project = projectDocument(id, projectName);
+  const modelFile = scene.getModelFile();
+  draftSave = draftSave.catch(() => {}).then(async () => {
+    await saveRecent(project, null, modelFile, true);
+    if (projectId === id && localDraft && draftRevision === revision) {
+      dirty = false;
+      await refreshRecent();
+    }
+  });
+  return draftSave;
+}
 const scene = createScene(viewport, {
   onGraphTargetsChanged: (targets) => nodeEditor?.setTargets(targets),
   onGraphHistoryApplied: (targetId, graph) => nodeEditor?.applyHistoryGraph(targetId, graph),
@@ -572,7 +604,7 @@ const footer = element('footer', { className: 'status-bar' }, [
 ]);
 
 function canLeaveProject() {
-  return !dirty || window.confirm('This project has unsaved changes. Continue without saving them?');
+  return localDraft || !dirty || window.confirm('This project has unsaved changes. Continue without saving them?');
 }
 
 function chooseProjectFile() {
@@ -666,18 +698,12 @@ function projectDocument(id, name) {
 
 async function newProject({ name, resolution, model: selectedModel }) {
   if (!canLeaveProject()) return;
-  if (!window.showSaveFilePicker)
-    throw new Error('Use Chrome or Edge to choose where to save the project.');
-  const handle = await window.showSaveFilePicker({
-    id: 'texture-painter-project',
-    suggestedName: projectFileName(name),
-    types: [{ description: 'Texture Painter Project', accept: { 'application/json': ['.tp3d'] } }],
-    excludeAcceptAllOption: true
-  });
+  if (localDraft) await persistDraft();
   const previous = projectId ? { scene: scene.exportProjectData(),
     modelFile: scene.getModelFile(), modelHandle: currentModelHandle,
     editor: { nodes: nodeEditor.getProjectState(), palette: palette.getState(),
-      activeTool, toolSettings: structuredClone(toolSettings) }, dirty } : null;
+      activeTool, toolSettings: structuredClone(toolSettings) }, dirty,
+    id: projectId, name: projectName, handle: projectHandle, localDraft } : null;
   loadingProject = true;
   setStatus(`Creating ${name}…`);
   try {
@@ -686,23 +712,22 @@ async function newProject({ name, resolution, model: selectedModel }) {
     restoreEditorSettings();
     const id = crypto.randomUUID();
     const project = projectDocument(id, name);
-    await writeProjectFile(handle, project);
+    await saveRecent(project, null, selectedModel.file, true);
     projectId = id;
     projectName = name;
-    projectHandle = handle;
+    projectHandle = null;
+    localDraft = true;
     currentModelHandle = selectedModel.handle;
     projectTag.textContent = name;
     dirty = false;
     projectHome.hide();
     fileMenu.refresh();
-    let modelLinkStored = false;
     if (currentModelHandle) {
-      try { await saveModelHandle(project.scene.model.referenceId, currentModelHandle); modelLinkStored = true; }
+      try { await saveModelHandle(project.scene.model.referenceId, currentModelHandle); }
       catch { /* The model can be located manually when reopening. */ }
     }
-    setStatus(`${name} created · ${resolution} × ${resolution}` +
-      (modelLinkStored ? '' : ' · locate the model when reopening'), !modelLinkStored);
-    try { await saveRecent(project, handle); await refreshRecent(); }
+    setStatus(`${name} created · saved locally · ${resolution} × ${resolution}`);
+    try { await refreshRecent(); }
     catch { setStatus(`${name} created · recent list unavailable`); }
   } catch (error) {
     try {
@@ -711,6 +736,10 @@ async function newProject({ name, resolution, model: selectedModel }) {
         restoreEditorSettings(previous.editor, previous.scene.view);
         currentModelHandle = previous.modelHandle;
         dirty = previous.dirty;
+        projectId = previous.id;
+        projectName = previous.name;
+        projectHandle = previous.handle;
+        localDraft = previous.localDraft;
       } else {
         scene.newProject();
         restoreEditorSettings();
@@ -721,18 +750,22 @@ async function newProject({ name, resolution, model: selectedModel }) {
   } finally { loadingProject = false; }
 }
 
-async function openProject(project, handle = null) {
+async function openProject(project, handle = null, draftRecord = null) {
   if (!canLeaveProject()) return;
+  if (localDraft) await persistDraft();
   loadingProject = true;
   projectHome.setMessage('');
   setStatus(`Opening ${project.name}…`);
   let previous = null;
   try {
-    const modelReference = await resolveProjectModel(project.scene.model);
+    const modelReference = draftRecord?.modelFile ?
+      { file: draftRecord.modelFile, handle: null, relinked: false } :
+      await resolveProjectModel(project.scene.model);
     if (projectId) previous = { scene: scene.exportProjectData(),
       modelFile: scene.getModelFile(), modelHandle: currentModelHandle,
       editor: { nodes: nodeEditor.getProjectState(), palette: palette.getState(),
-        activeTool, toolSettings: structuredClone(toolSettings) }, dirty };
+        activeTool, toolSettings: structuredClone(toolSettings) }, dirty,
+      id: projectId, name: projectName, handle: projectHandle, localDraft };
     await scene.restoreProjectData(project.scene, modelReference.file);
     restoreEditorSettings(project.editor, project.scene.view);
     currentModelHandle = modelReference.handle;
@@ -744,12 +777,13 @@ async function openProject(project, handle = null) {
     projectId = project.id;
     projectName = project.name;
     projectHandle = handle;
+    localDraft = Boolean(draftRecord?.local);
     projectTag.textContent = projectName;
     dirty = modelReference.relinked;
     projectHome.hide();
     fileMenu.refresh();
     setStatus(`${projectName} opened${modelReference.relinked ? ' · model located; save project' : ''}`);
-    try { await saveRecent(project, handle); await refreshRecent(); }
+    try { await saveRecent(project, handle, localDraft ? modelReference.file : null, localDraft); await refreshRecent(); }
     catch { setStatus(`${projectName} opened · recent list unavailable`); }
   } catch (error) {
     if (error.name === 'AbortError') { setStatus('Project opening cancelled'); return; }
@@ -759,6 +793,10 @@ async function openProject(project, handle = null) {
         restoreEditorSettings(previous.editor, previous.scene.view);
         currentModelHandle = previous.modelHandle;
         dirty = previous.dirty;
+        projectId = previous.id;
+        projectName = previous.name;
+        projectHandle = previous.handle;
+        localDraft = previous.localDraft;
       } catch { /* Keep the project chooser open if the previous scene cannot be restored. */ }
     }
     projectHome.show(Boolean(projectId));
@@ -814,7 +852,11 @@ async function saveProject(saveAs = false) {
     }
     const project = projectDocument(projectId, projectName);
     await writeProjectFile(handle, project);
+    clearTimeout(draftTimer);
+    draftTimer = null;
+    await draftSave.catch(() => {});
     projectHandle = handle;
+    localDraft = false;
     projectTag.textContent = projectName;
     dirty = false;
     setStatus(`${handle.name} saved${modelLinkStored ? '' : ' · locate the model when reopening'}`,
@@ -842,6 +884,7 @@ projectInput.addEventListener('change', async () => {
 
 async function openRecent(record) {
   try {
+    if (record.id === projectId) { projectHome.hide(); return; }
     if (record.handle) {
       const allowed = !record.handle.requestPermission ||
         await record.handle.requestPermission({ mode: 'read' }) === 'granted';
@@ -851,7 +894,7 @@ async function openRecent(record) {
         return;
       }
     }
-    await openProject(parseProject(record.document));
+    await openProject(parseProject(record.document), null, record);
   } catch (error) {
     projectHome.setMessage(error.message || 'Could not read recent project.');
   }
@@ -868,6 +911,9 @@ window.addEventListener('beforeunload', (event) => {
   if (!dirty) return;
   event.preventDefault();
   event.returnValue = '';
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && localDraft && dirty) persistDraft().catch(showDraftError);
 });
 
 app.append(header, workspace, footer, fileInput, projectInput, texturePreview.element,

@@ -46,10 +46,10 @@ async function transaction(storeName, mode, action) {
   } finally { db.close(); }
 }
 
-export async function saveRecent(project, handle = null) {
+export async function saveRecent(project, handle = null, modelFile = null, local = false) {
   await transaction(STORE, 'readwrite', (store) => store.put({
     id: project.id, name: project.name, updatedAt: new Date().toISOString(),
-    document: JSON.stringify(project), handle
+    document: JSON.stringify(project), handle, modelFile, local
   }));
 }
 

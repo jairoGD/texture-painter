@@ -12,6 +12,7 @@
 .project-home__recent-row { display: flex; align-items: center; gap: 5px; }
 .project-home__recent { justify-content: space-between; width: 100%; border: 1px solid #364657; background: #202b36; }
 .project-home__recent-date { margin-left: auto; color: #899bad; font-size: 11px; font-weight: 400; }
+.project-home__recent-local { color: #9cc2e5; font-size: 11px; }
 .project-home__empty { margin: 0; padding: 15px; border: 1px dashed #425367; border-radius: 7px; color: #8195a8; font-size: 12px; }
 .project-home__message { margin: 12px 0 0; color: #ffaaaa; font-size: 12px; }
 .project-home__message:empty { display: none; }
