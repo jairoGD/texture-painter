@@ -3,11 +3,19 @@ export function downloadBlob(blob, fileName) {
   const link = document.createElement('a');
   link.href = url;
   link.download = fileName;
-  link.hidden = true;
+  link.style.position = 'fixed';
+  link.style.left = '-9999px';
+  link.setAttribute('aria-hidden', 'true');
   document.body.append(link);
-  try { link.click(); }
-  finally {
+  try {
+    link.click();
+  } catch (error) {
     link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    URL.revokeObjectURL(url);
+    throw error;
   }
+  setTimeout(() => {
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, 60_000);
 }

@@ -814,6 +814,21 @@ async function openProject(project, handle = null, draftRecord = null) {
   } finally { loadingProject = false; }
 }
 
+async function downloadProject() {
+  const fileName = projectFileName(projectName);
+  const project = projectDocument(projectId, projectName);
+  downloadBlob(new Blob([JSON.stringify(project)], { type: 'application/octet-stream' }), fileName);
+  clearTimeout(draftTimer);
+  draftTimer = null;
+  await draftSave.catch(() => {});
+  projectHandle = null;
+  localDraft = true;
+  await saveRecent(project, null, scene.getModelFile(), true);
+  dirty = false;
+  await refreshRecent();
+  setStatus(`${fileName} download started · check your browser downloads`);
+}
+
 async function saveProject(saveAs = false) {
   if (!projectId || loadingProject) return;
   if (bakeDialog.isBusy()) {
@@ -843,7 +858,10 @@ async function saveProject(saveAs = false) {
           excludeAcceptAllOption: true
         });
       } catch (error) {
-        if (error.name === 'AbortError') return;
+        if (error.name === 'AbortError') {
+          setStatus('Project save cancelled');
+          return;
+        }
         download = true;
       }
     } else {
@@ -851,20 +869,8 @@ async function saveProject(saveAs = false) {
     }
   }
   if (download) {
-    const fileName = projectFileName(projectName);
-    try {
-      const project = projectDocument(projectId, projectName);
-      downloadBlob(new Blob([JSON.stringify(project)], { type: 'application/json' }), fileName);
-      clearTimeout(draftTimer);
-      draftTimer = null;
-      await draftSave.catch(() => {});
-      projectHandle = null;
-      localDraft = true;
-      await saveRecent(project, null, scene.getModelFile(), true);
-      dirty = false;
-      await refreshRecent();
-      setStatus(`${fileName} download started · local copy kept in Recent Projects`);
-    } catch (error) { setStatus(error.message || 'Could not download project.', true); }
+    try { await downloadProject(); }
+    catch (error) { setStatus(error.message || 'Could not download project.', true); }
     return;
   }
   setStatus(`Saving ${handle.name}…`);
@@ -890,7 +896,12 @@ async function saveProject(saveAs = false) {
       !modelLinkStored);
     try { await saveRecent(project, handle); await refreshRecent(); }
     catch { setStatus(`${handle.name} saved · recent list unavailable`); }
-  } catch (error) { setStatus(error.message || 'Could not save project.', true); }
+  } catch (error) {
+    try { await downloadProject(); }
+    catch (downloadError) {
+      setStatus(downloadError.message || error.message || 'Could not save project.', true);
+    }
+  }
 }
 
 async function refreshRecent() {
