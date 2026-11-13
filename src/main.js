@@ -1,7 +1,8 @@
 import { createScene } from './editor/scene.js';
 import { setTextureResolution } from './editor/texture-resolution.js';
 import { listRecent, parseProject, PROJECT_VERSION, projectFileName,
-  getModelHandle, removeRecent, saveModelHandle, saveRecent, writeProjectFile } from './editor/project-file.js';
+  existingProjectFileAvailable, getModelHandle, removeRecent, saveModelHandle,
+  saveRecent, writeProjectFile } from './editor/project-file.js';
 import { TOOL_DEFINITIONS } from './editor/tools.js';
 import { toolHint } from './editor/tool-hints.js';
 import { colorPalette } from './ui/color-palette.js';
@@ -829,7 +830,7 @@ async function downloadProject() {
   setStatus(`${fileName} download started · check your browser downloads`);
 }
 
-async function saveProject(saveAs = false) {
+async function saveProject(saveAs = false, retriedMissingFile = false) {
   if (!projectId || loadingProject) return;
   if (bakeDialog.isBusy()) {
     setStatus('Wait for the bake to finish before saving.', true);
@@ -843,12 +844,16 @@ async function saveProject(saveAs = false) {
   let download = false;
   if (handle) {
     try {
-      if (handle.requestPermission && await handle.requestPermission({ mode: 'readwrite' }) !== 'granted') {
+      if (!await existingProjectFileAvailable(handle)) {
         handle = null;
-        download = true;
+        projectHandle = null;
       }
-    } catch { handle = null; download = true; }
-  } else {
+    } catch (error) {
+      setStatus(error.message || 'Could not access the project file.', true);
+      return;
+    }
+  }
+  if (!handle) {
     if (typeof window.showSaveFilePicker === 'function') {
       try {
         handle = await window.showSaveFilePicker({
@@ -897,6 +902,12 @@ async function saveProject(saveAs = false) {
     try { await saveRecent(project, handle); await refreshRecent(); }
     catch { setStatus(`${handle.name} saved · recent list unavailable`); }
   } catch (error) {
+    if (error.name === 'NotFoundError') {
+      projectHandle = null;
+      if (!retriedMissingFile) await saveProject(true, true);
+      else setStatus('Project file disappeared before it could be saved. Choose a new location and try again.', true);
+      return;
+    }
     try { await downloadProject(); }
     catch (downloadError) {
       setStatus(downloadError.message || error.message || 'Could not save project.', true);

@@ -74,6 +74,18 @@ export function projectFileName(name) {
   return `${(name || 'Untitled Project').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')}.tp3d`;
 }
 
+export async function existingProjectFileAvailable(handle) {
+  try {
+    if (handle.requestPermission &&
+        await handle.requestPermission({ mode: 'readwrite' }) !== 'granted') return false;
+    await handle.getFile();
+    return true;
+  } catch (error) {
+    if (error.name === 'NotFoundError' || error.name === 'NotAllowedError') return false;
+    throw error;
+  }
+}
+
 export async function writeProjectFile(handle, project) {
   const writable = await handle.createWritable();
   try {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseProject, PROJECT_VERSION } from '../src/editor/project-file.js';
+import { existingProjectFileAvailable, parseProject, PROJECT_VERSION } from '../src/editor/project-file.js';
 
 function project(model) {
   return JSON.stringify({ format: 'tp3d', version: PROJECT_VERSION,
@@ -29,4 +29,20 @@ test('a saved FBX project keeps a file reference without model bytes', () => {
 test('an FBX project needs a model reference for relinking', () => {
   assert.throws(() => parseProject(project({ kind: 'fbx', name: 'Character.fbx' })),
     /valid model reference/);
+});
+
+test('an existing project file can be reused for Ctrl+S', async () => {
+  let checked = false;
+  assert.equal(await existingProjectFileAvailable({
+    async requestPermission() { return 'granted'; },
+    async getFile() { checked = true; return new File([], 'Test.tp3d'); }
+  }), true);
+  assert.equal(checked, true);
+});
+
+test('a deleted project file requires a new save location', async () => {
+  assert.equal(await existingProjectFileAvailable({
+    async requestPermission() { return 'granted'; },
+    async getFile() { throw new DOMException('File missing', 'NotFoundError'); }
+  }), false);
 });
